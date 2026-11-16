@@ -2,13 +2,13 @@
 
 **Herbie is a Flow-native automotive engineering library.** The goal is to replace MATLAB/Simulink-centric handoffs with traceable, executable models spanning vehicle simulation, manufacturing stress, tolerance analysis, controller design, optimization, and eventual HIL deployment.
 
-**Maturity: 0.3.0 foundation, research/engineering evaluation only. NOT safety qualified.** The initial library contains small, reviewable deterministic numerical kernels; it is not yet a MATLAB, Simulink, Simscape, or industrial FEA replacement.
+**Maturity: 0.3.1 foundation, research/engineering evaluation only. NOT safety qualified.** The initial library contains small, reviewable deterministic numerical kernels; it is not yet a MATLAB, Simulink, Simscape, or industrial FEA replacement.
 
 ## Implemented
 
 | Module | Models and numerical methods | Validity boundary |
 | --- | --- | --- |
-| `herbie.electrical` | Closed-form RC/RL transients; series RLC RK4 and stored energy | Ideal lumped/passive networks only, no circuit graph, switching devices or circuit DAE |
+| `herbie.circuits` | Sparse-API-shaped dense DC nodal assembly, resistors, current sources, Gaussian elimination with partial pivoting and KCL residual | Small linear resistive DC circuits only; no voltage-source MNA or nonlinear/transient components |\n| `herbie.electrical` | Closed-form RC/RL transients; series RLC RK4 and stored energy | Ideal lumped/passive networks only, no circuit graph, switching devices or circuit DAE |
 | `herbie.mechanics` | Single-axis rotational inertia, torsional stiffness/damping RK4 and ideal fixed-ratio gear power balance | No joints, bearing dynamics, contact, clutch or multibody assembly |
 | `herbie.motors` | Brushed permanent-magnet DC motor, coupled armature/rotor RK4, energy and torque | Lumped motor only; no inverter, commutation, saturation or thermal losses |
 | `herbie.battery` | First-order Thevenin OCV + ohmic + polarization RC, coulomb-count SOC | No BMS, electrochemistry, heat, SoH, degradation or charge limits |
@@ -34,7 +34,7 @@ flow run tests/engineering_smoke.flow
 flow run tests/vehicle_energy.flow
 flow run tests/truss_uncertainty.flow
 flow run tests/electromechanics.flow
-flow run tests/engine_battery.flow
+flow run tests/engine_battery.flow\nflow run tests/circuit_network.flow
 flow run examples/quarter_car_demo.flow
 flow run examples/manufacturing_demo.flow
 flow run examples/electric_drive_demo.flow

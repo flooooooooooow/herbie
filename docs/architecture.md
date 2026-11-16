@@ -8,7 +8,7 @@ The first implementation is intentionally small:
 
 ```
 src/
-  electrical.flow     Lumped passive RC/RL/RLC
+  circuits.flow      Nodal circuit assembly and dense pivoted DC solve\n  electrical.flow     Lumped passive RC/RL/RLC
   mechanics.flow      Single-axis rotation and ideal gear
   motors.flow         Coupled armature/rotor DC motor
   battery.flow        Thevenin RC battery and SOC
@@ -59,3 +59,7 @@ The correlated uncertainty module implements \`Var(aX+bY)=a²σx²+b²σy²+2ab�
 ## Multiphysics implementation boundary
 
 The initial new modules use explicit typed state and physically named SI parameters. The RC/RL and battery RC equations use exact constant-input exponentials; the motor, series RLC and torsional oscillator use fixed-step RK4; the engine uses sample-time Euler with clamped nonnegative speed. The engine requires monotone, validated lookup grids. Each model has no hidden I/O/heap allocation and accepts a caller-chosen dt, but a complete multidomain solution will require shared algebraic constraints, consistent energy flows and implicit DAE integration. The electric drive example uses sequentially coupled motor and battery steps and is illustrative, not a verified energy-conserving electromechanical co-simulation nor a full EV drivetrain.
+
+## Initial DC nodal network
+
+`herbie.circuits` stamps conductances and oriented current sources into a caller-owned row-major matrix and current vector using ground node -1. The solve uses partial-pivoted Gaussian elimination, caller-owned scratch matrix and RHS, KCL residual measurement, and a caller-chosen absolute conductance pivot threshold. Source data remains unchanged. The dense solve is O(n³), has no dynamic allocations in Flow source, and must be bounded/configured for any timed target. This is **not** a full modified-nodal-analysis solver: independent voltage sources, switched elements, inductors/capacitors and nonlinear devices require additional unknowns, constitutive rules and robust DAE solvers. Singular/ungrounded networks return failure rather than silently producing voltages.

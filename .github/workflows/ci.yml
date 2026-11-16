@@ -33,6 +33,8 @@ jobs:
         run: ./.flow-toolchain/flow run tests/electromechanics.flow
       - name: Check engine map and battery physics
         run: ./.flow-toolchain/flow run tests/engine_battery.flow
+      - name: Check DC nodal circuit solver
+        run: ./.flow-toolchain/flow run tests/circuit_network.flow
       - name: Run electric-drive demonstration
         run: ./.flow-toolchain/flow run examples/electric_drive_demo.flow
       - name: Run mapped-engine demonstration

@@ -1,0 +1,145 @@
+# @module herbie.circuits
+# Linear resistive DC nodal analysis.
+# Nodes 0..count-1 are unknown voltages; -1 is ideal reference ground.
+# Current source is positive from fromNode to toNode.
+# All buffers caller-owned, row-major conductance, one RHS current per node.
+# Does not yet solve voltage-source MNA, nonlinear circuits or transients.
+
+export struct CircuitNetwork {
+    nodeCount: i32,
+    conductance: ptr<f64>,
+    injectedCurrent: ptr<f64>
+}
+
+function circuitAbs(value: f64) -> f64 {
+    if value < 0.0 {
+        return -value
+    }
+    return value
+}
+
+function circuitNodeValid(n: CircuitNetwork, node: i32) -> bool {
+    return node >= -1 and node < n.nodeCount
+}
+
+export function circuitClear(n: CircuitNetwork) -> void {
+    for i in 0 to n.nodeCount * n.nodeCount {
+        n.conductance[i] = 0.0
+    }
+    for i in 0 to n.nodeCount {
+        n.injectedCurrent[i] = 0.0
+    }
+}
+
+export function circuitStampResistor(n: CircuitNetwork, nodeA: i32, nodeB: i32, resistance: f64) -> bool {
+    if not circuitNodeValid(n, nodeA) or not circuitNodeValid(n, nodeB) or nodeA == nodeB or resistance <= 0.0 {
+        return false
+    }
+    let g: f64 = 1.0 / resistance
+    if nodeA >= 0 {
+        n.conductance[nodeA * n.nodeCount + nodeA] += g
+    }
+    if nodeB >= 0 {
+        n.conductance[nodeB * n.nodeCount + nodeB] += g
+    }
+    if nodeA >= 0 and nodeB >= 0 {
+        n.conductance[nodeA * n.nodeCount + nodeB] -= g
+        n.conductance[nodeB * n.nodeCount + nodeA] -= g
+    }
+    return true
+}
+
+export function circuitStampCurrentSource(n: CircuitNetwork, fromNode: i32, toNode: i32, current: f64) -> bool {
+    if not circuitNodeValid(n, fromNode) or not circuitNodeValid(n, toNode) or fromNode == toNode {
+        return false
+    }
+    if fromNode >= 0 {
+        n.injectedCurrent[fromNode] -= current
+    }
+    if toNode >= 0 {
+        n.injectedCurrent[toNode] += current
+    }
+    return true
+}
+
+# Gaussian elimination with partial pivoting. G and I remain unchanged.
+# Scratch matrix has count^2 elements; scratchRhs and voltages count each.
+# absolutePivotTolerance has conductance units (S) and must be > 0.
+# Returns false for singular / ill-conditioned systems at that threshold.
+export function circuitSolve(
+    n: CircuitNetwork,
+    voltages: ptr<f64>,
+    scratchMatrix: ptr<f64>,
+    scratchRhs: ptr<f64>,
+    absolutePivotTolerance: f64
+) -> bool {
+    if n.nodeCount <= 0 or absolutePivotTolerance <= 0.0 {
+        return false
+    }
+    let count: i32 = n.nodeCount
+    for i in 0 to count * count {
+        scratchMatrix[i] = n.conductance[i]
+    }
+    for i in 0 to count {
+        scratchRhs[i] = n.injectedCurrent[i]
+    }
+    for k in 0 to count {
+        let mut row: i32 = k
+        let mut pivotSize: f64 = circuitAbs(scratchMatrix[k * count + k])
+        for i in k + 1 to count {
+            let candidate: f64 = circuitAbs(scratchMatrix[i * count + k])
+            if candidate > pivotSize {
+                pivotSize = candidate
+                row = i
+            }
+        }
+        if pivotSize <= absolutePivotTolerance {
+            return false
+        }
+        if row != k {
+            for j in k to count {
+                let a: i32 = k * count + j
+                let b: i32 = row * count + j
+                let temp: f64 = scratchMatrix[a]
+                scratchMatrix[a] = scratchMatrix[b]
+                scratchMatrix[b] = temp
+            }
+            let tempRhs: f64 = scratchRhs[k]
+            scratchRhs[k] = scratchRhs[row]
+            scratchRhs[row] = tempRhs
+        }
+        for i in k + 1 to count {
+            let factor: f64 = scratchMatrix[i * count + k] / scratchMatrix[k * count + k]
+            scratchMatrix[i * count + k] = 0.0
+            for j in k + 1 to count {
+                scratchMatrix[i * count + j] -= factor * scratchMatrix[k * count + j]
+            }
+            scratchRhs[i] -= factor * scratchRhs[k]
+        }
+    }
+    let mut i: i32 = count - 1
+    while i >= 0 {
+        let mut value: f64 = scratchRhs[i]
+        for j in i + 1 to count {
+            value -= scratchMatrix[i * count + j] * voltages[j]
+        }
+        voltages[i] = value / scratchMatrix[i * count + i]
+        i = i - 1
+    }
+    return true
+}
+
+export function circuitMaxKclResidual(n: CircuitNetwork, voltages: ptr<f64>) -> f64 {
+    let mut maxResidual: f64 = 0.0
+    for i in 0 to n.nodeCount {
+        let mut residual: f64 = -n.injectedCurrent[i]
+        for j in 0 to n.nodeCount {
+            residual += n.conductance[i * n.nodeCount + j] * voltages[j]
+        }
+        let magnitude: f64 = circuitAbs(residual)
+        if magnitude > maxResidual {
+            maxResidual = magnitude
+        }
+    }
+    return maxResidual
+}

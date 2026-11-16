@@ -52,3 +52,7 @@ Run `flow run tests/engineering_smoke.flow` and `flow run tests/vehicle_energy.f
 ## Electromechanical and engine regression
 
 `tests/electromechanics.flow` checks analytical single-time-constant RC/RL steps, ideal lossless series RLC energy conservation, undamped torsional-oscillator energy conservation, ideal gear power balance and an idealised electromechanical DC motor with matching SI torque and back-EMF constants. It deliberately tests energy preservation only for parameter sets without dissipative losses or external work. `tests/engine_battery.flow` checks exact bilinear mapping and clamped extrapolation, speed conversion, torque equilibrium, idealized fuel-energy arithmetic, battery coulomb count and exact first-order RC polarization. These tests do not validate engine combustion, battery electrochemistry, power electronics, component temperature or embedded real-time timing.
+
+## Nodal analysis baseline
+
+`tests/circuit_network.flow` builds a 2-node 1 kΩ resistor network with a 10 mA current source from ground. The analytically expected DC voltages are 6⅔ V and 3⅓ V. It confirms conductance assembly, sign conventions, KCL residual under 10^-12 A, balance of source power with resistor dissipation, unchanged inputs after solving, invalid stamp rejection and floating-network singularity detection. This does not constitute nonlinear circuit or stiff transient validation.

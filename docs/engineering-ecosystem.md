@@ -10,7 +10,7 @@ Every physical system should share an explicit state schema, dimensioned paramet
 | --- | --- | --- |
 | Numerical integration and modelling | Domain-specific Euler, RK4, closed-form steps | ODE/DAE, Newton/Krylov, sparse matrices, block graphs, units, zero-crossings, multirate scheduling |
 | Vehicle chassis and handling | `vehicle`, `powertrain` | 3D 6-DOF chassis, 7-DOF ride, suspension kinematics, nonlinear tire, aero, braking, steering, stability, parameter identification |
-| Electrical circuits | `electrical` | Modified nodal analysis, network topologies, AC impedance, switches, power converters, rectifiers, EMC, small-signal linearisation |
+| Electrical circuits | `electrical`, `circuits` | Modified nodal analysis, network topologies, AC impedance, switches, power converters, rectifiers, EMC, small-signal linearisation |
 | Machines and drives | `motors` | PMSM, BLDC, induction, synchronous generator, field-oriented control, PWM inverter, torque ripple, thermal/electromagnetic saturation |
 | Batteries and charging | `battery` | Pack/cell networks, SOC/SOH estimators, RC model identification, OCV curves, electro-thermal models, BMS limits, charging and degradation |
 | Internal combustion | `engine`, `maps` | Torque/fuel/air/exhaust/emissions 2D/3D maps, volumetric efficiency, airflow/manifolds, ignition and fuel injection, turbocharging, cylinder pressure, crank-angle simulation, diesel injection, knock, ECU |
@@ -49,3 +49,7 @@ The eventual Flow front end should author multi-domain component graphs with exp
 Every newly advertised component must include an equation and assumptions, initial conditions and units, analytical or externally validated reference values, convergence criteria where applicable, positive/negative tests, numerical stability limits and a continuously executed native Flow build. No production safety, ISO 26262 or formal WCET claims are implied by this repository's CI.
 
 MathWorks reference product categories: [Vehicle Dynamics Blockset](https://www.mathworks.com/products/vehicle-dynamics.html), [Simscape Electrical](https://www.mathworks.com/products/simscape-electrical.html), [Powertrain](https://www.mathworks.com/help/vdynblks/powertrain.html), and its [product catalog](https://www.mathworks.com/products.html). These references are only a scope inventory, not an endorsement or dependency.
+
+## DC circuit solver implementation slice
+
+The first connected-circuit solver supports passive resistor stamping and oriented current injection with reference ground, partial-pivoted dense elimination and KCL residuals. It is intentionally restricted to linear, steady-state resistive circuits; voltage sources, device models, switched dynamics and DAE integration remain tracked by [electrical circuit solver issue #11](https://github.com/flooooooooooow/herbie/issues/11). The matrix storage is caller-owned and O(n²); use small networks until sparse assembly and pivot strategy are implemented.
