@@ -11,6 +11,7 @@ const turquoise=mat(0x7bddcd,0.4,0.31),red=mat(0xe7856d,0.3,0.35);
 const glass=new THREE.MeshPhysicalMaterial({color:0x9ddbe8,roughness:0.12,metalness:0.10,transparent:true,opacity:0.45,depthWrite:false,side:THREE.DoubleSide});
 const paint=new THREE.MeshPhysicalMaterial({color:0x3c92ac,metalness:0.68,roughness:0.27,clearcoat:0.75,clearcoatRoughness:0.18,transparent:true,opacity:0.89,depthWrite:false,side:THREE.DoubleSide});
 const number=(x)=>Number.isFinite(x)?x:0;
+const clamp=(x,min,max)=>Math.min(max,Math.max(min,x));
 function mesh(parent,geometry,material,x=0,y=0,z=0){
   const m=new THREE.Mesh(geometry,material);m.position.set(x,y,z);m.castShadow=true;m.receiveShadow=true;parent.add(m);return m;
 }
