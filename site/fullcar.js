@@ -59,7 +59,7 @@ export function roadAt(distance,side,roughness){
 
 export function sampleRoad(distance,speed,roughness,dt){
  return cornerMeta.map(c=>{
-  const x=distance+(c.axle===0?0:-params.axleSpacingM);
+  const x=distance+(c.axle===0?0:-defaultRideParameters.axleSpacingM);
   const z=roadAt(x,c.side,roughness);
   const d=0.0002;
   const rate=clamp(speed,0,80)*(roadAt(x+d,c.side,roughness)-roadAt(x-d,c.side,roughness))/(2*d);
