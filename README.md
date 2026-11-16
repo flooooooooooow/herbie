@@ -20,6 +20,7 @@
 | `herbie.truss` | Linear 2D truss axial element, 4x4 stiffness matrix, displacement-to-axial-force and strain energy | Small displacement, pin-jointed bar; no global FEM assembly or contact |
 | `herbie.uncertainty` | First-order correlated covariance propagation and Gaussian intervals | Input covariance must be physically valid; not non-Gaussian metrology |
 | `herbie.tolerances` | Worst-case interval stacks, clearances, independent RSS standard deviations, Cp/Cpk, thermal length | Statistical normal/independent approximation for RSS; no full GD&T solver |
+| `herbie.stackups` | N-dimensional affine worst-case stacks and covariance-aware variance with PSD checks and sensitivity rank | First-order linear dimensional chains; all SI lengths, no 3D GD&T geometry, SPC, or measured-process qualification |
 | `herbie.control` | PID with derivative on measurement, output/integral clamps and conditional anti-windup | Caller must provide valid dt and output limits |
 | `herbie.thermal` | Lumped-capacitance heat balance, fixed-step Euler, thermal time constant | Uniform temperature, constant coefficients |
 
@@ -47,9 +48,18 @@ flow run examples/electric_drive_demo.flow
 flow run examples/engine_dyno_demo.flow
 flow run tests/full_car.flow
 flow run examples/full_car_demo.flow
+flow run examples/equation_vehicle.flow
+flow run tests/linear_stackups.flow
+flow run examples/linear_stackups_demo.flow
 ```
 
 The exact Flow compiler revision used by CI is pinned in [the CI workflow](.github/workflows/ci.yml). To consume a module from another Flow package, use a path dependency on this repository and import, for example, `herbie.vehicle { QuarterCarParameters, QuarterCarState, quarterCarStep }`.
+
+## Equation-first models
+
+[The equation-first vehicle example](examples/equation_vehicle.flow) uses Flow's native `flow` declaration, `state`/`input`/`param`, `evolves as`, and an RK4 solver to describe longitudinal acceleration and the coupled sprung/unsprung vertical dynamics directly. It checks a closed-form constant-acceleration trajectory, cross-checks the generated quarter-car RK4 against `herbie.vehicle` and tests conservative energy. [Model scope and validation matrix](docs/validation.md).
+
+[The correlated tolerance-stack module](src/stackups.flow) evaluates affine dimension chains with independent worst-case intervals and positive-semidefinite-validated covariance, and rejects inconsistent statistics. It is not a 3D GD&T engine. See [manufacturing acceptance issue #6](https://github.com/flooooooooooow/herbie/issues/6).
 
 ## Design rules
 
