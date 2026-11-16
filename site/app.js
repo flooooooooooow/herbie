@@ -174,6 +174,7 @@ async function installViewer(){
  try{
   const {createCarViewer}=await import("./car3d.js");
   viewer=createCarViewer($("viewport3d"));
+  viewer.onPick(part=>setFocus(part));
   viewer.setFocus(focus);
   viewer.setCutaway($("cutaway").checked);
   viewer.setForces($("forces").checked);
