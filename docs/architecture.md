@@ -20,6 +20,7 @@ src/
   truss.flow         Local 2D truss element stiffness and force
   uncertainty.flow   First-order covariance propagation
   tolerances.flow    Interval clearance and statistical capability
+  stackups.flow      PSD-validated affine correlated dimension stacks
   thermal.flow       Lumped temperature evolution
   control.flow       Bounded-output PID
 tests/
