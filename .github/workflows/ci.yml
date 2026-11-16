@@ -39,7 +39,25 @@ jobs:
         run: ./.flow-toolchain/flow run examples/electric_drive_demo.flow
       - name: Run mapped-engine demonstration
         run: ./.flow-toolchain/flow run examples/engine_dyno_demo.flow
+      - name: Verify composed Flow full-car assembly
+        run: ./.flow-toolchain/flow run tests/full_car.flow
+      - name: Run composed Flow car example
+        run: ./.flow-toolchain/flow run examples/full_car_demo.flow
       - name: Run vehicle demo
         run: ./.flow-toolchain/flow run examples/quarter_car_demo.flow
       - name: Run manufacturing demo
         run: ./.flow-toolchain/flow run examples/manufacturing_demo.flow
+
+  browser-vehicle-lab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check browser JavaScript and regression tests
+        run: |
+          node --check site/model.js
+          node --check site/app.js
+          node --test tests/vehicle_lab.test.mjs
