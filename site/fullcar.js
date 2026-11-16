@@ -1,7 +1,7 @@
 /* Seven-coordinate vehicle ride model: heave, pitch, roll and four wheel vertical DOFs; four velocities as conjugates. Illustrative, not validated multibody dynamics. */
 export const cornerMeta = [{"id":"FL","axle":0,"side":1,"x":1.22,"z":0.79},{"id":"FR","axle":0,"side":-1,"x":1.22,"z":-0.79},{"id":"RL","axle":1,"side":1,"x":-1.48,"z":0.79},{"id":"RR","axle":1,"side":-1,"x":-1.48,"z":-0.79}];
 export const defaultRideParameters = {
-  "sprungMassKg": 1230,
+  "sprungMassKg": 1316,
   "pitchInertiaKgM2": 2460,
   "rollInertiaKgM2": 590,
   "cgHeightM": 0.52,
@@ -40,7 +40,7 @@ export const defaultRideParameters = {
     4300
   ],
   "wheelRadiusM": 0.325,
-  "totalMassKg": 1394,
+  "totalMassKg": 1480,
   "gravityMps2": 9.80665,
   "axleSpacingM": 2.7
 };
