@@ -53,6 +53,8 @@ jobs:
         run: ./.flow-toolchain/flow run tests/mna_voltage_sources.flow
       - name: Run ideal voltage source circuit demonstration
         run: ./.flow-toolchain/flow run examples/mna_voltage_sources_demo.flow
+      - name: Verify first-class Flow physical units
+        run: ./.flow-toolchain/flow run examples/suspension_units.flow
       - name: Run vehicle demo
         run: ./.flow-toolchain/flow run examples/quarter_car_demo.flow
       - name: Run manufacturing demo
@@ -70,4 +72,29 @@ jobs:
         run: |
           node --check site/model.js
           node --check site/app.js
+          node --check site/car3d.js
+          node --check site/fullcar.js
           node --test tests/vehicle_lab.test.mjs
+          node --test tests/fullcar_browser.test.mjs
+          node --test tests/site_contract.test.mjs
+
+  visual-webgl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install pinned browser test runner
+        run: |
+          npm install --ignore-scripts --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: Verify styled Three.js WebGL simulation in Chromium
+        run: node tests/pages_visual.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: herbie-vehicle-lab-screenshots
+          path: vehicle-lab-*.png
+          if-no-files-found: ignore
