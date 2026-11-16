@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101b2b">
+  <meta name="description" content="Herbie Vehicle Lab: a live educational automotive multiphysics and manufacturing tolerance simulator.">
+  <title>Vehicle Lab · Herbie</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="./" aria-label="Herbie Vehicle Lab"><span class="brand-mark">H</span><span><strong>HERBIE</strong><small>ENGINEERING LAB</small></span></a>
+    <nav aria-label="Main navigation"><a href="#simulation">Simulation</a><a href="#manufacturing">Manufacturing</a><a href="#assumptions">Model scope</a><a href="https://github.com/flooooooooooow/herbie">Source ↗</a></nav>
+  </header>
+  <main>
+    <section class="intro">
+      <div><div class="eyebrow"><span class="dot"></span> INTERACTIVE RESEARCH PROTOTYPE <span class="separator">/</span> VEHICLE · 01</div>
+        <h1>A car as a <em>system.</em></h1>
+        <p>Drive a coupled vehicle model. Watch the powertrain, tyres, steering, suspension, brakes and thermal state respond, then examine manufacturing clearances and sampled variability.</p>
+      </div>
+      <div class="intro-actions"><button id="toggle" class="primary" type="button">Pause simulation</button><button id="reset" class="secondary" type="button">Reset</button><button id="csv" class="secondary" type="button">Export CSV</button></div>
+    </section>
+    <section class="metrics" aria-label="Live telemetry">
+      <article><span>VEHICLE SPEED</span><div><strong id="speed">0.0</strong><small>km/h</small></div><div class="metric-note">Longitudinal chassis speed</div></article>
+      <article><span>ENGINE SPEED</span><div><strong id="rpm">850</strong><small>rpm</small></div><div class="metric-note" id="gear">Gear 1 · automatic</div></article>
+      <article><span>WHEEL FORCE</span><div><strong id="force">0</strong><small>N</small></div><div class="metric-note" id="traction">Grip utilization 0%</div></article>
+      <article><span>ENGINE TEMPERATURE</span><div><strong id="temperature">24.0</strong><small>°C</small></div><div class="metric-note" id="power">0 kW · shaft output</div></article>
+      <article><span>ELAPSED TIME</span><div><strong id="elapsed">0.0</strong><small>s</small></div><div class="metric-note" id="distance">0 m travelled</div></article>
+    </section>
+    <section class="workbench" id="simulation">
+      <div class="panel diagram-panel">
+        <div class="panel-heading"><div><div class="eyebrow">01 / SYSTEM VIEW</div><h2>Vehicle architecture</h2></div><span class="live-label"><span class="dot"></span> SELECT A SUBSYSTEM</span></div>
+        <div class="vehicle-diagram">
+          <svg viewBox="0 0 730 340" role="img" aria-label="Simplified vehicle layout with body shell, drivetrain, radiator, front and rear wheels, and suspension">
+            <defs><linearGradient id="bodyGrad" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#23394b"/><stop offset="1" stop-color="#132638"/></linearGradient></defs>
+            <path d="M62 223 L78 166 Q93 151 138 148 L217 135 L268 88 Q287 68 334 65 L459 65 Q492 66 523 97 L577 146 L661 160 Q693 165 702 191 L705 223 L684 237 L70 237 Z" fill="url(#bodyGrad)" stroke="#67879e" stroke-width="2"/>
+            <path d="M247 136 L286 96 Q303 82 330 82 L458 82 Q484 83 505 105 L540 145 Z" fill="#1a4752" stroke="#7895a4" stroke-width="2"/>
+            <path d="M381 83 L381 145" stroke="#567483" stroke-width="3"/><path d="M75 222 L700 222" stroke="#3b596b" stroke-width="2"/>
+            <g stroke="#48677b" stroke-width="5" stroke-linecap="round"><path d="M174 218 L174 183 L221 183"/><path d="M562 218 L562 183 L519 183"/><path d="M295 191 L444 191"/></g>
+            <g><circle cx="177" cy="237" r="48" fill="#07111d" stroke="#7d9aa9" stroke-width="7"/><circle cx="177" cy="237" r="25" fill="#24384a" stroke="#b6ced9" stroke-width="4"/><circle cx="564" cy="237" r="48" fill="#07111d" stroke="#7d9aa9" stroke-width="7"/><circle cx="564" cy="237" r="25" fill="#24384a" stroke="#b6ced9" stroke-width="4"/></g>
+            <rect x="480" y="157" width="64" height="47" rx="6" fill="#d49d57" opacity=".85"/><rect x="306" y="159" width="110" height="44" rx="6" fill="#466d8c"/><path d="M544 176 L572 176" stroke="#e4bf87" stroke-width="6"/><rect x="115" y="163" width="20" height="42" rx="4" fill="#69a5a2"/><rect x="273" y="155" width="14" height="50" rx="2" fill="#8ba7b7"/>
+            <path d="M100 306 L635 306" stroke="#355165" stroke-width="2" stroke-dasharray="5 8"/><text x="103" y="327" fill="#6c889c" font-size="12" letter-spacing="2">REAR AXLE</text><text x="540" y="327" fill="#6c889c" font-size="12" letter-spacing="2">FRONT AXLE</text>
+          </svg>
+          <button type="button" class="part active" data-part="engine" style="left:70%;top:49%">ENGINE</button>
+          <button type="button" class="part" data-part="gearbox" style="left:55%;top:57%">GEARBOX</button>
+          <button type="button" class="part" data-part="suspension" style="left:75%;top:78%">SUSPENSION</button>
+          <button type="button" class="part" data-part="tyres" style="left:24%;top:78%">TYRES</button>
+          <button type="button" class="part" data-part="brakes" style="left:77%;top:64%">BRAKES</button>
+          <button type="button" class="part" data-part="steering" style="left:42%;top:49%">STEERING</button>
+          <button type="button" class="part" data-part="cooling" style="left:87%;top:44%">COOLING</button>
+          <button type="button" class="part" data-part="chassis" style="left:51%;top:26%">CHASSIS</button>
+        </div>
+        <div class="inspector"><div class="eyebrow">SELECTED COMPONENT</div><div class="inspector-flex"><div><h3 id="component-title">Engine & torque map</h3><p id="component-copy">Mapped petrol-engine torque and simplified shaft power.</p></div><div class="component-readout"><strong id="component-value">0 Nm</strong><small id="component-caption">Crankshaft torque</small></div></div><a id="component-source" href="https://github.com/flooooooooooow/herbie/blob/main/src/engine.flow" target="_blank" rel="noopener">Inspect Flow source ↗</a></div>
+      </div>
+      <div class="panel control-panel">
+        <div class="panel-heading"><div><div class="eyebrow">02 / INPUTS</div><h2>Driver & environment</h2></div><span class="live-label">FIXED STEP 10 ms</span></div>
+        <div class="controls">
+          <label>Throttle <output id="throttle-value">36%</output><input type="range" id="throttle" min="0" max="100" value="36"></label>
+          <label>Brake <output id="brake-value">0%</output><input type="range" id="brake" min="0" max="100" value="0"></label>
+          <label>Steering <output id="steer-value">0.00 rad</output><input type="range" id="steer" min="-12" max="12" value="0"></label>
+          <label>Road undulation <output id="roughness-value">20 mm</output><input type="range" id="roughness" min="0" max="90" value="20"></label>
+          <label>Tyre-road friction <output id="mu-value">0.85 μ</output><input type="range" id="mu" min="15" max="130" value="85"></label>
+          <label>Road gradient <output id="grade-value">0°</output><input type="range" id="grade" min="-10" max="10" value="0"></label>
+        </div>
+        <div class="presets"><span class="eyebrow">SCENARIO PRESETS</span><div><button data-preset="launch" type="button">Launch</button><button data-preset="braking" type="button">Emergency stop</button><button data-preset="corner" type="button">Cornering</button><button data-preset="rough" type="button">Rough road</button></div></div>
+      </div>
+    </section>
+    <section class="workbench secondary-grid">
+      <div class="panel"><div class="panel-heading"><div><div class="eyebrow">03 / TRAJECTORY</div><h2>Planar vehicle response</h2></div><span class="live-label">TOP-DOWN · MOVING FRAME</span></div><canvas id="track" width="900" height="360" aria-label="Live vehicle trajectory in metres"></canvas><p class="aside">Kinematic low-speed / linear-tire bicycle at speed. Local vehicle frame follows the car.</p></div>
+      <div class="panel"><div class="panel-heading"><div><div class="eyebrow">04 / TRACE</div><h2>Speed & engine heat</h2></div><span class="live-label">LAST 35 SECONDS</span></div><canvas id="graph" width="900" height="360" aria-label="Time series of vehicle speed and engine temperature"></canvas><div class="legend"><span><i class="blue"></i> Speed (km/h)</span><span><i class="orange"></i> Engine (°C)</span></div></div>
+    </section>
+    <section class="manufacturing panel" id="manufacturing">
+      <div class="panel-heading"><div><div class="eyebrow">05 / MANUFACTURING</div><h2>Fit & tolerance laboratory</h2><p class="muted">20.00 ± 0.05 mm bore vs 19.90 ± 0.02 mm shaft, before scaling. Independent normal-process approximation, ±3σ = half-width.</p></div><span class="live-label">1,500 SEEDED SAMPLES</span></div>
+      <div class="manufacturing-grid">
+        <div><label class="tolerance-label">Tolerance multiplier <output id="tolerance-value">1.00×</output><input type="range" id="tolerance" min="25" max="300" value="100"></label><label class="tolerance-label">Temperature shift <output id="heat-value">0°C</output><input type="range" id="heat" min="-40" max="140" value="0"></label><p class="aside">Bore thermal expansion 12 × 10⁻⁶/K; shaft 23 × 10⁻⁶/K. Clearance specification: 0 to 0.15 mm. Separate from drive-cycle engine temperature.</p><div class="tolerance-metrics"><div><small>WORST-CASE CLEARANCE</small><strong id="range-value">0.030–0.170 mm</strong></div><div><small>SAMPLED PASS RATE</small><strong id="pass-value">--</strong></div><div><small>SAMPLED Cpk</small><strong id="cpk-value">--</strong></div></div></div>
+        <div><canvas id="histogram" width="900" height="420" aria-label="Seeded Monte Carlo histogram of assembly clearances"></canvas><p class="aside" id="sample-note">Pass rate is illustrative, not a certified capability or reliability estimate.</p></div>
+      </div>
+    </section>
+    <section class="scope" id="assumptions"><div class="eyebrow">MODEL INTEGRITY</div><h2>What is simulated, and what is not</h2><div class="scope-grid"><p><strong>Dynamic, live:</strong> throttle-to-tractive-force mapping, shift heuristic, aerodynamic drag, rolling resistance, road grade, 2D linear bicycle dynamics with an approximate friction circle, front/rear representative RK4 quarter-car response, engine and brake lumped heating, and diagnostic force/stress readouts.</p><p><strong>Manufacturing:</strong> worst-case interval clearance with differential thermal expansion, seeded independent-normal assembly sampling, empirical pass fraction and sample Cpk. The applied tolerances are for a demonstration fit, not actual vehicle CAD geometry or a complete GD&T stack.</p><p><strong>Excluded:</strong> detailed parts, gear/clutch transients, tyre slip relaxation, axle pitch/roll, kinematic hard-points, nonlinear contacts, FEA, combustion and cooling networks, BMS, power electronics, emissions, certified material properties or qualified real-time timing. The chassis stress is a scalar illustrative force/area calculation, not a structural assessment.</p></div><p class="disclosure">The browser engine is a JavaScript reference port of Herbie-style reduced-order equations, <strong>not a Flow/WASM build</strong>. Flow source modules and Flow native regression suites remain the authoritative library work. No engineering decisions or safety claims should be based on this demo.</p></section>
+  </main>
+  <footer><span>HERBIE / ENGINEERING SYSTEMS</span><span>EXPERIMENTAL · SI UNITS · MIT</span><a href="https://github.com/flooooooooooow/herbie">GITHUB ↗</a></footer>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
