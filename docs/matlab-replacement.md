@@ -11,8 +11,8 @@ Herbie is an engineering platform project, not a claim of MATLAB feature parity.
 | Control System Toolbox | Discrete PID, later state space, LQR, MPC, observers | PID only |
 | Simulink Real-Time / HIL | Scheduled native target runtime, deterministic I/O | Not implemented |
 | Symbolic Math / Optimization | Automatic differentiation, constrained optimization, sensitivity | Flow ecosystem integration planned |
-| PDE / FEA / stress | Linear-elastic formulas, later sparse mesh/FEM/constitutive models | Basic formulas only |
-| Statistics/quality/tolerance | Interval stackups, RSS, Cp/Cpk, then GD&T, process distributions | Initial kernels |
+| PDE / FEA / stress | Linear-elastic formulas and truss local stiffness, later sparse mesh/FEM/constitutive models | Elementary formulas and local truss only |
+| Statistics/quality/tolerance | Interval stackups, RSS, Cp/Cpk, correlated covariance, then GD&T and process distributions | Initial deterministic kernels |
 | Code generation / embedded | Flow's C backend, target validation and qualified builds | General compiler available; no target qualification |
 
 ## Ordered delivery gates

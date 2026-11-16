@@ -1,0 +1,71 @@
+import herbie.truss { TrussElement2D, truss2DLength, truss2DStiffness, truss2DExtension, truss2DAxialForce, truss2DEnergy }
+import herbie.uncertainty { linearVariance2, linearVariance3, gaussianSigmaInterval, clearanceSigma }
+
+function near(actual: f64, expected: f64, tolerance: f64) -> bool {
+    return actual >= expected - tolerance and actual <= expected + tolerance
+}
+
+function main() -> i32 {
+    let horizontal: TrussElement2D = TrussElement2D {
+        x1: 0.0, y1: 0.0, x2: 1.0, y2: 0.0,
+        crossSectionArea: 0.0001, youngModulus: 200000000000.0
+    }
+    let mut stiffness: array<f64, 16> = [0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0]
+    if truss2DStiffness(horizontal, &stiffness[0]) != 1 {
+        return 1
+    }
+    if not near(truss2DLength(horizontal), 1.0, 1.0e-12) {
+        return 2
+    }
+    if not near(stiffness[0], 20000000.0, 1.0e-6) {
+        return 3
+    }
+    if not near(stiffness[2], -20000000.0, 1.0e-6) {
+        return 4
+    }
+    if not near(stiffness[5], 0.0, 1.0e-9) {
+        return 5
+    }
+    if not near(stiffness[10], 20000000.0, 1.0e-6) {
+        return 6
+    }
+    if not near(truss2DExtension(horizontal, 0.0, 0.0, 0.001, 0.0), 0.001, 1.0e-12) {
+        return 7
+    }
+    if not near(truss2DAxialForce(horizontal, 0.0, 0.0, 0.001, 0.0), 20000.0, 1.0e-9) {
+        return 8
+    }
+    if not near(truss2DEnergy(horizontal, 0.0, 0.0, 0.001, 0.0), 10.0, 1.0e-9) {
+        return 9
+    }
+    let degenerate: TrussElement2D = TrussElement2D {
+        x1: 0.0, y1: 0.0, x2: 0.0, y2: 0.0,
+        crossSectionArea: 0.0001, youngModulus: 200000000000.0
+    }
+    if truss2DStiffness(degenerate, &stiffness[0]) != 0 {
+        return 10
+    }
+    if not near(linearVariance2(1.0, 3.0, -1.0, 4.0, 0.0), 25.0, 1.0e-12) {
+        return 11
+    }
+    if not near(linearVariance2(1.0, 3.0, -1.0, 4.0, 1.0), 1.0, 1.0e-12) {
+        return 12
+    }
+    if not near(linearVariance3(1.0, 1.0, 1.0, 2.0, 1.0, 3.0, 0.0, 0.0, 0.0), 14.0, 1.0e-12) {
+        return 13
+    }
+    if not near(clearanceSigma(3.0, 4.0, 0.0), 5.0, 1.0e-12) {
+        return 14
+    }
+    let interval = gaussianSigmaInterval(10.0, 0.2, 3.0)
+    if not near(interval.lower, 9.4, 1.0e-12) {
+        return 15
+    }
+    if not near(interval.upper, 10.6, 1.0e-12) {
+        return 16
+    }
+    println("PASS truss and correlated uncertainty references")
+    return 0
+}

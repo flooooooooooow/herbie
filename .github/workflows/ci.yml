@@ -27,7 +27,7 @@ jobs:
         run: ./.flow-toolchain/flow run tests/engineering_smoke.flow
       - name: Check conservative quarter-car energy
         run: ./.flow-toolchain/flow run tests/vehicle_energy.flow
-      - name: Run vehicle demo
+      - name: Check truss element and correlated tolerance models\n        run: ./.flow-toolchain/flow run tests/truss_uncertainty.flow\n      - name: Run vehicle demo
         run: ./.flow-toolchain/flow run examples/quarter_car_demo.flow
       - name: Run manufacturing demo
         run: ./.flow-toolchain/flow run examples/manufacturing_demo.flow

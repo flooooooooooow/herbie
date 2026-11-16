@@ -1,0 +1,37 @@
+# @module herbie.uncertainty
+# First-order uncertainty propagation with explicit correlation assumptions.
+
+export struct GaussianInterval {
+    lower: f64,
+    upper: f64
+}
+
+export function linearVariance2(a: f64, sigmaA: f64, b: f64, sigmaB: f64, correlationAB: f64) -> f64 {
+    return a * a * sigmaA * sigmaA
+        + b * b * sigmaB * sigmaB
+        + 2.0 * a * b * correlationAB * sigmaA * sigmaB
+}
+
+export function linearVariance3(
+    a: f64, sigmaA: f64, b: f64, sigmaB: f64, c: f64, sigmaC: f64,
+    correlationAB: f64, correlationAC: f64, correlationBC: f64
+) -> f64 {
+    return a * a * sigmaA * sigmaA
+        + b * b * sigmaB * sigmaB
+        + c * c * sigmaC * sigmaC
+        + 2.0 * a * b * correlationAB * sigmaA * sigmaB
+        + 2.0 * a * c * correlationAC * sigmaA * sigmaC
+        + 2.0 * b * c * correlationBC * sigmaB * sigmaC
+}
+
+export function gaussianSigmaInterval(mean: f64, sigma: f64, zScore: f64) -> GaussianInterval {
+    return GaussianInterval {
+        lower: mean - zScore * sigma,
+        upper: mean + zScore * sigma
+    }
+}
+
+export function clearanceSigma(holeSigma: f64, shaftSigma: f64, correlation: f64) -> f64 {
+    let variance: f64 = linearVariance2(1.0, holeSigma, -1.0, shaftSigma, correlation)
+    return sqrt(variance)
+}
