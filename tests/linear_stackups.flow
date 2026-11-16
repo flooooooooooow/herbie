@@ -1,0 +1,89 @@
+import herbie.stackups { LinearToleranceStack, LinearStackResult, stackEvaluate, stackCovariancePsd }
+
+function near(a: f64, b: f64, epsilon: f64) -> bool {
+    return a >= b - epsilon and a <= b + epsilon
+}
+
+function main() -> i32 {
+    # Bore-minus-shaft. Nominals/limits measured in metres; covariance m^2.
+    let mut nominal: array<f64, 2> = [0.020, 0.0199]
+    let mut tolerance: array<f64, 2> = [0.00005, 0.00002]
+    let mut coefficients: array<f64, 2> = [1.0, -1.0]
+    let mut covariance: array<f64, 4> = [9.0e-10, 6.0e-10, 6.0e-10, 4.0e-10]
+    let mut scratch: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let stack: LinearToleranceStack = LinearToleranceStack {
+        count: 2,
+        nominal: &nominal[0],
+        halfWidths: &tolerance[0],
+        coefficients: &coefficients[0],
+        covariance: &covariance[0]
+    }
+    let mut out: LinearStackResult = LinearStackResult {
+        nominal: 0.0, minimum: 0.0, maximum: 0.0,
+        variance: 0.0, sigma: 0.0, largestWorstCaseContributor: -1
+    }
+    if not stackEvaluate(stack, &out, &scratch[0], 1.0e-12) {
+        println("FAIL correlated stack rejected")
+        return 1
+    }
+    if not near(out.nominal, 0.0001, 1.0e-13)
+        or not near(out.minimum, 0.00003, 1.0e-13)
+        or not near(out.maximum, 0.00017, 1.0e-13) {
+        println("FAIL interval")
+        return 2
+    }
+    # Perfectly correlated 30 and 20 micron processes: clearance sigma=10 um.
+    if not near(out.sigma, 0.00001, 1.0e-12) or out.largestWorstCaseContributor != 0 {
+        println("FAIL correlated sigma or contributor")
+        return 3
+    }
+    # Independent versions of the same two processes: sqrt(30^2+20^2) um.
+    covariance[1] = 0.0
+    covariance[2] = 0.0
+    if not stackEvaluate(stack, &out, &scratch[0], 1.0e-12) {
+        return 4
+    }
+    if not near(out.variance, 1.3e-9, 1.0e-19) {
+        println("FAIL independent RSS")
+        return 5
+    }
+    # Valid anticorrelation increases differential uncertainty.
+    covariance[1] = -6.0e-10
+    covariance[2] = -6.0e-10
+    if not stackEvaluate(stack, &out, &scratch[0], 1.0e-12) {
+        return 6
+    }
+    if not near(out.sigma, 0.00005, 1.0e-12) {
+        println("FAIL anticorrelation")
+        return 7
+    }
+    # A covariance larger than the Cauchy-Schwarz bound is not PSD.
+    covariance[1] = 1.0e-9
+    covariance[2] = 1.0e-9
+    if stackEvaluate(stack, &out, &scratch[0], 1.0e-12) {
+        println("FAIL non-PSD covariance accepted")
+        return 8
+    }
+    covariance[1] = 0.0
+    covariance[2] = 1.0e-10
+    if stackEvaluate(stack, &out, &scratch[0], 1.0e-12) {
+        println("FAIL asymmetric covariance accepted")
+        return 9
+    }
+    covariance[1] = 0.0
+    covariance[2] = 0.0
+    tolerance[1] = -0.00002
+    if stackEvaluate(stack, &out, &scratch[0], 1.0e-12) {
+        println("FAIL negative half width accepted")
+        return 10
+    }
+    tolerance[1] = 0.00002
+    # Single exact dimension, semidefinite zero covariance.
+    let mut exact: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    if not stackCovariancePsd(&exact[0], 2, &scratch[0], 1.0e-12) {
+        println("FAIL zero covariance")
+        return 11
+    }
+    println("PASS affine worst-case and correlated PSD stackup")
+    return 0
+}
