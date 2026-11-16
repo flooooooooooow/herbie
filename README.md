@@ -8,6 +8,7 @@
 
 | Module | Models and numerical methods | Validity boundary |
 | --- | --- | --- |
+| `herbie.mna` | Dense DC modified nodal analysis for resistors, oriented current sources and ideal voltage sources, KCL/KVL residual, pivoted solve | Small resistive DC circuits only; no nonlinear, transient, AC or sparse solver |
 | `herbie.circuits` | Sparse-API-shaped dense DC nodal assembly, resistors, current sources, Gaussian elimination with partial pivoting and KCL residual | Small linear resistive DC circuits only; no voltage-source MNA or nonlinear/transient components |\n| `herbie.electrical` | Closed-form RC/RL transients; series RLC RK4 and stored energy | Ideal lumped/passive networks only, no circuit graph, switching devices or circuit DAE |
 | `herbie.mechanics` | Single-axis rotational inertia, torsional stiffness/damping RK4 and ideal fixed-ratio gear power balance | No joints, bearing dynamics, contact, clutch or multibody assembly |
 | `herbie.motors` | Brushed permanent-magnet DC motor, coupled armature/rotor RK4, energy and torque | Lumped motor only; no inverter, commutation, saturation or thermal losses |
@@ -51,6 +52,8 @@ flow run examples/full_car_demo.flow
 flow run examples/equation_vehicle.flow
 flow run tests/linear_stackups.flow
 flow run examples/linear_stackups_demo.flow
+flow run tests/mna_voltage_sources.flow
+flow run examples/mna_voltage_sources_demo.flow
 ```
 
 The exact Flow compiler revision used by CI is pinned in [the CI workflow](.github/workflows/ci.yml). To consume a module from another Flow package, use a path dependency on this repository and import, for example, `herbie.vehicle { QuarterCarParameters, QuarterCarState, quarterCarStep }`.
@@ -60,6 +63,10 @@ The exact Flow compiler revision used by CI is pinned in [the CI workflow](.gith
 [The equation-first vehicle example](examples/equation_vehicle.flow) uses Flow's native `flow` declaration, `state`/`input`/`param`, `evolves as`, and an RK4 solver to describe longitudinal acceleration and the coupled sprung/unsprung vertical dynamics directly. It checks a closed-form constant-acceleration trajectory, cross-checks the generated quarter-car RK4 against `herbie.vehicle` and tests conservative energy. [Model scope and validation matrix](docs/validation.md).
 
 [The correlated tolerance-stack module](src/stackups.flow) evaluates affine dimension chains with independent worst-case intervals and positive-semidefinite-validated covariance, and rejects inconsistent statistics. It is not a 3D GD&T engine. See [manufacturing acceptance issue #6](https://github.com/flooooooooooow/herbie/issues/6).
+
+## DC circuit network with voltage sources
+
+[The new MNA kernel](src/mna.flow) assembles an augmented conductance matrix for linear resistors, oriented current injections, and independent ideal voltage sources. Its caller-owned dense pivoted solver reports both node voltages and source currents, and measures all KCL/KVL residuals. [The executable reference circuit](tests/mna_voltage_sources.flow) checks a 12 V two-resistor divider, source/load power balance, a superimposed current source, invalid stamps, and floating-network rejection. This advances [electrical issue #11](https://github.com/flooooooooooow/herbie/issues/11) without claiming transient/SPICE parity.
 
 ## Design rules
 

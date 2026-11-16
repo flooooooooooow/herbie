@@ -8,7 +8,8 @@ The first implementation is intentionally small:
 
 ```
 src/
-  circuits.flow      Nodal circuit assembly and dense pivoted DC solve\n  electrical.flow     Lumped passive RC/RL/RLC
+  circuits.flow      Nodal circuit assembly and dense pivoted DC solve
+  mna.flow           Dense DC MNA with ideal voltage-source branch unknowns\n  electrical.flow     Lumped passive RC/RL/RLC
   mechanics.flow      Single-axis rotation and ideal gear
   motors.flow         Coupled armature/rotor DC motor
   battery.flow        Thevenin RC battery and SOC

@@ -1,0 +1,89 @@
+import herbie.mna { MnaNetwork, mnaClear, mnaStampResistor, mnaStampCurrentSource, mnaStampVoltageSource, mnaSolve, mnaMaxResidual, mnaUnknownCount }
+
+function near(a: f64, b: f64, tol: f64) -> bool {
+    return a >= b - tol and a <= b + tol
+}
+
+function main() -> i32 {
+    # 12 V source, 1 kOhm top resistor, 1 kOhm to ground.
+    # 3 unknowns: V0=12 V, V1=6 V, current through ideal source=-6 mA.
+    let mut matrix: array<f64, 9> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut rhs: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut solution: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut scratch: array<f64, 9> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut workRhs: array<f64, 3> = [0.0, 0.0, 0.0]
+    let network: MnaNetwork = MnaNetwork {
+        nodeCount: 2, voltageSourceCount: 1, matrix: &matrix[0], rhs: &rhs[0]
+    }
+    if mnaUnknownCount(network) != 3 or not mnaClear(network) {
+        return 1
+    }
+    if not mnaStampVoltageSource(network, 0, 0, -1, 12.0) {
+        return 2
+    }
+    if not mnaStampResistor(network, 0, 1, 1000.0)
+        or not mnaStampResistor(network, 1, -1, 1000.0) {
+        return 3
+    }
+    if not mnaSolve(network, &solution[0], &scratch[0], &workRhs[0], 1.0e-12) {
+        println("FAIL voltage-source MNA solve")
+        return 4
+    }
+    if not near(solution[0], 12.0, 1.0e-10)
+        or not near(solution[1], 6.0, 1.0e-10)
+        or not near(solution[2], -0.006, 1.0e-12) {
+        println("FAIL MNA voltage/current signs")
+        return 5
+    }
+    if mnaMaxResidual(network, &solution[0]) > 1.0e-12 {
+        println("FAIL MNA KCL/KVL")
+        return 6
+    }
+    # Power in two resistors = 36 mW + 36 mW = 72 mW.
+    # Source delivers -(V * I_source) = 72 mW.
+    let resistorPower: f64 = (solution[0] - solution[1]) * (solution[0] - solution[1]) / 1000.0
+        + solution[1] * solution[1] / 1000.0
+    let sourceDelivered: f64 = -12.0 * solution[2]
+    if not near(resistorPower, sourceDelivered, 1.0e-12) {
+        println("FAIL source and load power balance")
+        return 7
+    }
+    # Source orientation and invalid stamp guard.
+    if mnaStampVoltageSource(network, 1, 0, -1, 10.0)
+        or mnaStampVoltageSource(network, 0, 0, 0, 10.0)
+        or mnaStampResistor(network, 0, -1, 0.0)
+        or mnaStampCurrentSource(network, -1, -1, 1.0) {
+        return 8
+    }
+    # Add 1 mA ideal current source ground -> node 1. Divider KCL changes,
+    # voltage source still enforces 12 V and upper resistor 5.5 mA.
+    if not mnaStampCurrentSource(network, -1, 1, 0.001) {
+        return 9
+    }
+    if not mnaSolve(network, &solution[0], &scratch[0], &workRhs[0], 1.0e-12) {
+        return 10
+    }
+    if not near(solution[1], 6.5, 1.0e-10) or not near(solution[2], -0.0055, 1.0e-10) {
+        println("FAIL current+voltage sources coupled")
+        return 11
+    }
+    # A floating network (no reference) must be rejected.
+    let mut floatingMatrix: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut floatingRhs: array<f64, 2> = [0.0, 0.0]
+    let mut floatingSolution: array<f64, 2> = [0.0, 0.0]
+    let mut floatingScratch: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut floatingWork: array<f64, 2> = [0.0, 0.0]
+    let floating: MnaNetwork = MnaNetwork {
+        nodeCount: 2, voltageSourceCount: 0,
+        matrix: &floatingMatrix[0], rhs: &floatingRhs[0]
+    }
+    if not mnaClear(floating) or not mnaStampResistor(floating, 0, 1, 1000.0) {
+        return 12
+    }
+    if mnaSolve(floating, &floatingSolution[0], &floatingScratch[0], &floatingWork[0], 1.0e-12) {
+        println("FAIL floating network solved")
+        return 13
+    }
+    println("PASS ideal-voltage-source DC MNA and power balance")
+    return 0
+}

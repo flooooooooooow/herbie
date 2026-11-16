@@ -1,0 +1,26 @@
+import herbie.mna { MnaNetwork, mnaClear, mnaStampResistor, mnaStampVoltageSource, mnaSolve, mnaMaxResidual }
+
+function main() -> i32 {
+    let mut a: array<f64, 9> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut rhs: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut v: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut scratch: array<f64, 9> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut scratchRhs: array<f64, 3> = [0.0, 0.0, 0.0]
+    let n: MnaNetwork = MnaNetwork {
+        nodeCount: 2, voltageSourceCount: 1, matrix: &a[0], rhs: &rhs[0]
+    }
+    if not mnaClear(n) { return 1 }
+    if not mnaStampVoltageSource(n, 0, 0, -1, 12.0) { return 2 }
+    if not mnaStampResistor(n, 0, 1, 1000.0) { return 3 }
+    if not mnaStampResistor(n, 1, -1, 1000.0) { return 4 }
+    if not mnaSolve(n, &v[0], &scratch[0], &scratchRhs[0], 1.0e-12) { return 5 }
+    println("Node 0 voltage (V):")
+    println(v[0])
+    println("Node 1 voltage (V):")
+    println(v[1])
+    println("Voltage-source current (A, plus to minus):")
+    println(v[2])
+    println("MNA KCL/KVL max residual:")
+    println(mnaMaxResidual(n, &v[0]))
+    return 0
+}
