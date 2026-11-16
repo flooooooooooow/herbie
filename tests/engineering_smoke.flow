@@ -1,0 +1,172 @@
+import herbie.vehicle { QuarterCarParameters, QuarterCarState, quarterCarStep, BicycleParameters, BicycleState, bicycleStep }
+import herbie.structures { axialStress, axialExtension, planeStressVonMises, goodmanUtilization, fullyConstrainedThermalStress }
+import herbie.tolerances { DimensionTolerance, clearanceRange, rssSigma3, processCpk, nominalThermalLength }
+import herbie.control { PIDParameters, PIDState, pidStep }
+import herbie.thermal { ThermalParameters, ThermalState, thermalStep, thermalTimeConstant }
+import herbie.powertrain { LongitudinalParameters, LongitudinalState, longitudinalStep }
+
+function near(actual: f64, expected: f64, tolerance: f64) -> bool {
+    return actual >= expected - tolerance and actual <= expected + tolerance
+}
+
+function testQuarterCar() -> i32 {
+    let p: QuarterCarParameters = QuarterCarParameters {
+        sprungMass: 300.0, unsprungMass: 40.0,
+        suspensionStiffness: 16000.0, suspensionDamping: 1200.0,
+        tireStiffness: 200000.0, tireDamping: 0.0
+    }
+    let zero: QuarterCarState = QuarterCarState {
+        sprungPosition: 0.0, sprungVelocity: 0.0,
+        unsprungPosition: 0.0, unsprungVelocity: 0.0
+    }
+    let unchanged: QuarterCarState = quarterCarStep(zero, p, 0.0, 0.0, 0.001)
+    if not near(unchanged.sprungPosition, 0.0, 1.0e-12) {
+        return 1
+    }
+    if not near(unchanged.unsprungVelocity, 0.0, 1.0e-12) {
+        return 2
+    }
+    let bumped: QuarterCarState = quarterCarStep(zero, p, 0.01, 0.0, 0.001)
+    if bumped.unsprungVelocity <= 0.0 {
+        return 3
+    }
+    if bumped.unsprungPosition <= 0.0 {
+        return 4
+    }
+    return 0
+}
+
+function testBicycle() -> i32 {
+    let p: BicycleParameters = BicycleParameters {
+        mass: 1500.0, yawInertia: 2500.0,
+        frontAxleDistance: 1.2, rearAxleDistance: 1.6,
+        frontCorneringStiffness: 80000.0, rearCorneringStiffness: 80000.0
+    }
+    let s: BicycleState = BicycleState {
+        x: 0.0, y: 0.0, yaw: 0.0,
+        longitudinalVelocity: 15.0, lateralVelocity: 0.0, yawRate: 0.0
+    }
+    let next: BicycleState = bicycleStep(s, p, 0.02, 0.0, 0.001)
+    if next.yawRate <= 0.0 or next.lateralVelocity <= 0.0 {
+        return 1
+    }
+    if not near(next.x, 0.015, 1.0e-12) {
+        return 2
+    }
+    return 0
+}
+
+function testStructures() -> i32 {
+    if not near(axialStress(1000.0, 0.0001), 10000000.0, 0.0001) {
+        return 1
+    }
+    if not near(axialExtension(1000.0, 0.1, 200000000000.0, 0.0001), 0.000005, 1.0e-12) {
+        return 2
+    }
+    if not near(planeStressVonMises(100000000.0, 0.0, 0.0), 100000000.0, 0.01) {
+        return 3
+    }
+    if not near(goodmanUtilization(200000000.0, 100000000.0, 400000000.0, 800000000.0), 0.625, 1.0e-12) {
+        return 4
+    }
+    if not near(fullyConstrainedThermalStress(200000000000.0, 0.000012, 50.0), -120000000.0, 0.01) {
+        return 5
+    }
+    return 0
+}
+
+function testTolerances() -> i32 {
+    let hole: DimensionTolerance = DimensionTolerance { nominal: 0.020, lowerDeviation: -0.00005, upperDeviation: 0.00005 }
+    let shaft: DimensionTolerance = DimensionTolerance { nominal: 0.0199, lowerDeviation: -0.00002, upperDeviation: 0.00002 }
+    let gap = clearanceRange(hole, shaft)
+    if not near(gap.lower, 0.00003, 1.0e-12) {
+        return 1
+    }
+    if not near(gap.upper, 0.00017, 1.0e-12) {
+        return 2
+    }
+    if not near(rssSigma3(3.0, 4.0, 0.0), 5.0, 1.0e-12) {
+        return 3
+    }
+    if not near(processCpk(10.0, 0.1, 9.4, 10.6), 2.0, 1.0e-12) {
+        return 4
+    }
+    if not near(nominalThermalLength(1.0, 0.000012, 50.0), 1.0006, 1.0e-12) {
+        return 5
+    }
+    return 0
+}
+
+function testControl() -> i32 {
+    let p: PIDParameters = PIDParameters {
+        kp: 0.0, ki: 1.0, kd: 0.0,
+        outputMinimum: -5.0, outputMaximum: 5.0,
+        integralMinimum: -10.0, integralMaximum: 10.0
+    }
+    let s: PIDState = PIDState { integral: 0.0, previousMeasurement: 0.0, initialized: false }
+    let first = pidStep(s, p, 1.0, 0.0, 1.0)
+    if not near(first.output, 1.0, 1.0e-12) {
+        return 1
+    }
+    let saturated = pidStep(first.state, p, 100.0, 0.0, 1.0)
+    if not near(saturated.output, 1.0, 1.0e-12) {
+        return 2
+    }
+    return 0
+}
+
+function testThermalAndPowertrain() -> i32 {
+    let thermal: ThermalParameters = ThermalParameters {
+        mass: 2.0, specificHeatCapacity: 900.0,
+        heatTransferCoefficient: 10.0, exposedArea: 0.5
+    }
+    if not near(thermalTimeConstant(thermal), 360.0, 1.0e-12) {
+        return 1
+    }
+    let heated: ThermalState = thermalStep(ThermalState { temperature: 20.0 }, thermal, 20.0, 1000.0, 1.0)
+    if not near(heated.temperature, 20.55555555555556, 1.0e-9) {
+        return 2
+    }
+    let car: LongitudinalParameters = LongitudinalParameters {
+        vehicleMass: 1500.0, wheelRadius: 0.3, dragArea: 2.2,
+        dragCoefficient: 0.0, airDensity: 1.225,
+        rollingResistanceCoefficient: 0.0
+    }
+    let moved: LongitudinalState = longitudinalStep(LongitudinalState { distance: 0.0, speed: 0.0 }, car, 450.0, 0.0, 1.0)
+    if not near(moved.speed, 1.0, 1.0e-12) {
+        return 3
+    }
+    if not near(moved.distance, 0.5, 1.0e-12) {
+        return 4
+    }
+    return 0
+}
+
+function main() -> i32 {
+    if testQuarterCar() != 0 {
+        println("FAIL quarter car")
+        return 1
+    }
+    if testBicycle() != 0 {
+        println("FAIL bicycle")
+        return 2
+    }
+    if testStructures() != 0 {
+        println("FAIL structures")
+        return 3
+    }
+    if testTolerances() != 0 {
+        println("FAIL tolerances")
+        return 4
+    }
+    if testControl() != 0 {
+        println("FAIL PID")
+        return 5
+    }
+    if testThermalAndPowertrain() != 0 {
+        println("FAIL thermal/powertrain")
+        return 6
+    }
+    println("PASS Herbie engineering smoke")
+    return 0
+}

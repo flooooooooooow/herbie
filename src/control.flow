@@ -1,0 +1,55 @@
+# @module herbie.control
+# Discrete PID with derivative on measurement and conditional anti-windup.
+
+export struct PIDParameters {
+    kp: f64,
+    ki: f64,
+    kd: f64,
+    outputMinimum: f64,
+    outputMaximum: f64,
+    integralMinimum: f64,
+    integralMaximum: f64
+}
+
+export struct PIDState {
+    integral: f64,
+    previousMeasurement: f64,
+    initialized: bool
+}
+
+export struct PIDResult {
+    state: PIDState,
+    output: f64
+}
+
+function pidClamp(x: f64, lower: f64, upper: f64) -> f64 {
+    if x < lower {
+        return lower
+    }
+    if x > upper {
+        return upper
+    }
+    return x
+}
+
+export function pidStep(s: PIDState, p: PIDParameters, setpoint: f64, measurement: f64, dt: f64) -> PIDResult {
+    let error: f64 = setpoint - measurement
+    let mut derivative: f64 = 0.0
+    if s.initialized {
+        derivative = -(measurement - s.previousMeasurement) / dt
+    }
+    let candidateIntegral: f64 = pidClamp(s.integral + error * dt, p.integralMinimum, p.integralMaximum)
+    let candidateOutput: f64 = p.kp * error + p.ki * candidateIntegral + p.kd * derivative
+    let mut integral: f64 = candidateIntegral
+    if candidateOutput > p.outputMaximum and error > 0.0 {
+        integral = s.integral
+    }
+    if candidateOutput < p.outputMinimum and error < 0.0 {
+        integral = s.integral
+    }
+    let output: f64 = pidClamp(p.kp * error + p.ki * integral + p.kd * derivative, p.outputMinimum, p.outputMaximum)
+    return PIDResult {
+        state: PIDState { integral: integral, previousMeasurement: measurement, initialized: true },
+        output: output
+    }
+}

@@ -1,0 +1,28 @@
+import herbie.vehicle { QuarterCarParameters, QuarterCarState, quarterCarStep, quarterCarEnergy }
+
+function main() -> i32 {
+    let p: QuarterCarParameters = QuarterCarParameters {
+        sprungMass: 300.0, unsprungMass: 40.0,
+        suspensionStiffness: 16000.0, suspensionDamping: 0.0,
+        tireStiffness: 200000.0, tireDamping: 0.0
+    }
+    let mut s: QuarterCarState = QuarterCarState {
+        sprungPosition: 0.015, sprungVelocity: 0.0,
+        unsprungPosition: 0.0, unsprungVelocity: 0.0
+    }
+    let initial: f64 = quarterCarEnergy(s, p, 0.0)
+    for i in 0 to 10000 {
+        s = quarterCarStep(s, p, 0.0, 0.0, 0.0005)
+    }
+    let finalEnergy: f64 = quarterCarEnergy(s, p, 0.0)
+    let mut relativeDrift: f64 = (finalEnergy - initial) / initial
+    if relativeDrift < 0.0 {
+        relativeDrift = -relativeDrift
+    }
+    if relativeDrift > 0.001 {
+        println("FAIL quarter car RK4 energy conservation")
+        return 1
+    }
+    println("PASS quarter car energy conservation")
+    return 0
+}

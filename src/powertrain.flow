@@ -1,0 +1,33 @@
+# @module herbie.powertrain
+# Longitudinal point-mass model for early drive-cycle studies.
+# Road grade in radians; wheel torque at contact wheel in N m.
+
+export struct LongitudinalParameters {
+    vehicleMass: f64,
+    wheelRadius: f64,
+    dragArea: f64,
+    dragCoefficient: f64,
+    airDensity: f64,
+    rollingResistanceCoefficient: f64
+}
+
+export struct LongitudinalState {
+    distance: f64,
+    speed: f64
+}
+
+export function longitudinalStep(s: LongitudinalState, p: LongitudinalParameters, wheelTorque: f64, roadGrade: f64, dt: f64) -> LongitudinalState {
+    let tractiveForce: f64 = wheelTorque / p.wheelRadius
+    let aerodynamicDrag: f64 = 0.5 * p.airDensity * p.dragCoefficient * p.dragArea * s.speed * s.speed
+    let rollingResistance: f64 = p.rollingResistanceCoefficient * p.vehicleMass * 9.80665 * cos(roadGrade)
+    let gradeForce: f64 = p.vehicleMass * 9.80665 * sin(roadGrade)
+    let acceleration: f64 = (tractiveForce - aerodynamicDrag - rollingResistance - gradeForce) / p.vehicleMass
+    let mut nextSpeed: f64 = s.speed + acceleration * dt
+    if nextSpeed < 0.0 {
+        nextSpeed = 0.0
+    }
+    return LongitudinalState {
+        distance: s.distance + 0.5 * (s.speed + nextSpeed) * dt,
+        speed: nextSpeed
+    }
+}

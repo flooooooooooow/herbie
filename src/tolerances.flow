@@ -1,0 +1,63 @@
+# @module herbie.tolerances
+# Worst-case interval arithmetic and independent Gaussian RSS estimates.
+
+export struct DimensionTolerance {
+    nominal: f64,
+    lowerDeviation: f64,
+    upperDeviation: f64
+}
+
+export struct DimensionRange {
+    lower: f64,
+    upper: f64
+}
+
+export function dimensionRange(d: DimensionTolerance) -> DimensionRange {
+    return DimensionRange {
+        lower: d.nominal + d.lowerDeviation,
+        upper: d.nominal + d.upperDeviation
+    }
+}
+
+export function addRanges(a: DimensionRange, b: DimensionRange) -> DimensionRange {
+    return DimensionRange {
+        lower: a.lower + b.lower,
+        upper: a.upper + b.upper
+    }
+}
+
+export function subtractRanges(a: DimensionRange, b: DimensionRange) -> DimensionRange {
+    return DimensionRange {
+        lower: a.lower - b.upper,
+        upper: a.upper - b.lower
+    }
+}
+
+export function clearanceRange(hole: DimensionTolerance, shaft: DimensionTolerance) -> DimensionRange {
+    return subtractRanges(dimensionRange(hole), dimensionRange(shaft))
+}
+
+export function rssSigma3(sigmaA: f64, sigmaB: f64, sigmaC: f64) -> f64 {
+    return sqrt(sigmaA * sigmaA + sigmaB * sigmaB + sigmaC * sigmaC)
+}
+
+export function rssSigma2(sigmaA: f64, sigmaB: f64) -> f64 {
+    return sqrt(sigmaA * sigmaA + sigmaB * sigmaB)
+}
+
+export function processCpk(mean: f64, sigma: f64, lowerSpecLimit: f64, upperSpecLimit: f64) -> f64 {
+    let upperCapability: f64 = (upperSpecLimit - mean) / (3.0 * sigma)
+    let lowerCapability: f64 = (mean - lowerSpecLimit) / (3.0 * sigma)
+    if lowerCapability < upperCapability {
+        return lowerCapability
+    }
+    return upperCapability
+}
+
+export function processCp(sigma: f64, lowerSpecLimit: f64, upperSpecLimit: f64) -> f64 {
+    return (upperSpecLimit - lowerSpecLimit) / (6.0 * sigma)
+}
+
+export function nominalThermalLength(length: f64, expansionCoefficient: f64, deltaTemperature: f64) -> f64 {
+    return length * (1.0 + expansionCoefficient * deltaTemperature)
+}

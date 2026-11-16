@@ -1,0 +1,105 @@
+# @module herbie.vehicle
+# Quarter-car vertical dynamics and planar linear-tire bicycle model.
+# SI units. Pure, fixed-step updates; caller owns state and scheduling.
+
+export struct QuarterCarParameters {
+    sprungMass: f64,
+    unsprungMass: f64,
+    suspensionStiffness: f64,
+    suspensionDamping: f64,
+    tireStiffness: f64,
+    tireDamping: f64
+}
+
+export struct QuarterCarState {
+    sprungPosition: f64,
+    sprungVelocity: f64,
+    unsprungPosition: f64,
+    unsprungVelocity: f64
+}
+
+struct QuarterCarDerivative {
+    sprungPosition: f64,
+    sprungVelocity: f64,
+    unsprungPosition: f64,
+    unsprungVelocity: f64
+}
+
+function quarterCarDerivative(s: QuarterCarState, p: QuarterCarParameters, roadPosition: f64, roadVelocity: f64) -> QuarterCarDerivative {
+    let suspensionForce: f64 = p.suspensionStiffness * (s.sprungPosition - s.unsprungPosition) + p.suspensionDamping * (s.sprungVelocity - s.unsprungVelocity)
+    let tireForce: f64 = p.tireStiffness * (s.unsprungPosition - roadPosition) + p.tireDamping * (s.unsprungVelocity - roadVelocity)
+    return QuarterCarDerivative {
+        sprungPosition: s.sprungVelocity,
+        sprungVelocity: -suspensionForce / p.sprungMass,
+        unsprungPosition: s.unsprungVelocity,
+        unsprungVelocity: (suspensionForce - tireForce) / p.unsprungMass
+    }
+}
+
+function quarterCarAdvance(s: QuarterCarState, d: QuarterCarDerivative, dt: f64) -> QuarterCarState {
+    return QuarterCarState {
+        sprungPosition: s.sprungPosition + d.sprungPosition * dt,
+        sprungVelocity: s.sprungVelocity + d.sprungVelocity * dt,
+        unsprungPosition: s.unsprungPosition + d.unsprungPosition * dt,
+        unsprungVelocity: s.unsprungVelocity + d.unsprungVelocity * dt
+    }
+}
+
+export function quarterCarStep(s: QuarterCarState, p: QuarterCarParameters, roadPosition: f64, roadVelocity: f64, dt: f64) -> QuarterCarState {
+    let k1: QuarterCarDerivative = quarterCarDerivative(s, p, roadPosition, roadVelocity)
+    let k2: QuarterCarDerivative = quarterCarDerivative(quarterCarAdvance(s, k1, 0.5 * dt), p, roadPosition, roadVelocity)
+    let k3: QuarterCarDerivative = quarterCarDerivative(quarterCarAdvance(s, k2, 0.5 * dt), p, roadPosition, roadVelocity)
+    let k4: QuarterCarDerivative = quarterCarDerivative(quarterCarAdvance(s, k3, dt), p, roadPosition, roadVelocity)
+    let sixth: f64 = dt / 6.0
+    return QuarterCarState {
+        sprungPosition: s.sprungPosition + sixth * (k1.sprungPosition + 2.0 * k2.sprungPosition + 2.0 * k3.sprungPosition + k4.sprungPosition),
+        sprungVelocity: s.sprungVelocity + sixth * (k1.sprungVelocity + 2.0 * k2.sprungVelocity + 2.0 * k3.sprungVelocity + k4.sprungVelocity),
+        unsprungPosition: s.unsprungPosition + sixth * (k1.unsprungPosition + 2.0 * k2.unsprungPosition + 2.0 * k3.unsprungPosition + k4.unsprungPosition),
+        unsprungVelocity: s.unsprungVelocity + sixth * (k1.unsprungVelocity + 2.0 * k2.unsprungVelocity + 2.0 * k3.unsprungVelocity + k4.unsprungVelocity)
+    }
+}
+
+export function quarterCarEnergy(s: QuarterCarState, p: QuarterCarParameters, roadPosition: f64) -> f64 {
+    let suspensionDeflection: f64 = s.sprungPosition - s.unsprungPosition
+    let tireDeflection: f64 = s.unsprungPosition - roadPosition
+    return 0.5 * p.sprungMass * s.sprungVelocity * s.sprungVelocity
+        + 0.5 * p.unsprungMass * s.unsprungVelocity * s.unsprungVelocity
+        + 0.5 * p.suspensionStiffness * suspensionDeflection * suspensionDeflection
+        + 0.5 * p.tireStiffness * tireDeflection * tireDeflection
+}
+
+export struct BicycleParameters {
+    mass: f64,
+    yawInertia: f64,
+    frontAxleDistance: f64,
+    rearAxleDistance: f64,
+    frontCorneringStiffness: f64,
+    rearCorneringStiffness: f64
+}
+
+export struct BicycleState {
+    x: f64,
+    y: f64,
+    yaw: f64,
+    longitudinalVelocity: f64,
+    lateralVelocity: f64,
+    yawRate: f64
+}
+
+export function bicycleStep(s: BicycleState, p: BicycleParameters, steeringAngle: f64, longitudinalAcceleration: f64, dt: f64) -> BicycleState {
+    # Linear slip model; longitudinalVelocity must remain > 0 and steering small.
+    let frontSlip: f64 = steeringAngle - (s.lateralVelocity + p.frontAxleDistance * s.yawRate) / s.longitudinalVelocity
+    let rearSlip: f64 = -(s.lateralVelocity - p.rearAxleDistance * s.yawRate) / s.longitudinalVelocity
+    let frontLateralForce: f64 = p.frontCorneringStiffness * frontSlip
+    let rearLateralForce: f64 = p.rearCorneringStiffness * rearSlip
+    let lateralAcceleration: f64 = (frontLateralForce + rearLateralForce) / p.mass - s.longitudinalVelocity * s.yawRate
+    let yawAcceleration: f64 = (p.frontAxleDistance * frontLateralForce - p.rearAxleDistance * rearLateralForce) / p.yawInertia
+    return BicycleState {
+        x: s.x + dt * (s.longitudinalVelocity * cos(s.yaw) - s.lateralVelocity * sin(s.yaw)),
+        y: s.y + dt * (s.longitudinalVelocity * sin(s.yaw) + s.lateralVelocity * cos(s.yaw)),
+        yaw: s.yaw + dt * s.yawRate,
+        longitudinalVelocity: s.longitudinalVelocity + dt * longitudinalAcceleration,
+        lateralVelocity: s.lateralVelocity + dt * lateralAcceleration,
+        yawRate: s.yawRate + dt * yawAcceleration
+    }
+}
