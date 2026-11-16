@@ -49,6 +49,10 @@ jobs:
         run: ./.flow-toolchain/flow run tests/linear_stackups.flow
       - name: Run dimensional stack demonstration
         run: ./.flow-toolchain/flow run examples/linear_stackups_demo.flow
+      - name: Verify DC modified nodal analysis voltage-source regressions
+        run: ./.flow-toolchain/flow run tests/mna_voltage_sources.flow
+      - name: Run ideal voltage source circuit demonstration
+        run: ./.flow-toolchain/flow run examples/mna_voltage_sources_demo.flow
       - name: Run vehicle demo
         run: ./.flow-toolchain/flow run examples/quarter_car_demo.flow
       - name: Run manufacturing demo
