@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - 'site/**'
+      - 'index.html'
+      - '.nojekyll'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -29,7 +31,11 @@ jobs:
         run: |
           node --check site/model.js
           node --check site/app.js
+          node --check site/car3d.js
+          node --check site/fullcar.js
           node --test tests/vehicle_lab.test.mjs
+          node --test tests/fullcar_browser.test.mjs
+          node --test tests/site_contract.test.mjs
       - name: Configure Pages
         uses: actions/configure-pages@v5
       - name: Upload static site

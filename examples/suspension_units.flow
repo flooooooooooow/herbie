@@ -1,0 +1,72 @@
+# Explicit unit-checked suspension force, wheel acceleration and energy.
+# Flow units erase to f64 at runtime after dimensional checking.
+# The first-class "evolves as" grammar currently expects f64/f32 state;
+# this is a typed physics boundary and numerical reference fixture.
+
+unit Meter
+unit Second
+unit Kilogram
+unit MeterPerSecond = Meter / Second
+unit MeterPerSecondSquared = Meter / Second^2
+unit Newton = Kilogram * Meter / Second^2
+unit NewtonPerMeter = Newton / Meter
+unit NewtonSecondPerMeter = Newton * Second / Meter
+unit Joule = Newton * Meter
+
+function springDamperForce(
+    compression: Meter,
+    compressionRate: MeterPerSecond,
+    stiffness: NewtonPerMeter,
+    damping: NewtonSecondPerMeter
+) -> Newton {
+    return stiffness * compression + damping * compressionRate
+}
+
+function unsprungAcceleration(
+    suspensionReaction: Newton,
+    tireForce: Newton,
+    mass: Kilogram
+) -> MeterPerSecondSquared {
+    return (tireForce - suspensionReaction) / mass
+}
+
+function springStoredEnergy(stiffness: NewtonPerMeter, compression: Meter) -> Joule {
+    return 0.5 * stiffness * compression * compression
+}
+
+function near(a: f64, b: f64, epsilon: f64) -> bool {
+    return a >= b - epsilon and a <= b + epsilon
+}
+
+function main() -> i32 {
+    let compression: Meter = 0.020 as Meter
+    let compressionRate: MeterPerSecond = 0.10 as MeterPerSecond
+    let k: NewtonPerMeter = 29000.0 as NewtonPerMeter
+    let c: NewtonSecondPerMeter = 2250.0 as NewtonSecondPerMeter
+    let mass: Kilogram = 43.0 as Kilogram
+    let tireForce: Newton = 1200.0 as Newton
+    let reaction: Newton = springDamperForce(compression, compressionRate, k, c)
+    if not near(reaction as f64, 805.0, 1.0e-9) {
+        println("FAIL dimensioned spring and damper force")
+        return 1
+    }
+    let acceleration: MeterPerSecondSquared = unsprungAcceleration(reaction, tireForce, mass)
+    if not near(acceleration as f64, 395.0 / 43.0, 1.0e-10) {
+        println("FAIL dimensioned force/mass acceleration")
+        return 2
+    }
+    let energy: Joule = springStoredEnergy(k, compression)
+    if not near(energy as f64, 5.8, 1.0e-10) {
+        println("FAIL dimensioned spring energy")
+        return 3
+    }
+    let dt: Second = 0.01 as Second
+    let nextSpeed: MeterPerSecond = acceleration * dt
+    let nextPosition: Meter = nextSpeed * dt
+    if not near(nextPosition as f64, 395.0 / 43.0 * 0.0001, 1.0e-10) {
+        println("FAIL dimensioned velocity and position propagation")
+        return 4
+    }
+    println("PASS unit-checked spring damper, wheel acceleration and energy")
+    return 0
+}
