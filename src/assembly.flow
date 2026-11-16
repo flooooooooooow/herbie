@@ -1,0 +1,97 @@
+# @module herbie.assembly
+# A compositional full-car *scaffold* from existing Herbie physical kernels.
+# Commands are externally supplied, SI units. No tyre contact or detailed drivetrain.
+# Browser Vehicle Lab is an independently maintained JavaScript reference port.
+
+import herbie.powertrain { LongitudinalParameters, LongitudinalState, longitudinalStep }
+import herbie.vehicle { QuarterCarParameters, QuarterCarState, quarterCarStep }
+import herbie.thermal { ThermalParameters, ThermalState, thermalStep }
+import herbie.mechanics { gearOutputTorque }
+import herbie.structures { axialStress, yieldSafetyFactor }
+
+export struct FullCarParameters {
+    longitudinal: LongitudinalParameters,
+    frontSuspension: QuarterCarParameters,
+    rearSuspension: QuarterCarParameters,
+    engineThermal: ThermalParameters,
+    brakeThermal: ThermalParameters,
+    totalGearRatio: f64,
+    drivelineEfficiency: f64,
+    illustrativeSectionArea: f64,
+    illustrativeYieldStrength: f64
+}
+
+export struct FullCarState {
+    motion: LongitudinalState,
+    frontSuspension: QuarterCarState,
+    rearSuspension: QuarterCarState,
+    engineTemperature: ThermalState,
+    brakeTemperature: ThermalState
+}
+
+export struct FullCarInputs {
+    engineShaftTorque: f64,
+    brakeWheelTorque: f64,
+    roadGradeRadians: f64,
+    frontRoadPosition: f64,
+    frontRoadVelocity: f64,
+    rearRoadPosition: f64,
+    rearRoadVelocity: f64,
+    ambientTemperature: f64,
+    engineHeatWatts: f64
+}
+
+export struct FullCarResult {
+    state: FullCarState,
+    wheelTorque: f64,
+    longitudinalContactForce: f64,
+    illustrativeAxialStress: f64,
+    illustrativeYieldSafetyFactor: f64,
+    dissipatedBrakePower: f64
+}
+
+export function fullCarStep(s: FullCarState, p: FullCarParameters, input: FullCarInputs, dt: f64) -> FullCarResult {
+    let driveTorque: f64 = gearOutputTorque(input.engineShaftTorque, p.totalGearRatio, p.drivelineEfficiency)
+    let wheelTorque: f64 = driveTorque - input.brakeWheelTorque
+    let nextMotion: LongitudinalState = longitudinalStep(s.motion, p.longitudinal, wheelTorque, input.roadGradeRadians, dt)
+    let nextFront: QuarterCarState = quarterCarStep(
+        s.frontSuspension, p.frontSuspension, input.frontRoadPosition, input.frontRoadVelocity, dt
+    )
+    let nextRear: QuarterCarState = quarterCarStep(
+        s.rearSuspension, p.rearSuspension, input.rearRoadPosition, input.rearRoadVelocity, dt
+    )
+    let nextEngine: ThermalState = thermalStep(
+        s.engineTemperature, p.engineThermal, input.ambientTemperature, input.engineHeatWatts, dt
+    )
+    let mut dissipatedBrakePower: f64 = input.brakeWheelTorque * s.motion.speed / p.longitudinal.wheelRadius
+    if dissipatedBrakePower < 0.0 {
+        dissipatedBrakePower = 0.0
+    }
+    let nextBrake: ThermalState = thermalStep(
+        s.brakeTemperature, p.brakeThermal, input.ambientTemperature, dissipatedBrakePower, dt
+    )
+    let force: f64 = wheelTorque / p.longitudinal.wheelRadius
+    let mut positiveForce: f64 = force
+    if positiveForce < 0.0 {
+        positiveForce = -positiveForce
+    }
+    let stress: f64 = axialStress(positiveForce, p.illustrativeSectionArea)
+    let mut safetyFactor: f64 = 1.0e30
+    if stress > 0.0 {
+        safetyFactor = yieldSafetyFactor(p.illustrativeYieldStrength, stress)
+    }
+    return FullCarResult {
+        state: FullCarState {
+            motion: nextMotion,
+            frontSuspension: nextFront,
+            rearSuspension: nextRear,
+            engineTemperature: nextEngine,
+            brakeTemperature: nextBrake
+        },
+        wheelTorque: wheelTorque,
+        longitudinalContactForce: force,
+        illustrativeAxialStress: stress,
+        illustrativeYieldSafetyFactor: safetyFactor,
+        dissipatedBrakePower: dissipatedBrakePower
+    }
+}
