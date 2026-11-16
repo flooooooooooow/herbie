@@ -56,3 +56,13 @@ Run `flow run tests/engineering_smoke.flow` and `flow run tests/vehicle_energy.f
 ## Nodal analysis baseline
 
 `tests/circuit_network.flow` builds a 2-node 1 kΩ resistor network with a 10 mA current source from ground. The analytically expected DC voltages are 6⅔ V and 3⅓ V. It confirms conductance assembly, sign conventions, KCL residual under 10^-12 A, balance of source power with resistor dissipation, unchanged inputs after solving, invalid stamp rejection and floating-network singularity detection. This does not constitute nonlinear circuit or stiff transient validation.
+
+## Equation-first native Flow validation (7687fc936365 compiler)
+
+`examples/equation_vehicle.flow` uses actual Flow `flow Name { ... }` declarations with coupled `evolves as` equations and `solver { dt 1 ms method rk4 }`. A four-second constant-force test checks speed = 4 m/s and distance = 8 m for a 1 m/s² analytic trajectory. A damped quarter-car model is independently integrated by the generated Flow RK4 and existing `herbie.vehicle.quarterCarStep` at the same 1 ms step; final state components must agree within 10⁻⁸ SI. An undamped reference checks relative mechanical energy drift below 0.001 after 5 seconds.
+
+This establishes one model/solver/kernel agreement slice but **not** broad numerical convergence, numerical certification, hardware real-time qualification, DAE capability, exact Flow/JavaScript parity, or a full vehicle model. See [numerical platform issue #3](https://github.com/flooooooooooow/herbie/issues/3) and [verification issue #9](https://github.com/flooooooooooow/herbie/issues/9).
+
+## Covariance-aware dimensional stack validation
+
+`tests/linear_stackups.flow` verifies a 20.00 mm bore minus 19.90 mm shaft nominal and interval 0.030–0.170 mm. With σ = 30/20 μm, perfect positive correlation gives clearance σ = 10 μm, independence yields variance 1.3×10⁻⁹ m², and perfect negative correlation gives 50 μm. Asymmetric covariance, a non-positive-semidefinite matrix, and negative half-widths are rejected; a zero covariance matrix is admitted. The method uses a caller-owned Cholesky-like factor with semidefinite pivot treatment and a relative matrix tolerance; its treatment of nearly singular matrices depends on the supplied tolerance. All dimensions are in metres; a 3D datum hierarchy and production process statistics remain unimplemented.
