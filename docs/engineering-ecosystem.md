@@ -16,7 +16,7 @@ Every physical system should share an explicit state schema, dimensioned paramet
 | Internal combustion | `engine`, `maps` | Torque/fuel/air/exhaust/emissions 2D/3D maps, volumetric efficiency, airflow/manifolds, ignition and fuel injection, turbocharging, cylinder pressure, crank-angle simulation, diesel injection, knock, ECU |
 | Mechanical dynamics and driveline | `mechanics`, `truss`, `structures` | Gearbox, clutch, differential, torsional shaft, belt, bearings, rigid-body joints/contact, elastomer, modal/FEA assemblies |
 | Thermal and fluid systems | `thermal` | Heat networks, radiator, coolant pump, hydraulic and pneumatic networks, compressible fluid, thermal management, CFD coupling |
-| Manufacturing and quality | `tolerances`, `uncertainty` | GD&T graph, tolerance chain and datum network, capability/SPC, geometry, stress-life and strain-life fatigue, probabilistic design, measurement uncertainty |
+| Manufacturing and quality | `tolerances`, `uncertainty`, `stackups` | GD&T graph, tolerance chain and datum network, capability/SPC, geometry, stress-life and strain-life fatigue, probabilistic design, measurement uncertainty |
 | Controls and safety | `control` | Discrete filters, state-space, Kalman observers, LQR, MPC, diagnosis, plausibility checks, fault injection, rate transitions, controller code generation |
 | Calibration and optimization | `maps` | Data import, dyno fitting, map calibration, sensitivities, optimization, parameter sweeps, uncertainty and traceable comparison |
 | Deployment and external systems | Flow native C backend | FMI/FMU, CAN/CAN FD, XCP, AUTOSAR-facing interfaces, model/HIL rigs, hardware adapters and timing audits |

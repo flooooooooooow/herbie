@@ -1,0 +1,41 @@
+import herbie.stackups { LinearToleranceStack, LinearStackResult, stackEvaluate }
+
+function main() -> i32 {
+    # Three-link dimension chain, SI metres:
+    # target = bracketA + spacer - bracketB.
+    let mut values: array<f64, 3> = [0.010, 0.004, 0.0135]
+    let mut halfWidths: array<f64, 3> = [0.00002, 0.00001, 0.00002]
+    let mut signs: array<f64, 3> = [1.0, 1.0, -1.0]
+    let mut cov: array<f64, 9> = [
+        1.0e-10, 0.0, 0.0,
+        0.0, 2.5e-11, 0.0,
+        0.0, 0.0, 1.0e-10
+    ]
+    let mut scratch: array<f64, 9> = [
+        0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0
+    ]
+    let stack: LinearToleranceStack = LinearToleranceStack {
+        count: 3, nominal: &values[0], halfWidths: &halfWidths[0],
+        coefficients: &signs[0], covariance: &cov[0]
+    }
+    let mut out: LinearStackResult = LinearStackResult {
+        nominal: 0.0, minimum: 0.0, maximum: 0.0,
+        variance: 0.0, sigma: 0.0, largestWorstCaseContributor: -1
+    }
+    if not stackEvaluate(stack, &out, &scratch[0], 1.0e-12) {
+        println("INVALID DIMENSION STACK")
+        return 1
+    }
+    println("Assembly nominal gap [m]")
+    println(out.nominal)
+    println("Worst-case lower/upper [m]")
+    println(out.minimum)
+    println(out.maximum)
+    println("Correlated standard deviation [m]")
+    println(out.sigma)
+    if out.minimum <= 0.0 or out.maximum >= 0.001 {
+        return 2
+    }
+    return 0
+}

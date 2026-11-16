@@ -21,7 +21,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang make
           git clone https://github.com/flooooooooooow/flow.git .flow-toolchain
-          git -C .flow-toolchain checkout --detach 8ebc58f90ea6febeec9cf5fe7979803a99bb60f7
+          git -C .flow-toolchain checkout --detach 7687fc936365e17bc6286415585c55fcc6ea64c3
           ./.flow-toolchain/flow version
       - name: Check engineering regression values
         run: ./.flow-toolchain/flow run tests/engineering_smoke.flow
@@ -43,6 +43,12 @@ jobs:
         run: ./.flow-toolchain/flow run tests/full_car.flow
       - name: Run composed Flow car example
         run: ./.flow-toolchain/flow run examples/full_car_demo.flow
+      - name: Verify native Flow equation-first RK4 vehicle model
+        run: ./.flow-toolchain/flow run examples/equation_vehicle.flow
+      - name: Verify correlated linear dimensional stacks
+        run: ./.flow-toolchain/flow run tests/linear_stackups.flow
+      - name: Run dimensional stack demonstration
+        run: ./.flow-toolchain/flow run examples/linear_stackups_demo.flow
       - name: Run vehicle demo
         run: ./.flow-toolchain/flow run examples/quarter_car_demo.flow
       - name: Run manufacturing demo

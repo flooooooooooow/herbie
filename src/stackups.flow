@@ -1,0 +1,160 @@
+# @module herbie.stackups
+# First-order affine dimensional stacks. All inputs in the same SI length unit.
+# Caller-owned arrays: nominal [n] m, halfWidths [n] m, coefficients [n]
+# dimensionless, covariance [n*n] m^2, scratch [n*n].
+# Covariance is validated as symmetric positive semidefinite; invalid data
+# are rejected before reporting an apparently precise statistical result.
+
+export struct LinearToleranceStack {
+    count: i32,
+    nominal: ptr<f64>,
+    halfWidths: ptr<f64>,
+    coefficients: ptr<f64>,
+    covariance: ptr<f64>
+}
+
+export struct LinearStackResult {
+    nominal: f64,
+    minimum: f64,
+    maximum: f64,
+    variance: f64,
+    sigma: f64,
+    largestWorstCaseContributor: i32
+}
+
+function stackAbs(x: f64) -> f64 {
+    if x < 0.0 {
+        return -x
+    }
+    return x
+}
+
+# Validates positive semidefinite covariance by an LDL-compatible
+# lower-triangular factorisation with zero-pivot handling.
+# Pivot tolerance is relative to largest diagonal covariance.
+# scratch is overwritten only on success or partial failure.
+export function stackCovariancePsd(covariance: ptr<f64>, n: i32, scratch: ptr<f64>, relativeTolerance: f64) -> bool {
+    if n <= 0 or relativeTolerance <= 0.0 or relativeTolerance >= 0.01 {
+        return false
+    }
+    let mut scale: f64 = 0.0
+    for i in 0 to n {
+        let diag: f64 = covariance[i * n + i]
+        if diag != diag or diag < 0.0 {
+            return false
+        }
+        if diag > scale {
+            scale = diag
+        }
+        for j in 0 to n {
+            scratch[i * n + j] = 0.0
+            let a: f64 = covariance[i * n + j]
+            if a != a {
+                return false
+            }
+        }
+    }
+    if scale == 0.0 {
+        for i in 0 to n * n {
+            if covariance[i] != 0.0 {
+                return false
+            }
+        }
+        return true
+    }
+    let tolerance: f64 = relativeTolerance * scale
+    for i in 0 to n {
+        for j in 0 to i {
+            let a: f64 = covariance[i * n + j]
+            let b: f64 = covariance[j * n + i]
+            if stackAbs(a - b) > tolerance {
+                return false
+            }
+        }
+    }
+    for i in 0 to n {
+        for j in 0 to i + 1 {
+            let mut residual: f64 = covariance[i * n + j]
+            for k in 0 to j {
+                residual -= scratch[i * n + k] * scratch[j * n + k]
+            }
+            if i == j {
+                if residual < -tolerance {
+                    return false
+                }
+                if residual <= tolerance {
+                    scratch[i * n + j] = 0.0
+                } else {
+                    scratch[i * n + j] = sqrt(residual)
+                }
+            } else {
+                let pivot: f64 = scratch[j * n + j]
+                if pivot == 0.0 {
+                    if stackAbs(residual) > tolerance {
+                        return false
+                    }
+                    scratch[i * n + j] = 0.0
+                } else {
+                    scratch[i * n + j] = residual / pivot
+                }
+            }
+        }
+    }
+    return true
+}
+
+# Computes affine result s = sum_i (coefficient[i] * dimension[i]).
+# Worst-case intervals use halfWidths, while statistical sigma uses the
+# covariance including cross-correlation, without an independence shortcut.
+export function stackEvaluate(
+    stack: LinearToleranceStack,
+    result: ptr<LinearStackResult>,
+    scratch: ptr<f64>,
+    relativeTolerance: f64
+) -> bool {
+    if stack.count <= 0 {
+        return false
+    }
+    let n: i32 = stack.count
+    let mut mean: f64 = 0.0
+    let mut worstCaseRadius: f64 = 0.0
+    let mut largest: f64 = -1.0
+    let mut largestIndex: i32 = -1
+    for i in 0 to n {
+        let nominal: f64 = stack.nominal[i]
+        let halfWidth: f64 = stack.halfWidths[i]
+        let coefficient: f64 = stack.coefficients[i]
+        if nominal != nominal or halfWidth != halfWidth or coefficient != coefficient or halfWidth < 0.0 {
+            return false
+        }
+        let magnitude: f64 = stackAbs(coefficient) * halfWidth
+        mean += coefficient * nominal
+        worstCaseRadius += magnitude
+        if magnitude > largest {
+            largest = magnitude
+            largestIndex = i
+        }
+    }
+    if not stackCovariancePsd(stack.covariance, n, scratch, relativeTolerance) {
+        return false
+    }
+    # Sigma via the factor L, so tiny cancellation in c^T Sigma c
+    # cannot create a spurious negative variance for valid PSD inputs.
+    let mut variance: f64 = 0.0
+    for j in 0 to n {
+        let mut contribution: f64 = 0.0
+        for i in j to n {
+            contribution += stack.coefficients[i] * scratch[i * n + j]
+        }
+        variance += contribution * contribution
+    }
+    result[0] = LinearStackResult {
+        nominal: mean,
+        minimum: mean - worstCaseRadius,
+        maximum: mean + worstCaseRadius,
+        variance: variance,
+        sigma: sqrt(variance),
+        largestWorstCaseContributor: largestIndex
+    }
+    return true
+}
