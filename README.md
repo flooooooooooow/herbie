@@ -25,6 +25,12 @@
 
 All dynamic kernels are explicit functions of state, parameters, inputs and `dt`; they contain no I/O or dynamic allocation in the source and can be called by a real-time host. This alone does **not** demonstrate worst-case execution time or determinism of a target build.
 
+## Live Vehicle Lab
+
+The [interactive Vehicle Lab](https://flooooooooooow.github.io/herbie/) provides a selectable car system diagram, driving controls, live telemetry and manufacturing clearance sampling. The Pages deployment is contingent on enabling **GitHub Actions** as the repository's Pages source and a successful main-branch workflow. The browser implementation is a clearly labelled **JavaScript reference port**, not Flow/WASM. [Numerical assumptions and limitations](docs/vehicle-lab.md).
+
+The native `herbie.assembly` scaffold composes longitudinal, quarter-car, thermal, gearing, and illustrative stress kernels. It is not yet a multi-body or combustion simulation.
+
 ## Quickstart
 
 Use the compiler in [flooooooooooow/flow](https://github.com/flooooooooooow/flow).
@@ -39,6 +45,8 @@ flow run examples/quarter_car_demo.flow
 flow run examples/manufacturing_demo.flow
 flow run examples/electric_drive_demo.flow
 flow run examples/engine_dyno_demo.flow
+flow run tests/full_car.flow
+flow run examples/full_car_demo.flow
 ```
 
 The exact Flow compiler revision used by CI is pinned in [the CI workflow](.github/workflows/ci.yml). To consume a module from another Flow package, use a path dependency on this repository and import, for example, `herbie.vehicle { QuarterCarParameters, QuarterCarState, quarterCarStep }`.

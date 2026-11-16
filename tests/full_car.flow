@@ -1,0 +1,109 @@
+import herbie.assembly { FullCarParameters, FullCarState, FullCarInputs, fullCarStep }
+import herbie.powertrain { LongitudinalParameters, LongitudinalState }
+import herbie.vehicle { QuarterCarParameters, QuarterCarState }
+import herbie.thermal { ThermalParameters, ThermalState }
+import herbie.tolerances { DimensionTolerance, clearanceRange }
+
+function near(a: f64, b: f64, epsilon: f64) -> bool {
+    return a >= b - epsilon and a <= b + epsilon
+}
+
+function main() -> i32 {
+    let front: QuarterCarParameters = QuarterCarParameters {
+        sprungMass: 335.0, unsprungMass: 42.0,
+        suspensionStiffness: 26500.0, suspensionDamping: 1800.0,
+        tireStiffness: 205000.0, tireDamping: 0.0
+    }
+    let rear: QuarterCarParameters = QuarterCarParameters {
+        sprungMass: 285.0, unsprungMass: 40.0,
+        suspensionStiffness: 23000.0, suspensionDamping: 1600.0,
+        tireStiffness: 205000.0, tireDamping: 0.0
+    }
+    let p: FullCarParameters = FullCarParameters {
+        longitudinal: LongitudinalParameters {
+            vehicleMass: 1480.0, wheelRadius: 0.315,
+            dragArea: 2.22, dragCoefficient: 0.29, airDensity: 1.225,
+            rollingResistanceCoefficient: 0.012
+        },
+        frontSuspension: front,
+        rearSuspension: rear,
+        engineThermal: ThermalParameters {
+            mass: 100.0, specificHeatCapacity: 1850.0,
+            heatTransferCoefficient: 27.0, exposedArea: 10.0
+        },
+        brakeThermal: ThermalParameters {
+            mass: 50.0, specificHeatCapacity: 1600.0,
+            heatTransferCoefficient: 7.0, exposedArea: 4.0
+        },
+        totalGearRatio: 13.962,
+        drivelineEfficiency: 0.9,
+        illustrativeSectionArea: 0.00065,
+        illustrativeYieldStrength: 250000000.0
+    }
+    let zeroCorner: QuarterCarState = QuarterCarState {
+        sprungPosition: 0.0, sprungVelocity: 0.0,
+        unsprungPosition: 0.0, unsprungVelocity: 0.0
+    }
+    let mut s: FullCarState = FullCarState {
+        motion: LongitudinalState { distance: 0.0, speed: 0.0 },
+        frontSuspension: zeroCorner, rearSuspension: zeroCorner,
+        engineTemperature: ThermalState { temperature: 24.0 },
+        brakeTemperature: ThermalState { temperature: 24.0 }
+    }
+    let input: FullCarInputs = FullCarInputs {
+        engineShaftTorque: 100.0, brakeWheelTorque: 0.0,
+        roadGradeRadians: 0.0,
+        frontRoadPosition: 0.02, frontRoadVelocity: 0.0,
+        rearRoadPosition: 0.0, rearRoadVelocity: 0.0,
+        ambientTemperature: 24.0, engineHeatWatts: 8000.0
+    }
+    for i in 0 to 400 {
+        let result = fullCarStep(s, p, input, 0.01)
+        s = result.state
+        if result.wheelTorque <= 0.0 or result.longitudinalContactForce <= 0.0 {
+            println("FAIL wheel torque chain")
+            return 1
+        }
+    }
+    if s.motion.speed <= 0.0 or s.motion.distance <= 0.0 {
+        println("FAIL forward vehicle motion")
+        return 2
+    }
+    if s.engineTemperature.temperature <= 24.0 {
+        println("FAIL engine thermal response")
+        return 3
+    }
+    if s.frontSuspension.unsprungPosition <= 0.0 {
+        println("FAIL front suspension road response")
+        return 4
+    }
+    let stop: FullCarInputs = FullCarInputs {
+        engineShaftTorque: 0.0, brakeWheelTorque: 800.0,
+        roadGradeRadians: 0.0,
+        frontRoadPosition: 0.0, frontRoadVelocity: 0.0,
+        rearRoadPosition: 0.0, rearRoadVelocity: 0.0,
+        ambientTemperature: 24.0, engineHeatWatts: 0.0
+    }
+    let beforeSpeed: f64 = s.motion.speed
+    for i in 0 to 200 {
+        let stopping = fullCarStep(s, p, stop, 0.01)
+        s = stopping.state
+    }
+    if s.motion.speed >= beforeSpeed or s.motion.speed < 0.0 {
+        println("FAIL braking")
+        return 5
+    }
+    if s.brakeTemperature.temperature <= 24.0 {
+        println("FAIL brake thermal response")
+        return 6
+    }
+    let hole: DimensionTolerance = DimensionTolerance { nominal: 0.020, lowerDeviation: -0.00005, upperDeviation: 0.00005 }
+    let shaft: DimensionTolerance = DimensionTolerance { nominal: 0.0199, lowerDeviation: -0.00002, upperDeviation: 0.00002 }
+    let gap = clearanceRange(hole, shaft)
+    if not near(gap.lower, 0.00003, 1.0e-12) or not near(gap.upper, 0.00017, 1.0e-12) {
+        println("FAIL fit clearance interval")
+        return 7
+    }
+    println("PASS Herbie full-car composition baseline")
+    return 0
+}

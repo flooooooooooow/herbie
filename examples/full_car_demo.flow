@@ -1,0 +1,54 @@
+import herbie.assembly { FullCarParameters, FullCarState, FullCarInputs, fullCarStep }
+import herbie.powertrain { LongitudinalParameters, LongitudinalState }
+import herbie.vehicle { QuarterCarParameters, QuarterCarState }
+import herbie.thermal { ThermalParameters, ThermalState }
+
+function main() -> i32 {
+    let corner: QuarterCarParameters = QuarterCarParameters {
+        sprungMass: 300.0, unsprungMass: 40.0,
+        suspensionStiffness: 24000.0, suspensionDamping: 1700.0,
+        tireStiffness: 205000.0, tireDamping: 0.0
+    }
+    let thermal: ThermalParameters = ThermalParameters {
+        mass: 100.0, specificHeatCapacity: 1800.0,
+        heatTransferCoefficient: 25.0, exposedArea: 10.0
+    }
+    let p: FullCarParameters = FullCarParameters {
+        longitudinal: LongitudinalParameters {
+            vehicleMass: 1480.0, wheelRadius: 0.315,
+            dragArea: 2.22, dragCoefficient: 0.29,
+            airDensity: 1.225, rollingResistanceCoefficient: 0.012
+        },
+        frontSuspension: corner, rearSuspension: corner,
+        engineThermal: thermal, brakeThermal: thermal,
+        totalGearRatio: 13.962, drivelineEfficiency: 0.9,
+        illustrativeSectionArea: 0.00065,
+        illustrativeYieldStrength: 250000000.0
+    }
+    let zero: QuarterCarState = QuarterCarState {
+        sprungPosition: 0.0, sprungVelocity: 0.0,
+        unsprungPosition: 0.0, unsprungVelocity: 0.0
+    }
+    let mut state: FullCarState = FullCarState {
+        motion: LongitudinalState { distance: 0.0, speed: 0.0 },
+        frontSuspension: zero, rearSuspension: zero,
+        engineTemperature: ThermalState { temperature: 24.0 },
+        brakeTemperature: ThermalState { temperature: 24.0 }
+    }
+    let command: FullCarInputs = FullCarInputs {
+        engineShaftTorque: 140.0, brakeWheelTorque: 0.0,
+        roadGradeRadians: 0.0, frontRoadPosition: 0.0, frontRoadVelocity: 0.0,
+        rearRoadPosition: 0.0, rearRoadVelocity: 0.0,
+        ambientTemperature: 24.0, engineHeatWatts: 5000.0
+    }
+    for i in 0 to 1000 {
+        state = fullCarStep(state, p, command, 0.01).state
+    }
+    println("Distance (m):")
+    println(state.motion.distance)
+    println("Speed (m/s):")
+    println(state.motion.speed)
+    println("Engine temperature (C):")
+    println(state.engineTemperature.temperature)
+    return 0
+}
