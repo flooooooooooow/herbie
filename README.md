@@ -29,7 +29,7 @@ All dynamic kernels are explicit functions of state, parameters, inputs and `dt`
 
 ## Live Vehicle Lab
 
-The [interactive Vehicle Lab](https://flooooooooooow.github.io/herbie/) provides a selectable car system diagram, driving controls, live telemetry and manufacturing clearance sampling. The Pages deployment is contingent on enabling **GitHub Actions** as the repository's Pages source and a successful main-branch workflow. The browser implementation is a clearly labelled **JavaScript reference port**, not Flow/WASM. [Numerical assumptions and limitations](docs/vehicle-lab.md).
+The [interactive Vehicle Lab](https://flooooooooooow.github.io/herbie/) now offers a self-hosted, interactive Three.js full-car assembly showing wheels, suspension linkages, coilover springs, driveline, engine packaging, heave, pitch, roll, four wheel travel/contact loads, driver scenarios, telemetry and manufacturing clearance analysis. The Pages deployment is contingent on enabling **GitHub Actions** as the repository's Pages source and a successful main-branch workflow. The browser runs an illustrative **JavaScript coupled seven-coordinate ride model** plus a reduced-order powertrain, yaw and thermal model. The procedural links are visual approximations, not solved multibody joints; this is **not Flow/WASM**. [Numerical assumptions and limitations](docs/vehicle-lab.md).
 
 The native `herbie.assembly` scaffold composes longitudinal, quarter-car, thermal, gearing, and illustrative stress kernels. It is not yet a multi-body or combustion simulation.
 
@@ -52,6 +52,7 @@ flow run examples/full_car_demo.flow
 flow run examples/equation_vehicle.flow
 flow run tests/linear_stackups.flow
 flow run examples/linear_stackups_demo.flow
+flow run examples/suspension_units.flow
 flow run tests/mna_voltage_sources.flow
 flow run examples/mna_voltage_sources_demo.flow
 ```
@@ -67,6 +68,8 @@ The exact Flow compiler revision used by CI is pinned in [the CI workflow](.gith
 ## DC circuit network with voltage sources
 
 [The new MNA kernel](src/mna.flow) assembles an augmented conductance matrix for linear resistors, oriented current injections, and independent ideal voltage sources. Its caller-owned dense pivoted solver reports both node voltages and source currents, and measures all KCL/KVL residuals. [The executable reference circuit](tests/mna_voltage_sources.flow) checks a 12 V two-resistor divider, source/load power balance, a superimposed current source, invalid stamps, and floating-network rejection. This advances [electrical issue #11](https://github.com/flooooooooooow/herbie/issues/11) without claiming transient/SPICE parity.
+
+The standalone browser has no third-party runtime CDN requirement: official Three.js r187 is vendored under `site/vendor/` with its MIT licence. The repository-root `index.html` redirects to `site/` when Pages is configured to publish from a branch; the Actions workflow publishes `site/` at the Pages root. A Chromium regression asserts CSS loads and the WebGL canvas actually renders.
 
 ## Design rules
 
