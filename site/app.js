@@ -27,7 +27,7 @@ function readInputs(){
   tolerance:(Number($("tolerance").value)/100).toFixed(2)+"×",heat:$("heat").value+"°C"};
  for(const id of ids)$(id+"-value")&&( $(id+"-value").textContent=labels[id] );
  $("heat-value").textContent=labels.heat;
- if(tolerance===null||arguments.length>=0)updateTolerance();
+ updateTolerance();
 }
 function updateTolerance(){
  tolerance=toleranceSamples({scale:Number($("tolerance").value)/100,deltaTC:Number($("heat").value)},1500,20261116);
