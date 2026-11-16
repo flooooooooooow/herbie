@@ -2,7 +2,7 @@
 
 ## Regression levels
 
-**Level 1, implemented:** analytically checkable elementary stress, elastic extension, thermal expansion, fit clearances, RSS, Cpk, PID output bounds, linear-powertrain kinematics, and zero-input equilibrium. The undamped quarter car is integrated with fixed-step RK4 and checked for bounded energy drift over 10,000 steps. Tests live in `tests/` and CI runs them with a pinned Flow compiler revision.
+**Level 1, implemented:** analytically checkable elementary stress, elastic extension, thermal expansion, fit clearances, RSS, Cpk, PID output bounds, linear-powertrain kinematics, and zero-input equilibrium. The undamped quarter car is integrated with fixed-step RK4 and checked for bounded energy drift over 10,000 steps. A 2D linear-elastic horizontal truss reference and two-/three-variable correlated variances are also tested. Tests live in `tests/` and CI runs them with a pinned Flow compiler revision.
 
 **Level 2, not yet implemented:** convergence order tests with dt refinement, stiff-system rejection, independent high-precision reference integrations, randomized/property tests, sensitivity/Jacobian comparisons, and sustained million-step profiling.
 
@@ -44,3 +44,7 @@ Flow is not an ISO 26262-qualified toolchain merely because it emits native code
 ## Reproducibility
 
 Run `flow run tests/engineering_smoke.flow` and `flow run tests/vehicle_energy.flow` from the package root. Record the exact Flow compiler revision, OS, hardware, compilation flags, numerical results and timing histograms for any future claimed benchmark. No throughput or WCET figures are claimed by this release.
+
+## New reference tests
+
+\`tests/truss_uncertainty.flow\` checks a 1 m horizontal bar with 200 GPa modulus and 100 mm² section, giving 20 MN/m axial stiffness, 20 kN force for 1 mm extension, and 10 J elastic strain energy. It checks the sign pattern of the row-major stiffness matrix and verifies that a degenerate zero-length bar is rejected. Correlated dimension variance is tested against uncorrelated and perfectly correlated analytical cases.
