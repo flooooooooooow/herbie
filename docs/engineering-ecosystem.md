@@ -10,7 +10,7 @@ Every physical system should share an explicit state schema, dimensioned paramet
 | --- | --- | --- |
 | Numerical integration and modelling | Domain-specific Euler, RK4, closed-form steps | ODE/DAE, Newton/Krylov, sparse matrices, block graphs, units, zero-crossings, multirate scheduling |
 | Vehicle chassis and handling | `vehicle`, `powertrain` | 3D 6-DOF chassis, 7-DOF ride, suspension kinematics, nonlinear tire, aero, braking, steering, stability, parameter identification |
-| Electrical circuits | `electrical`, `circuits` | Modified nodal analysis, network topologies, AC impedance, switches, power converters, rectifiers, EMC, small-signal linearisation |
+| Electrical circuits | `electrical`, `circuits`, `mna` | Modified nodal analysis, network topologies, AC impedance, switches, power converters, rectifiers, EMC, small-signal linearisation |
 | Machines and drives | `motors` | PMSM, BLDC, induction, synchronous generator, field-oriented control, PWM inverter, torque ripple, thermal/electromagnetic saturation |
 | Batteries and charging | `battery` | Pack/cell networks, SOC/SOH estimators, RC model identification, OCV curves, electro-thermal models, BMS limits, charging and degradation |
 | Internal combustion | `engine`, `maps` | Torque/fuel/air/exhaust/emissions 2D/3D maps, volumetric efficiency, airflow/manifolds, ignition and fuel injection, turbocharging, cylinder pressure, crank-angle simulation, diesel injection, knock, ECU |
