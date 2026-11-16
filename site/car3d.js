@@ -196,7 +196,7 @@ export function createCarViewer(container){
     const a=mesh(car,new THREE.TorusGeometry(0.335,0.006,8,48),mat(0x64d6c7,0.4,0.3));
     accents.push(a);
   }
-  let focus="overview",cutaway=true,showForces=true;
+  let focus="overview",cutaway=true,showForces=true,pickListener=null;
   const raycaster=new THREE.Raycaster(),pointer=new THREE.Vector2();
   const wheelTargets=wheels.map(w=>w.wheelBase);
   const tempA=new THREE.Vector3(),tempB=new THREE.Vector3();
@@ -239,7 +239,7 @@ export function createCarViewer(container){
     contactPads[i].position.y=0.01;
     contactPads[i].material.opacity=clamp(loads[i]/4800,0.08,0.65);
     accents[i].position.set(x,wheelY,z);
-    accents[i].rotation.y=Math.PI/2;
+    accents[i].rotation.y=0;
     accents[i].visible=focus===info.id.toLowerCase()||focus==="suspension";
   }
   function resize(){
@@ -280,10 +280,25 @@ export function createCarViewer(container){
     accents.forEach(a=>a.visible=false);
   }
   function setCutaway(enabled){
-    cutaway=Boolean(enabled);paint.opacity=cutaway?0.18:0.94;glass.opacity=cutaway?0.12:0.49;paint.depthWrite=!cutaway;
+    cutaway=Boolean(enabled);paint.opacity=cutaway?0.34:0.94;glass.opacity=cutaway?0.12:0.49;paint.depthWrite=!cutaway;
   }
   function setForces(enabled){showForces=Boolean(enabled);}
+  let pointerDownX=0,pointerDownY=0;
+  renderer.domElement.addEventListener("pointerdown",e=>{pointerDownX=e.clientX;pointerDownY=e.clientY;});
+  renderer.domElement.addEventListener("pointerup",e=>{
+    if(Math.hypot(e.clientX-pointerDownX,e.clientY-pointerDownY)>7)return;
+    const rect=renderer.domElement.getBoundingClientRect();
+    pointer.set(((e.clientX-rect.left)/rect.width)*2-1,-((e.clientY-rect.top)/rect.height)*2+1);
+    raycaster.setFromCamera(pointer,camera);
+    const hits=raycaster.intersectObjects(wheelTargets,true);
+    if(!hits.length)return;
+    let part=hits[0].object;
+    while(part.parent&&!wheelTargets.includes(part))part=part.parent;
+    const index=wheelTargets.indexOf(part);
+    if(index>=0&&typeof pickListener==="function")pickListener(cornerMeta[index].id.toLowerCase());
+  });
+  function onPick(fn){pickListener=typeof fn==="function"?fn:null;}
   function destroy(){observer?.disconnect();controls.dispose();renderer.dispose();renderer.domElement.remove();}
   setCutaway(true);
-  return {scene,camera,renderer,render,resize,setFocus,setCutaway,setForces,destroy};
+  return {scene,camera,renderer,render,resize,setFocus,setCutaway,setForces,onPick,destroy};
 }
