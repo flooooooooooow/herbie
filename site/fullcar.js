@@ -152,7 +152,10 @@ export function rideEnergy(s,p=defaultRideParameters,controls={}){
  for(let i=0;i<4;i++){
   const c=cornerMeta[i],q=y[6+2*i],v=y[7+2*i],relative=q-y[0]-c.x*y[2]-c.z*y[4];
   compression.push(relative);
-  E+=0.5*p.unsprungMassKg[i]*v*v+0.5*p.springNPerM[i]*kMul*relative*relative+0.5*p.tireNPerM[i]*q*q;
+  const preload=p.totalMassKg*p.gravityMps2*(i<2?0.55:0.45)/2;
+  const tireK=p.tireNPerM[i],detachment=preload/tireK;
+  const tyrePotential=q<=detachment?0.5*tireK*q*q:preload*q-0.5*preload*preload/tireK;
+  E+=0.5*p.unsprungMassKg[i]*v*v+0.5*p.springNPerM[i]*kMul*relative*relative+tyrePotential;
  }
  for(let i=0;i<2;i++)E+=0.5*p.antiRollNPerM[i]*aMul*(compression[2*i]-compression[2*i+1])**2;
  return E;
