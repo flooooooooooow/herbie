@@ -1,0 +1,128 @@
+# Equation-first engineering models using the shipped Flow "evolves as"
+# compiler feature. Includes native RK4 and analytical / kernel parity checks.
+# This is a real Flow program, not a diagram or JS simulation.
+
+import herbie.vehicle { QuarterCarParameters, QuarterCarState, quarterCarStep, quarterCarEnergy }
+
+flow EquationLongitudinal {
+    state distance: f64 = 0.0
+    state speed: f64 = 0.0
+    input wheelForce: f64
+    input gradeForce: f64
+    param mass: f64 = 1500.0
+    param quadraticDrag: f64 = 0.0
+    param rollingForce: f64 = 0.0
+
+    solver { dt 1 ms  method rk4 }
+
+    distance evolves as speed
+    speed evolves as (wheelForce - gradeForce - rollingForce - quadraticDrag * speed * speed) / mass
+}
+
+flow EquationQuarterCar {
+    state sprungPosition: f64 = 0.0
+    state sprungVelocity: f64 = 0.0
+    state unsprungPosition: f64 = 0.0
+    state unsprungVelocity: f64 = 0.0
+
+    input roadPosition: f64
+    input roadVelocity: f64
+    param sprungMass: f64 = 300.0
+    param unsprungMass: f64 = 40.0
+    param suspensionStiffness: f64 = 16000.0
+    param suspensionDamping: f64 = 1200.0
+    param tireStiffness: f64 = 200000.0
+    param tireDamping: f64 = 0.0
+
+    solver { dt 1 ms  method rk4 }
+
+    sprungPosition evolves as sprungVelocity
+    sprungVelocity evolves as (
+        -suspensionStiffness * (sprungPosition - unsprungPosition)
+        -suspensionDamping * (sprungVelocity - unsprungVelocity)
+    ) / sprungMass
+
+    unsprungPosition evolves as unsprungVelocity
+    unsprungVelocity evolves as (
+        suspensionStiffness * (sprungPosition - unsprungPosition)
+        +suspensionDamping * (sprungVelocity - unsprungVelocity)
+        -tireStiffness * (unsprungPosition - roadPosition)
+        -tireDamping * (unsprungVelocity - roadVelocity)
+    ) / unsprungMass
+}
+
+function near(a: f64, b: f64, epsilon: f64) -> bool {
+    return a >= b - epsilon and a <= b + epsilon
+}
+
+function main() -> i32 {
+    let dt: f64 = 0.001
+    let mut longitudinal: EquationLongitudinal = EquationLongitudinal_new()
+    longitudinal.wheelForce = 1500.0
+    longitudinal.rollingForce = 0.0
+    longitudinal.quadraticDrag = 0.0
+    for step in 0 to 4000 {
+        EquationLongitudinal_step(&longitudinal, dt)
+    }
+    # For 1 m/s² constant acceleration over 4 s, distance must be 8 m.
+    if not near(longitudinal.speed, 4.0, 1.0e-10)
+        or not near(longitudinal.distance, 8.0, 1.0e-10) {
+        println("FAIL equation longitudinal RK4 analytical reference")
+        return 1
+    }
+
+    let p: QuarterCarParameters = QuarterCarParameters {
+        sprungMass: 300.0, unsprungMass: 40.0,
+        suspensionStiffness: 16000.0, suspensionDamping: 1200.0,
+        tireStiffness: 200000.0, tireDamping: 0.0
+    }
+    let mut equation: EquationQuarterCar = EquationQuarterCar_new()
+    equation.sprungPosition = 0.015
+    equation.roadPosition = 0.0
+    equation.roadVelocity = 0.0
+
+    let mut kernel: QuarterCarState = QuarterCarState {
+        sprungPosition: 0.015, sprungVelocity: 0.0,
+        unsprungPosition: 0.0, unsprungVelocity: 0.0
+    }
+    for step in 0 to 5000 {
+        EquationQuarterCar_step(&equation, dt)
+        kernel = quarterCarStep(kernel, p, 0.0, 0.0, dt)
+    }
+    if not near(equation.sprungPosition, kernel.sprungPosition, 1.0e-8)
+        or not near(equation.sprungVelocity, kernel.sprungVelocity, 1.0e-8)
+        or not near(equation.unsprungPosition, kernel.unsprungPosition, 1.0e-8)
+        or not near(equation.unsprungVelocity, kernel.unsprungVelocity, 1.0e-8) {
+        println("FAIL native RK4 equation/kernel parity")
+        return 2
+    }
+
+    # Turn off damping on the equation model and compare energy.
+    let mut conservative: EquationQuarterCar = EquationQuarterCar_new()
+    conservative.sprungPosition = 0.015
+    conservative.suspensionDamping = 0.0
+    let initial: f64 = quarterCarEnergy(QuarterCarState {
+        sprungPosition: conservative.sprungPosition,
+        sprungVelocity: conservative.sprungVelocity,
+        unsprungPosition: conservative.unsprungPosition,
+        unsprungVelocity: conservative.unsprungVelocity
+    }, p, 0.0)
+    # The baseline energy uses identical stiffness/masses; damping is irrelevant.
+    for step in 0 to 5000 {
+        EquationQuarterCar_step(&conservative, dt)
+    }
+    let final: f64 = quarterCarEnergy(QuarterCarState {
+        sprungPosition: conservative.sprungPosition,
+        sprungVelocity: conservative.sprungVelocity,
+        unsprungPosition: conservative.unsprungPosition,
+        unsprungVelocity: conservative.unsprungVelocity
+    }, p, 0.0)
+    let mut relative: f64 = (final - initial) / initial
+    if relative < 0.0 { relative = -relative }
+    if relative > 0.001 {
+        println("FAIL conservative equation energy drift")
+        return 3
+    }
+    println("PASS equation-first longitudinal analytical, quarter-car RK4 parity, conservative energy")
+    return 0
+}
