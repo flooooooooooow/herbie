@@ -1,0 +1,13 @@
+[package]
+name = "herbie"
+version = "0.1.0"
+description = "Flow-native real-time automotive simulation and manufacturing engineering"
+license = "MIT"
+entry = "examples/quarter_car_demo.flow"
+
+[paths]
+herbie = "src"
+
+[dependencies]
+
+[dev-dependencies]

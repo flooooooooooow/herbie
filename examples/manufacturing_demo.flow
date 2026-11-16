@@ -1,0 +1,23 @@
+import herbie.tolerances { DimensionTolerance, clearanceRange, processCpk }
+import herbie.structures { axialStress, yieldSafetyFactor }
+
+function main() -> i32 {
+    let hole: DimensionTolerance = DimensionTolerance {
+        nominal: 0.020, lowerDeviation: -0.00005, upperDeviation: 0.00005
+    }
+    let shaft: DimensionTolerance = DimensionTolerance {
+        nominal: 0.0199, lowerDeviation: -0.00002, upperDeviation: 0.00002
+    }
+    let clearance = clearanceRange(hole, shaft)
+    let stress: f64 = axialStress(12000.0, 0.0004)
+    println("Worst case clearance min/max (m):")
+    println(clearance.lower)
+    println(clearance.upper)
+    println("Axial stress (Pa):")
+    println(stress)
+    println("Yield safety factor:")
+    println(yieldSafetyFactor(250000000.0, stress))
+    println("Process Cpk:")
+    println(processCpk(20.0, 0.01, 19.95, 20.05))
+    return 0
+}

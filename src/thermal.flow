@@ -1,0 +1,23 @@
+# @module herbie.thermal
+# Lumped-capacitance thermal model, explicit Euler fixed step.
+
+export struct ThermalParameters {
+    mass: f64,
+    specificHeatCapacity: f64,
+    heatTransferCoefficient: f64,
+    exposedArea: f64
+}
+
+export struct ThermalState {
+    temperature: f64
+}
+
+export function thermalStep(s: ThermalState, p: ThermalParameters, ambientTemperature: f64, heatInputWatts: f64, dt: f64) -> ThermalState {
+    let heatLoss: f64 = p.heatTransferCoefficient * p.exposedArea * (s.temperature - ambientTemperature)
+    let rate: f64 = (heatInputWatts - heatLoss) / (p.mass * p.specificHeatCapacity)
+    return ThermalState { temperature: s.temperature + dt * rate }
+}
+
+export function thermalTimeConstant(p: ThermalParameters) -> f64 {
+    return p.mass * p.specificHeatCapacity / (p.heatTransferCoefficient * p.exposedArea)
+}

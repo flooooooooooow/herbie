@@ -1,0 +1,25 @@
+import herbie.vehicle { QuarterCarParameters, QuarterCarState, quarterCarStep }
+
+function main() -> i32 {
+    let p: QuarterCarParameters = QuarterCarParameters {
+        sprungMass: 300.0, unsprungMass: 40.0,
+        suspensionStiffness: 16000.0, suspensionDamping: 1200.0,
+        tireStiffness: 200000.0, tireDamping: 0.0
+    }
+    let mut s: QuarterCarState = QuarterCarState {
+        sprungPosition: 0.0, sprungVelocity: 0.0,
+        unsprungPosition: 0.0, unsprungVelocity: 0.0
+    }
+    for i in 0 to 1000 {
+        let mut road: f64 = 0.0
+        if i >= 100 {
+            road = 0.01
+        }
+        s = quarterCarStep(s, p, road, 0.0, 0.001)
+    }
+    println("Quarter-car sprung position (metres):")
+    println(s.sprungPosition)
+    println("Quarter-car unsprung position (metres):")
+    println(s.unsprungPosition)
+    return 0
+}

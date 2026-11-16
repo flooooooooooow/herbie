@@ -1,0 +1,47 @@
+# @module herbie.structures
+# Elementary elastic mechanics, SI units. No plasticity or FEA claim.
+
+export function axialStress(force: f64, area: f64) -> f64 {
+    return force / area
+}
+
+export function axialExtension(force: f64, length: f64, youngModulus: f64, area: f64) -> f64 {
+    return force * length / (youngModulus * area)
+}
+
+export function bendingStress(moment: f64, distanceFromNeutralAxis: f64, secondMomentArea: f64) -> f64 {
+    return moment * distanceFromNeutralAxis / secondMomentArea
+}
+
+export function torsionalShearStress(torque: f64, radius: f64, polarMomentArea: f64) -> f64 {
+    return torque * radius / polarMomentArea
+}
+
+export function planeStressVonMises(sigmaX: f64, sigmaY: f64, tauXY: f64) -> f64 {
+    return sqrt(sigmaX * sigmaX - sigmaX * sigmaY + sigmaY * sigmaY + 3.0 * tauXY * tauXY)
+}
+
+export function yieldSafetyFactor(yieldStrength: f64, equivalentStress: f64) -> f64 {
+    return yieldStrength / equivalentStress
+}
+
+export function fullyConstrainedThermalStress(youngModulus: f64, expansionCoefficient: f64, deltaTemperature: f64) -> f64 {
+    return -youngModulus * expansionCoefficient * deltaTemperature
+}
+
+export function eulerBucklingLoad(youngModulus: f64, secondMomentArea: f64, effectiveLengthFactor: f64, length: f64) -> f64 {
+    let effectiveLength: f64 = effectiveLengthFactor * length
+    return 9.869604401089358 * youngModulus * secondMomentArea / (effectiveLength * effectiveLength)
+}
+
+export function goodmanUtilization(alternatingStress: f64, meanTensileStress: f64, enduranceLimit: f64, ultimateTensileStrength: f64) -> f64 {
+    let mut mean: f64 = meanTensileStress
+    if mean < 0.0 {
+        mean = 0.0
+    }
+    return alternatingStress / enduranceLimit + mean / ultimateTensileStrength
+}
+
+export function minersDamageStep(accumulatedDamage: f64, appliedCycles: f64, cyclesToFailure: f64) -> f64 {
+    return accumulatedDamage + appliedCycles / cyclesToFailure
+}

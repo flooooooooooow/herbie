@@ -1,0 +1,33 @@
+name: Herbie CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  flow-native-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out Herbie
+        uses: actions/checkout@v4
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang make
+          git clone https://github.com/flooooooooooow/flow.git .flow-toolchain
+          git -C .flow-toolchain checkout --detach 8ebc58f90ea6febeec9cf5fe7979803a99bb60f7
+          ./.flow-toolchain/flow version
+      - name: Check engineering regression values
+        run: ./.flow-toolchain/flow run tests/engineering_smoke.flow
+      - name: Check conservative quarter-car energy
+        run: ./.flow-toolchain/flow run tests/vehicle_energy.flow
+      - name: Run vehicle demo
+        run: ./.flow-toolchain/flow run examples/quarter_car_demo.flow
+      - name: Run manufacturing demo
+        run: ./.flow-toolchain/flow run examples/manufacturing_demo.flow
