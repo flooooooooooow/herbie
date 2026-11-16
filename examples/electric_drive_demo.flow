@@ -1,0 +1,35 @@
+import herbie.motors { DCMotorParameters, DCMotorState, dcMotorStep }
+import herbie.battery { BatteryParameters, BatteryState, batteryStep, batteryTerminalVoltage }
+
+function main() -> i32 {
+    let battery: BatteryParameters = BatteryParameters {
+        capacityAmpHours: 50.0, nominalVoltage: 48.0, openCircuitSlope: 5.0,
+        ohmicResistance: 0.02, polarizationResistance: 0.01,
+        polarizationCapacitance: 500.0
+    }
+    let motor: DCMotorParameters = DCMotorParameters {
+        resistance: 1.2, inductance: 0.15,
+        torqueConstant: 0.25, backEmfConstant: 0.25,
+        rotorInertia: 0.08, viscousDamping: 0.05
+    }
+    let mut batteryState: BatteryState = BatteryState {
+        stateOfCharge: 0.7, polarizationVoltage: 0.0
+    }
+    let mut motorState: DCMotorState = DCMotorState {
+        current: 0.0, angle: 0.0, angularVelocity: 0.0
+    }
+    for i in 0 to 2000 {
+        let voltage: f64 = batteryTerminalVoltage(batteryState, battery, motorState.current)
+        motorState = dcMotorStep(motorState, motor, voltage, 1.0, 0.0001)
+        let batteryResult = batteryStep(batteryState, battery, motorState.current, 0.0001)
+        batteryState = batteryResult.state
+    }
+    println("DC drive final angular velocity (rad/s):")
+    println(motorState.angularVelocity)
+    println("Battery SOC:")
+    println(batteryState.stateOfCharge)
+    if motorState.angularVelocity <= 0.0 or batteryState.stateOfCharge >= 0.7 {
+        return 1
+    }
+    return 0
+}

@@ -1,0 +1,95 @@
+# @module herbie.electrical
+# SI units. Lumped RC/RL exact constant-input steps; series RLC fixed-step RK4.
+# Caller must provide positive passive components and dt >= 0.
+
+export struct RCParameters {
+    resistance: f64,
+    capacitance: f64
+}
+
+export struct RCState {
+    capacitorVoltage: f64
+}
+
+export function rcStep(s: RCState, p: RCParameters, sourceVoltage: f64, dt: f64) -> RCState {
+    let decay: f64 = exp(-dt / (p.resistance * p.capacitance))
+    return RCState {
+        capacitorVoltage: sourceVoltage + (s.capacitorVoltage - sourceVoltage) * decay
+    }
+}
+
+export function rcCurrent(s: RCState, p: RCParameters, sourceVoltage: f64) -> f64 {
+    return (sourceVoltage - s.capacitorVoltage) / p.resistance
+}
+
+export function rcStoredEnergy(s: RCState, p: RCParameters) -> f64 {
+    return 0.5 * p.capacitance * s.capacitorVoltage * s.capacitorVoltage
+}
+
+export struct RLParameters {
+    resistance: f64,
+    inductance: f64
+}
+
+export struct RLState {
+    current: f64
+}
+
+export function rlStep(s: RLState, p: RLParameters, sourceVoltage: f64, dt: f64) -> RLState {
+    let decay: f64 = exp(-dt * p.resistance / p.inductance)
+    let steadyCurrent: f64 = sourceVoltage / p.resistance
+    return RLState {
+        current: steadyCurrent + (s.current - steadyCurrent) * decay
+    }
+}
+
+export function rlStoredEnergy(s: RLState, p: RLParameters) -> f64 {
+    return 0.5 * p.inductance * s.current * s.current
+}
+
+export struct SeriesRLCParameters {
+    resistance: f64,
+    inductance: f64,
+    capacitance: f64
+}
+
+export struct SeriesRLCState {
+    current: f64,
+    capacitorVoltage: f64
+}
+
+struct SeriesRLCDerivative {
+    current: f64,
+    capacitorVoltage: f64
+}
+
+function seriesRLCDerivative(s: SeriesRLCState, p: SeriesRLCParameters, sourceVoltage: f64) -> SeriesRLCDerivative {
+    return SeriesRLCDerivative {
+        current: (sourceVoltage - p.resistance * s.current - s.capacitorVoltage) / p.inductance,
+        capacitorVoltage: s.current / p.capacitance
+    }
+}
+
+function seriesRLCAdvance(s: SeriesRLCState, d: SeriesRLCDerivative, dt: f64) -> SeriesRLCState {
+    return SeriesRLCState {
+        current: s.current + dt * d.current,
+        capacitorVoltage: s.capacitorVoltage + dt * d.capacitorVoltage
+    }
+}
+
+export function seriesRLCStep(s: SeriesRLCState, p: SeriesRLCParameters, sourceVoltage: f64, dt: f64) -> SeriesRLCState {
+    let k1: SeriesRLCDerivative = seriesRLCDerivative(s, p, sourceVoltage)
+    let k2: SeriesRLCDerivative = seriesRLCDerivative(seriesRLCAdvance(s, k1, 0.5 * dt), p, sourceVoltage)
+    let k3: SeriesRLCDerivative = seriesRLCDerivative(seriesRLCAdvance(s, k2, 0.5 * dt), p, sourceVoltage)
+    let k4: SeriesRLCDerivative = seriesRLCDerivative(seriesRLCAdvance(s, k3, dt), p, sourceVoltage)
+    let d: f64 = dt / 6.0
+    return SeriesRLCState {
+        current: s.current + d * (k1.current + 2.0 * k2.current + 2.0 * k3.current + k4.current),
+        capacitorVoltage: s.capacitorVoltage + d * (k1.capacitorVoltage + 2.0 * k2.capacitorVoltage + 2.0 * k3.capacitorVoltage + k4.capacitorVoltage)
+    }
+}
+
+export function seriesRLCStoredEnergy(s: SeriesRLCState, p: SeriesRLCParameters) -> f64 {
+    return 0.5 * p.inductance * s.current * s.current
+        + 0.5 * p.capacitance * s.capacitorVoltage * s.capacitorVoltage
+}

@@ -1,0 +1,62 @@
+# @module herbie.maps
+# Row-major, clamped bilinear lookup table. x/y grids must be strictly increasing.
+# Values indexed as values[xIndex * yCount + yIndex].
+# Caller owns and retains the map buffers across calls.
+
+export struct Table2D {
+    xAxis: ptr<f64>,
+    yAxis: ptr<f64>,
+    values: ptr<f64>,
+    xCount: i32,
+    yCount: i32
+}
+
+export function table2DValid(t: Table2D) -> bool {
+    if t.xCount < 2 or t.yCount < 2 {
+        return false
+    }
+    for i in 1 to t.xCount {
+        if t.xAxis[i] <= t.xAxis[i - 1] {
+            return false
+        }
+    }
+    for j in 1 to t.yCount {
+        if t.yAxis[j] <= t.yAxis[j - 1] {
+            return false
+        }
+    }
+    return true
+}
+
+export function table2DBilinearClamped(t: Table2D, x: f64, y: f64) -> f64 {
+    let mut xi: i32 = 0
+    let mut yi: i32 = 0
+    while xi + 2 < t.xCount and x > t.xAxis[xi + 1] {
+        xi = xi + 1
+    }
+    while yi + 2 < t.yCount and y > t.yAxis[yi + 1] {
+        yi = yi + 1
+    }
+    let mut ax: f64 = (x - t.xAxis[xi]) / (t.xAxis[xi + 1] - t.xAxis[xi])
+    let mut ay: f64 = (y - t.yAxis[yi]) / (t.yAxis[yi + 1] - t.yAxis[yi])
+    if ax < 0.0 {
+        ax = 0.0
+    }
+    if ax > 1.0 {
+        ax = 1.0
+    }
+    if ay < 0.0 {
+        ay = 0.0
+    }
+    if ay > 1.0 {
+        ay = 1.0
+    }
+    let base: i32 = xi * t.yCount + yi
+    let f00: f64 = t.values[base]
+    let f01: f64 = t.values[base + 1]
+    let f10: f64 = t.values[base + t.yCount]
+    let f11: f64 = t.values[base + t.yCount + 1]
+    let a: f64 = f00 + (f10 - f00) * ax
+    let b: f64 = f01 + (f11 - f01) * ax
+    return a + (b - a) * ay
+}

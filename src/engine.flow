@@ -1,0 +1,67 @@
+# @module herbie.engine
+# Dynamometer-map spark-ignition / compression-ignition mean-value engine scaffold.
+# Torque map x axis RPM, y axis normalized throttle/fuel command, values N m.
+# Simple crank inertia, linear friction, positive-output power fuel approximation.
+# No cylinders, manifolds, turbocharger, emissions, combustion cycles or idle controller.
+
+import herbie.maps { Table2D, table2DBilinearClamped }
+
+export struct MappedEngineParameters {
+    crankInertia: f64,
+    viscousFriction: f64,
+    constantFrictionTorque: f64,
+    fuelLowerHeatingValue: f64,
+    brakeThermalEfficiency: f64
+}
+
+export struct MappedEngineState {
+    angularVelocity: f64,
+    cumulativeFuelKg: f64
+}
+
+export struct MappedEngineResult {
+    state: MappedEngineState,
+    grossTorque: f64,
+    netShaftTorque: f64,
+    fuelMassFlow: f64
+}
+
+export function angularVelocityToRpm(angularVelocity: f64) -> f64 {
+    return angularVelocity * 9.549296585513721
+}
+
+export function rpmToAngularVelocity(rpm: f64) -> f64 {
+    return rpm * 0.10471975511965977
+}
+
+export function mappedEngineStep(
+    s: MappedEngineState,
+    p: MappedEngineParameters,
+    torqueMap: Table2D,
+    throttle: f64,
+    loadTorque: f64,
+    dt: f64
+) -> MappedEngineResult {
+    let grossTorque: f64 = table2DBilinearClamped(torqueMap, angularVelocityToRpm(s.angularVelocity), throttle)
+    let frictionTorque: f64 = p.constantFrictionTorque + p.viscousFriction * s.angularVelocity
+    let netShaftTorque: f64 = grossTorque - frictionTorque
+    let angularAcceleration: f64 = (netShaftTorque - loadTorque) / p.crankInertia
+    let mut nextSpeed: f64 = s.angularVelocity + dt * angularAcceleration
+    if nextSpeed < 0.0 {
+        nextSpeed = 0.0
+    }
+    let mut fuelPower: f64 = grossTorque * s.angularVelocity
+    if fuelPower < 0.0 {
+        fuelPower = 0.0
+    }
+    let fuelRate: f64 = fuelPower / (p.brakeThermalEfficiency * p.fuelLowerHeatingValue)
+    return MappedEngineResult {
+        state: MappedEngineState {
+            angularVelocity: nextSpeed,
+            cumulativeFuelKg: s.cumulativeFuelKg + fuelRate * dt
+        },
+        grossTorque: grossTorque,
+        netShaftTorque: netShaftTorque,
+        fuelMassFlow: fuelRate
+    }
+}

@@ -8,6 +8,12 @@ The first implementation is intentionally small:
 
 ```
 src/
+  electrical.flow     Lumped passive RC/RL/RLC
+  mechanics.flow      Single-axis rotation and ideal gear
+  motors.flow         Coupled armature/rotor DC motor
+  battery.flow        Thevenin RC battery and SOC
+  maps.flow           Clamped bilinear lookup for calibrated models
+  engine.flow         Torque-map crank dynamics and fuel flow
   vehicle.flow       Vertical quarter car and planar bicycle
   powertrain.flow    Longitudinal point-mass motion
   structures.flow    Elastic stress and introductory fatigue
@@ -49,3 +55,7 @@ A future block-graph front end could compile model graphs to Flow state evolutio
 The 2D truss element writes a 4x4 matrix in row-major order to a caller-provided 16-element buffer. It uses \`EA/L\` times the direction-cosine projection and returns failure for zero length or nonpositive area/modulus. It is an element kernel only, not a complete global FEA solver or structural certification system.
 
 The correlated uncertainty module implements \`Var(aX+bY)=a²σx²+b²σy²+2abρσxσy\` and the corresponding three-variable covariance form. All inputs must specify valid standard deviations and a positive-semidefinite covariance matrix.
+
+## Multiphysics implementation boundary
+
+The initial new modules use explicit typed state and physically named SI parameters. The RC/RL and battery RC equations use exact constant-input exponentials; the motor, series RLC and torsional oscillator use fixed-step RK4; the engine uses sample-time Euler with clamped nonnegative speed. The engine requires monotone, validated lookup grids. Each model has no hidden I/O/heap allocation and accepts a caller-chosen dt, but a complete multidomain solution will require shared algebraic constraints, consistent energy flows and implicit DAE integration. The electric drive example uses sequentially coupled motor and battery steps and is illustrative, not a verified energy-conserving electromechanical co-simulation nor a full EV drivetrain.

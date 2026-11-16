@@ -1,0 +1,91 @@
+import herbie.electrical { RCParameters, RCState, rcStep, rcCurrent, rcStoredEnergy, RLParameters, RLState, rlStep, SeriesRLCParameters, SeriesRLCState, seriesRLCStep, seriesRLCStoredEnergy }
+import herbie.mechanics { RotationalParameters, RotationalState, rotationalStep, rotationalStoredEnergy, gearOutputSpeed, gearOutputTorque, rotationalPower }
+import herbie.motors { DCMotorParameters, DCMotorState, dcMotorStep, dcMotorTorque, dcMotorStoredEnergy }
+
+function near(actual: f64, expected: f64, tolerance: f64) -> bool {
+    return actual >= expected - tolerance and actual <= expected + tolerance
+}
+
+function main() -> i32 {
+    let rc: RCParameters = RCParameters { resistance: 1000.0, capacitance: 0.000001 }
+    let rc0: RCState = RCState { capacitorVoltage: 0.0 }
+    let rc1: RCState = rcStep(rc0, rc, 10.0, 0.001)
+    if not near(rc1.capacitorVoltage, 6.321205588285577, 1.0e-10) {
+        println("FAIL exact RC transient")
+        return 1
+    }
+    if not near(rcCurrent(rc0, rc, 10.0), 0.01, 1.0e-12) {
+        return 2
+    }
+    if not near(rcStoredEnergy(RCState { capacitorVoltage: 10.0 }, rc), 0.00005, 1.0e-12) {
+        return 3
+    }
+
+    let rl: RLParameters = RLParameters { resistance: 2.0, inductance: 4.0 }
+    let rl1: RLState = rlStep(RLState { current: 0.0 }, rl, 10.0, 2.0)
+    if not near(rl1.current, 3.1606027941427883, 1.0e-10) {
+        println("FAIL exact RL transient")
+        return 4
+    }
+
+    let rlc: SeriesRLCParameters = SeriesRLCParameters {
+        resistance: 0.0, inductance: 2.0, capacitance: 0.5
+    }
+    let mut rs: SeriesRLCState = SeriesRLCState { current: 0.0, capacitorVoltage: 2.0 }
+    let initialRLC: f64 = seriesRLCStoredEnergy(rs, rlc)
+    for i in 0 to 5000 {
+        rs = seriesRLCStep(rs, rlc, 0.0, 0.01)
+    }
+    if not near(seriesRLCStoredEnergy(rs, rlc), initialRLC, 1.0e-7) {
+        println("FAIL lossless series RLC energy")
+        return 5
+    }
+
+    let mechanics: RotationalParameters = RotationalParameters {
+        inertia: 2.0, viscousDamping: 0.0, torsionalStiffness: 8.0
+    }
+    let mut ms: RotationalState = RotationalState { angle: 0.3, angularVelocity: 0.0 }
+    let initialMechanical: f64 = rotationalStoredEnergy(ms, mechanics)
+    for i in 0 to 5000 {
+        ms = rotationalStep(ms, mechanics, 0.0, 0.001)
+    }
+    if not near(rotationalStoredEnergy(ms, mechanics), initialMechanical, 1.0e-8) {
+        println("FAIL lossless torsional energy")
+        return 6
+    }
+
+    let outputSpeed: f64 = gearOutputSpeed(100.0, 4.0)
+    let outputTorque: f64 = gearOutputTorque(10.0, 4.0, 0.9)
+    if not near(outputSpeed, 25.0, 1.0e-12) {
+        return 7
+    }
+    if not near(outputTorque, 36.0, 1.0e-12) {
+        return 8
+    }
+    if not near(rotationalPower(outputTorque, outputSpeed), 900.0, 1.0e-12) {
+        println("FAIL ideal gear power balance")
+        return 9
+    }
+
+    let motor: DCMotorParameters = DCMotorParameters {
+        resistance: 0.0, inductance: 0.5,
+        torqueConstant: 0.2, backEmfConstant: 0.2,
+        rotorInertia: 2.0, viscousDamping: 0.0
+    }
+    let mut motorState: DCMotorState = DCMotorState {
+        current: 1.0, angle: 0.0, angularVelocity: 0.0
+    }
+    let initialMotor: f64 = dcMotorStoredEnergy(motorState, motor)
+    for i in 0 to 5000 {
+        motorState = dcMotorStep(motorState, motor, 0.0, 0.0, 0.002)
+    }
+    if not near(dcMotorStoredEnergy(motorState, motor), initialMotor, 1.0e-8) {
+        println("FAIL lossless DC motor energy")
+        return 10
+    }
+    if not near(dcMotorTorque(DCMotorState { current: 10.0, angle: 0.0, angularVelocity: 0.0 }, motor), 2.0, 1.0e-12) {
+        return 11
+    }
+    println("PASS electromechanical analytical and energy tests")
+    return 0
+}
