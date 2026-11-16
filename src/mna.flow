@@ -1,0 +1,189 @@
+# @module herbie.mna
+# Dense modified nodal analysis (MNA), steady-state linear resistive DC.
+# Unknowns = node voltages followed by ideal voltage-source currents.
+# Reference ground node is -1. Voltage sources oriented from plus to minus.
+# No dynamic allocations or I/O in kernel: all buffers are caller-owned.
+# A small-system baseline; no AC, transient, nonlinear or sparse claims.
+
+export struct MnaNetwork {
+    nodeCount: i32,
+    voltageSourceCount: i32,
+    matrix: ptr<f64>,
+    rhs: ptr<f64>
+}
+
+export function mnaUnknownCount(n: MnaNetwork) -> i32 {
+    return n.nodeCount + n.voltageSourceCount
+}
+
+function mnaAbs(value: f64) -> f64 {
+    if value < 0.0 {
+        return -value
+    }
+    return value
+}
+
+function mnaNodeValid(n: MnaNetwork, node: i32) -> bool {
+    return node >= -1 and node < n.nodeCount
+}
+
+export function mnaClear(n: MnaNetwork) -> bool {
+    if n.nodeCount <= 0 or n.voltageSourceCount < 0 {
+        return false
+    }
+    let size: i32 = mnaUnknownCount(n)
+    for i in 0 to size * size {
+        n.matrix[i] = 0.0
+    }
+    for i in 0 to size {
+        n.rhs[i] = 0.0
+    }
+    return true
+}
+
+# Conductance KCL stamp; excludes a self-loop and nonpositive resistance.
+export function mnaStampResistor(n: MnaNetwork, a: i32, b: i32, ohms: f64) -> bool {
+    if n.nodeCount <= 0 or n.voltageSourceCount < 0
+        or not mnaNodeValid(n, a) or not mnaNodeValid(n, b)
+        or a == b or ohms <= 0.0 or ohms != ohms {
+        return false
+    }
+    let size: i32 = mnaUnknownCount(n)
+    let conductance: f64 = 1.0 / ohms
+    if a >= 0 {
+        n.matrix[a * size + a] += conductance
+    }
+    if b >= 0 {
+        n.matrix[b * size + b] += conductance
+    }
+    if a >= 0 and b >= 0 {
+        n.matrix[a * size + b] -= conductance
+        n.matrix[b * size + a] -= conductance
+    }
+    return true
+}
+
+# A source flows from fromNode to toNode; positive current injects at toNode.
+export function mnaStampCurrentSource(n: MnaNetwork, fromNode: i32, toNode: i32, amperes: f64) -> bool {
+    if n.nodeCount <= 0 or n.voltageSourceCount < 0
+        or not mnaNodeValid(n, fromNode) or not mnaNodeValid(n, toNode)
+        or fromNode == toNode or amperes != amperes {
+        return false
+    }
+    if fromNode >= 0 {
+        n.rhs[fromNode] -= amperes
+    }
+    if toNode >= 0 {
+        n.rhs[toNode] += amperes
+    }
+    return true
+}
+
+# Voltage source s enforces V(plus)-V(minus)=volts.
+# The corresponding current unknown is positive flowing plus -> minus.
+# The MNA system [G B; B^T 0] [v; iV] = [iInjection; vSource].
+export function mnaStampVoltageSource(n: MnaNetwork, sourceIndex: i32, plusNode: i32, minusNode: i32, volts: f64) -> bool {
+    if n.nodeCount <= 0 or n.voltageSourceCount <= 0
+        or sourceIndex < 0 or sourceIndex >= n.voltageSourceCount
+        or not mnaNodeValid(n, plusNode) or not mnaNodeValid(n, minusNode)
+        or plusNode == minusNode or volts != volts {
+        return false
+    }
+    let size: i32 = mnaUnknownCount(n)
+    let branch: i32 = n.nodeCount + sourceIndex
+    if plusNode >= 0 {
+        n.matrix[plusNode * size + branch] += 1.0
+        n.matrix[branch * size + plusNode] += 1.0
+    }
+    if minusNode >= 0 {
+        n.matrix[minusNode * size + branch] -= 1.0
+        n.matrix[branch * size + minusNode] -= 1.0
+    }
+    n.rhs[branch] += volts
+    return true
+}
+
+# Partial-pivoted Gaussian elimination. n.matrix/n.rhs stay untouched.
+# Caller provides solution [size], scratchMatrix [size*size], scratchRhs [size].
+# Singular / floating networks and inconsistent ideal sources return false.
+export function mnaSolve(
+    n: MnaNetwork,
+    solution: ptr<f64>,
+    scratchMatrix: ptr<f64>,
+    scratchRhs: ptr<f64>,
+    absolutePivotTolerance: f64
+) -> bool {
+    if n.nodeCount <= 0 or n.voltageSourceCount < 0 or absolutePivotTolerance <= 0.0 {
+        return false
+    }
+    let size: i32 = mnaUnknownCount(n)
+    for i in 0 to size * size {
+        scratchMatrix[i] = n.matrix[i]
+    }
+    for i in 0 to size {
+        scratchRhs[i] = n.rhs[i]
+    }
+    for col in 0 to size {
+        let mut pivotRow: i32 = col
+        let mut best: f64 = mnaAbs(scratchMatrix[col * size + col])
+        for row in col + 1 to size {
+            let candidate: f64 = mnaAbs(scratchMatrix[row * size + col])
+            if candidate > best {
+                best = candidate
+                pivotRow = row
+            }
+        }
+        if best <= absolutePivotTolerance or best != best {
+            return false
+        }
+        if pivotRow != col {
+            for k in col to size {
+                let a: i32 = col * size + k
+                let b: i32 = pivotRow * size + k
+                let temp: f64 = scratchMatrix[a]
+                scratchMatrix[a] = scratchMatrix[b]
+                scratchMatrix[b] = temp
+            }
+            let rhs: f64 = scratchRhs[col]
+            scratchRhs[col] = scratchRhs[pivotRow]
+            scratchRhs[pivotRow] = rhs
+        }
+        for row in col + 1 to size {
+            let factor: f64 = scratchMatrix[row * size + col] / scratchMatrix[col * size + col]
+            scratchMatrix[row * size + col] = 0.0
+            for k in col + 1 to size {
+                scratchMatrix[row * size + k] -= factor * scratchMatrix[col * size + k]
+            }
+            scratchRhs[row] -= factor * scratchRhs[col]
+        }
+    }
+    let mut i: i32 = size - 1
+    while i >= 0 {
+        let mut v: f64 = scratchRhs[i]
+        for j in i + 1 to size {
+            v -= scratchMatrix[i * size + j] * solution[j]
+        }
+        solution[i] = v / scratchMatrix[i * size + i]
+        if solution[i] != solution[i] {
+            return false
+        }
+        i = i - 1
+    }
+    return true
+}
+
+# A*x-b infinity norm, covering node KCL and source KVL rows.
+export function mnaMaxResidual(n: MnaNetwork, solution: ptr<f64>) -> f64 {
+    let size: i32 = mnaUnknownCount(n)
+    let mut worst: f64 = 0.0
+    for row in 0 to size {
+        let mut residual: f64 = -n.rhs[row]
+        for col in 0 to size {
+            residual += n.matrix[row * size + col] * solution[col]
+        }
+        if mnaAbs(residual) > worst {
+            worst = mnaAbs(residual)
+        }
+    }
+    return worst
+}
