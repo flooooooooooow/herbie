@@ -6,7 +6,13 @@ Herbie is an engineering platform project, not a claim of MATLAB feature parity.
 | --- | --- | --- |
 | MATLAB numerical scripting | Typed Flow numeric models + array/linalg ecosystem | Only domain scalar kernels here |
 | Simulink block diagrams | Typed signal graph, rate propagation, scheduler, model lowering | Planned |
-| Simscape physical systems | Multidomain ports, units, constraints, DAE solvers | Planned |
+| Simscape physical systems | Multidomain ports, units, constraints, DAE solvers | Lumped domain kernels implemented; physical port graph planned |
+| Simscape Electrical | RC/RL/RLC, battery network, DC motor; later MNA, power electronics and grid/machines | Scalar electrical and DC motor baseline |
+| Simscape Battery | Thevenin SOC/polarization, later thermal/cell packs/BMS and ageing | One-RC lumped cell baseline |
+| Simscape Multibody | Single-axis rotational dynamics; later rigid bodies, joints, constraints/contact | Single-axis oscillator only |
+| Simscape Driveline | Fixed gear power transfer, later clutch/differentials/halfshaft/gearbox | Ideal fixed-ratio gear only |
+| Powertrain Blockset | Mapped engine, crank dynamics and fuel energy; later CI/SI transient, driveline and emissions | Bilinear map scaffold |
+| Simscape Fluids | Fluid networks, hydraulic actuators, coolant, pneumatics, thermo-fluid | Not implemented |
 | Vehicle Dynamics Blockset | Quarter car, linear-tire bicycle, longitudinal point mass | Initial kernels |
 | Control System Toolbox | Discrete PID, later state space, LQR, MPC, observers | PID only |
 | Simulink Real-Time / HIL | Scheduled native target runtime, deterministic I/O | Not implemented |
@@ -32,3 +38,5 @@ Each gate requires reference problems, numerical acceptance thresholds, compatib
 ## Scope principles
 
 Prioritize vertical workflows where Herbie can replace the **entire model-to-deployment handoff**, rather than copying hundreds of MATLAB APIs without traceable semantics. Expose equations as Flow source, preserve executable assumptions, use a stable package API, and keep CI proving what actually runs.
+
+See [engineering ecosystem coverage](engineering-ecosystem.md) for the intended module boundaries, feature gates and detailed workstreams.

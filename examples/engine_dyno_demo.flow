@@ -1,0 +1,34 @@
+import herbie.maps { Table2D, table2DValid }
+import herbie.engine { MappedEngineParameters, MappedEngineState, mappedEngineStep, rpmToAngularVelocity, angularVelocityToRpm }
+
+function main() -> i32 {
+    let mut rpmGrid: array<f64, 3> = [1000.0, 2500.0, 4000.0]
+    let mut throttleGrid: array<f64, 2> = [0.0, 1.0]
+    let mut torqueGrid: array<f64, 6> = [0.0, 90.0, 0.0, 160.0, 0.0, 120.0]
+    let map: Table2D = Table2D {
+        xAxis: &rpmGrid[0], yAxis: &throttleGrid[0],
+        values: &torqueGrid[0], xCount: 3, yCount: 2
+    }
+    if not table2DValid(map) {
+        return 1
+    }
+    let p: MappedEngineParameters = MappedEngineParameters {
+        crankInertia: 0.6, viscousFriction: 0.0, constantFrictionTorque: 5.0,
+        fuelLowerHeatingValue: 43000000.0, brakeThermalEfficiency: 0.30
+    }
+    let mut state: MappedEngineState = MappedEngineState {
+        angularVelocity: rpmToAngularVelocity(1500.0), cumulativeFuelKg: 0.0
+    }
+    for i in 0 to 2000 {
+        let result = mappedEngineStep(state, p, map, 0.7, 60.0, 0.0001)
+        state = result.state
+    }
+    println("Mapped engine RPM:")
+    println(angularVelocityToRpm(state.angularVelocity))
+    println("Cumulative fuel (kg):")
+    println(state.cumulativeFuelKg)
+    if state.angularVelocity <= 0.0 or state.cumulativeFuelKg <= 0.0 {
+        return 2
+    }
+    return 0
+}

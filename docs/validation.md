@@ -48,3 +48,7 @@ Run `flow run tests/engineering_smoke.flow` and `flow run tests/vehicle_energy.f
 ## New reference tests
 
 \`tests/truss_uncertainty.flow\` checks a 1 m horizontal bar with 200 GPa modulus and 100 mm² section, giving 20 MN/m axial stiffness, 20 kN force for 1 mm extension, and 10 J elastic strain energy. It checks the sign pattern of the row-major stiffness matrix and verifies that a degenerate zero-length bar is rejected. Correlated dimension variance is tested against uncorrelated and perfectly correlated analytical cases.
+
+## Electromechanical and engine regression
+
+`tests/electromechanics.flow` checks analytical single-time-constant RC/RL steps, ideal lossless series RLC energy conservation, undamped torsional-oscillator energy conservation, ideal gear power balance and an idealised electromechanical DC motor with matching SI torque and back-EMF constants. It deliberately tests energy preservation only for parameter sets without dissipative losses or external work. `tests/engine_battery.flow` checks exact bilinear mapping and clamped extrapolation, speed conversion, torque equilibrium, idealized fuel-energy arithmetic, battery coulomb count and exact first-order RC polarization. These tests do not validate engine combustion, battery electrochemistry, power electronics, component temperature or embedded real-time timing.

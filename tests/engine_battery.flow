@@ -1,0 +1,90 @@
+import herbie.maps { Table2D, table2DValid, table2DBilinearClamped }
+import herbie.engine { MappedEngineParameters, MappedEngineState, mappedEngineStep, rpmToAngularVelocity, angularVelocityToRpm }
+import herbie.battery { BatteryParameters, BatteryState, batteryStep, batteryOpenCircuitVoltage, batteryTerminalVoltage }
+
+function near(actual: f64, expected: f64, tolerance: f64) -> bool {
+    return actual >= expected - tolerance and actual <= expected + tolerance
+}
+
+function main() -> i32 {
+    let mut speed: array<f64, 2> = [1000.0, 3000.0]
+    let mut throttle: array<f64, 2> = [0.0, 1.0]
+    let mut torque: array<f64, 4> = [0.0, 100.0, 0.0, 200.0]
+    let map: Table2D = Table2D {
+        xAxis: &speed[0], yAxis: &throttle[0], values: &torque[0],
+        xCount: 2, yCount: 2
+    }
+    if not table2DValid(map) {
+        println("FAIL valid engine map")
+        return 1
+    }
+    if not near(table2DBilinearClamped(map, 2000.0, 0.5), 75.0, 1.0e-12) {
+        println("FAIL bilinear engine torque")
+        return 2
+    }
+    if not near(table2DBilinearClamped(map, 500.0, 1.0), 100.0, 1.0e-12) {
+        return 3
+    }
+    if not near(table2DBilinearClamped(map, 4000.0, 0.5), 100.0, 1.0e-12) {
+        return 4
+    }
+    let engine: MappedEngineParameters = MappedEngineParameters {
+        crankInertia: 1.0, viscousFriction: 0.0, constantFrictionTorque: 0.0,
+        fuelLowerHeatingValue: 40000000.0, brakeThermalEfficiency: 0.25
+    }
+    let engineState: MappedEngineState = MappedEngineState {
+        angularVelocity: rpmToAngularVelocity(2000.0), cumulativeFuelKg: 0.0
+    }
+    let engineResult = mappedEngineStep(engineState, engine, map, 0.5, 75.0, 0.1)
+    if not near(engineResult.state.angularVelocity, engineState.angularVelocity, 1.0e-10) {
+        println("FAIL engine crank torque balance")
+        return 5
+    }
+    if not near(angularVelocityToRpm(rpmToAngularVelocity(2000.0)), 2000.0, 1.0e-9) {
+        return 6
+    }
+    if not near(engineResult.grossTorque, 75.0, 1.0e-12) {
+        return 7
+    }
+    let expectedFuelRate: f64 = 75.0 * engineState.angularVelocity / 10000000.0
+    if not near(engineResult.fuelMassFlow, expectedFuelRate, 1.0e-12) {
+        println("FAIL mapped engine fuel energy")
+        return 8
+    }
+    if not near(engineResult.state.cumulativeFuelKg, expectedFuelRate * 0.1, 1.0e-12) {
+        return 9
+    }
+
+    let battery: BatteryParameters = BatteryParameters {
+        capacityAmpHours: 100.0, nominalVoltage: 400.0, openCircuitSlope: 100.0,
+        ohmicResistance: 0.01,
+        polarizationResistance: 0.02,
+        polarizationCapacitance: 500.0
+    }
+    let b0: BatteryState = BatteryState { stateOfCharge: 0.5, polarizationVoltage: 0.0 }
+    if not near(batteryOpenCircuitVoltage(b0, battery), 400.0, 1.0e-12) {
+        return 10
+    }
+    let discharged = batteryStep(b0, battery, 100.0, 36.0)
+    if not near(discharged.state.stateOfCharge, 0.49, 1.0e-12) {
+        println("FAIL battery coulomb count")
+        return 11
+    }
+    let expectedPolarization: f64 = 2.0 * (1.0 - exp(-3.6))
+    if not near(discharged.state.polarizationVoltage, expectedPolarization, 1.0e-12) {
+        println("FAIL battery RC polarization")
+        return 12
+    }
+    if not near(discharged.terminalVoltage, 399.0 - 1.0 - expectedPolarization, 1.0e-12) {
+        println("FAIL battery terminal voltage")
+        return 13
+    }
+    if not near(discharged.terminalPower, discharged.terminalVoltage * 100.0, 1.0e-9) {
+        return 14
+    }
+    if not near(batteryTerminalVoltage(b0, battery, -100.0), 401.0, 1.0e-12) {
+        return 15
+    }
+    println("PASS mapped engine and Thevenin battery tests")
+    return 0
+}

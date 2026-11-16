@@ -1,0 +1,62 @@
+# @module herbie.mechanics
+# Single-axis rotational inertia, torsional spring/damper and ideal gear.
+# Coordinates relative to unstrained equilibrium. SI units.
+
+export struct RotationalParameters {
+    inertia: f64,
+    viscousDamping: f64,
+    torsionalStiffness: f64
+}
+
+export struct RotationalState {
+    angle: f64,
+    angularVelocity: f64
+}
+
+struct RotationalDerivative {
+    angle: f64,
+    angularVelocity: f64
+}
+
+function rotationalDerivative(s: RotationalState, p: RotationalParameters, inputTorque: f64) -> RotationalDerivative {
+    return RotationalDerivative {
+        angle: s.angularVelocity,
+        angularVelocity: (inputTorque - p.viscousDamping * s.angularVelocity - p.torsionalStiffness * s.angle) / p.inertia
+    }
+}
+
+function rotationalAdvance(s: RotationalState, d: RotationalDerivative, dt: f64) -> RotationalState {
+    return RotationalState {
+        angle: s.angle + d.angle * dt,
+        angularVelocity: s.angularVelocity + d.angularVelocity * dt
+    }
+}
+
+export function rotationalStep(s: RotationalState, p: RotationalParameters, inputTorque: f64, dt: f64) -> RotationalState {
+    let k1: RotationalDerivative = rotationalDerivative(s, p, inputTorque)
+    let k2: RotationalDerivative = rotationalDerivative(rotationalAdvance(s, k1, 0.5 * dt), p, inputTorque)
+    let k3: RotationalDerivative = rotationalDerivative(rotationalAdvance(s, k2, 0.5 * dt), p, inputTorque)
+    let k4: RotationalDerivative = rotationalDerivative(rotationalAdvance(s, k3, dt), p, inputTorque)
+    let d: f64 = dt / 6.0
+    return RotationalState {
+        angle: s.angle + d * (k1.angle + 2.0 * k2.angle + 2.0 * k3.angle + k4.angle),
+        angularVelocity: s.angularVelocity + d * (k1.angularVelocity + 2.0 * k2.angularVelocity + 2.0 * k3.angularVelocity + k4.angularVelocity)
+    }
+}
+
+export function rotationalStoredEnergy(s: RotationalState, p: RotationalParameters) -> f64 {
+    return 0.5 * p.inertia * s.angularVelocity * s.angularVelocity
+        + 0.5 * p.torsionalStiffness * s.angle * s.angle
+}
+
+export function gearOutputSpeed(inputAngularVelocity: f64, inputToOutputRatio: f64) -> f64 {
+    return inputAngularVelocity / inputToOutputRatio
+}
+
+export function gearOutputTorque(inputTorque: f64, inputToOutputRatio: f64, efficiency: f64) -> f64 {
+    return inputTorque * inputToOutputRatio * efficiency
+}
+
+export function rotationalPower(torque: f64, angularVelocity: f64) -> f64 {
+    return torque * angularVelocity
+}

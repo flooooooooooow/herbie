@@ -1,7 +1,7 @@
 [package]
 name = "herbie"
-version = "0.2.0"
-description = "Flow-native real-time automotive simulation and manufacturing engineering"
+version = "0.3.0"
+description = "Flow-native real-time automotive, electrical, mechanical and powertrain engineering"
 license = "MIT"
 entry = "examples/quarter_car_demo.flow"
 

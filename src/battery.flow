@@ -1,0 +1,55 @@
+# @module herbie.battery
+# First-order Thevenin battery with affine OCV and one polarization RC pair.
+# Positive terminal current denotes discharge. Constant current within each step.
+# SOC is clamped only; electrical over-current/over-discharge protections are external.
+
+export struct BatteryParameters {
+    capacityAmpHours: f64,
+    nominalVoltage: f64,
+    openCircuitSlope: f64,
+    ohmicResistance: f64,
+    polarizationResistance: f64,
+    polarizationCapacitance: f64
+}
+
+export struct BatteryState {
+    stateOfCharge: f64,
+    polarizationVoltage: f64
+}
+
+export struct BatteryResult {
+    state: BatteryState,
+    terminalVoltage: f64,
+    terminalPower: f64
+}
+
+export function batteryOpenCircuitVoltage(s: BatteryState, p: BatteryParameters) -> f64 {
+    return p.nominalVoltage + p.openCircuitSlope * (s.stateOfCharge - 0.5)
+}
+
+export function batteryTerminalVoltage(s: BatteryState, p: BatteryParameters, current: f64) -> f64 {
+    return batteryOpenCircuitVoltage(s, p) - p.ohmicResistance * current - s.polarizationVoltage
+}
+
+export function batteryStep(s: BatteryState, p: BatteryParameters, dischargeCurrent: f64, dt: f64) -> BatteryResult {
+    let mut nextCharge: f64 = s.stateOfCharge - dischargeCurrent * dt / (3600.0 * p.capacityAmpHours)
+    if nextCharge < 0.0 {
+        nextCharge = 0.0
+    }
+    if nextCharge > 1.0 {
+        nextCharge = 1.0
+    }
+    let decay: f64 = exp(-dt / (p.polarizationResistance * p.polarizationCapacitance))
+    let nextPolarization: f64 = s.polarizationVoltage * decay
+        + dischargeCurrent * p.polarizationResistance * (1.0 - decay)
+    let next: BatteryState = BatteryState {
+        stateOfCharge: nextCharge,
+        polarizationVoltage: nextPolarization
+    }
+    let voltage: f64 = batteryTerminalVoltage(next, p, dischargeCurrent)
+    return BatteryResult {
+        state: next,
+        terminalVoltage: voltage,
+        terminalPower: voltage * dischargeCurrent
+    }
+}

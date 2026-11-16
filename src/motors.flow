@@ -1,0 +1,62 @@
+# @module herbie.motors
+# Lumped permanent-magnet brushed DC motor, coupled electrical/mechanical RK4.
+# Positive voltage drives positive current and angular velocity.
+
+export struct DCMotorParameters {
+    resistance: f64,
+    inductance: f64,
+    torqueConstant: f64,
+    backEmfConstant: f64,
+    rotorInertia: f64,
+    viscousDamping: f64
+}
+
+export struct DCMotorState {
+    current: f64,
+    angle: f64,
+    angularVelocity: f64
+}
+
+struct DCMotorDerivative {
+    current: f64,
+    angle: f64,
+    angularVelocity: f64
+}
+
+function dcMotorDerivative(s: DCMotorState, p: DCMotorParameters, appliedVoltage: f64, loadTorque: f64) -> DCMotorDerivative {
+    return DCMotorDerivative {
+        current: (appliedVoltage - p.resistance * s.current - p.backEmfConstant * s.angularVelocity) / p.inductance,
+        angle: s.angularVelocity,
+        angularVelocity: (p.torqueConstant * s.current - loadTorque - p.viscousDamping * s.angularVelocity) / p.rotorInertia
+    }
+}
+
+function dcMotorAdvance(s: DCMotorState, d: DCMotorDerivative, dt: f64) -> DCMotorState {
+    return DCMotorState {
+        current: s.current + dt * d.current,
+        angle: s.angle + dt * d.angle,
+        angularVelocity: s.angularVelocity + dt * d.angularVelocity
+    }
+}
+
+export function dcMotorStep(s: DCMotorState, p: DCMotorParameters, appliedVoltage: f64, loadTorque: f64, dt: f64) -> DCMotorState {
+    let k1: DCMotorDerivative = dcMotorDerivative(s, p, appliedVoltage, loadTorque)
+    let k2: DCMotorDerivative = dcMotorDerivative(dcMotorAdvance(s, k1, 0.5 * dt), p, appliedVoltage, loadTorque)
+    let k3: DCMotorDerivative = dcMotorDerivative(dcMotorAdvance(s, k2, 0.5 * dt), p, appliedVoltage, loadTorque)
+    let k4: DCMotorDerivative = dcMotorDerivative(dcMotorAdvance(s, k3, dt), p, appliedVoltage, loadTorque)
+    let d: f64 = dt / 6.0
+    return DCMotorState {
+        current: s.current + d * (k1.current + 2.0 * k2.current + 2.0 * k3.current + k4.current),
+        angle: s.angle + d * (k1.angle + 2.0 * k2.angle + 2.0 * k3.angle + k4.angle),
+        angularVelocity: s.angularVelocity + d * (k1.angularVelocity + 2.0 * k2.angularVelocity + 2.0 * k3.angularVelocity + k4.angularVelocity)
+    }
+}
+
+export function dcMotorTorque(s: DCMotorState, p: DCMotorParameters) -> f64 {
+    return p.torqueConstant * s.current
+}
+
+export function dcMotorStoredEnergy(s: DCMotorState, p: DCMotorParameters) -> f64 {
+    return 0.5 * p.inductance * s.current * s.current
+        + 0.5 * p.rotorInertia * s.angularVelocity * s.angularVelocity
+}
