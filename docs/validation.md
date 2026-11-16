@@ -44,4 +44,7 @@ Flow is not an ISO 26262-qualified toolchain merely because it emits native code
 ## Reproducibility
 
 Run `flow run tests/engineering_smoke.flow` and `flow run tests/vehicle_energy.flow` from the package root. Record the exact Flow compiler revision, OS, hardware, compilation flags, numerical results and timing histograms for any future claimed benchmark. No throughput or WCET figures are claimed by this release.
-\n## New reference tests\n\n\`tests/truss_uncertainty.flow\` checks a 1 m horizontal bar with 200 GPa modulus and 100 mm² section, giving 20 MN/m axial stiffness, 20 kN force for 1 mm extension, and 10 J elastic strain energy. It checks the sign pattern of the row-major stiffness matrix and verifies that a degenerate zero-length bar is rejected. Correlated dimension variance is tested against uncorrelated and perfectly correlated analytical cases.\n
+
+## New reference tests
+
+\`tests/truss_uncertainty.flow\` checks a 1 m horizontal bar with 200 GPa modulus and 100 mm² section, giving 20 MN/m axial stiffness, 20 kN force for 1 mm extension, and 10 J elastic strain energy. It checks the sign pattern of the row-major stiffness matrix and verifies that a degenerate zero-length bar is rejected. Correlated dimension variance is tested against uncorrelated and perfectly correlated analytical cases.

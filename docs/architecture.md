@@ -10,7 +10,9 @@ The first implementation is intentionally small:
 src/
   vehicle.flow       Vertical quarter car and planar bicycle
   powertrain.flow    Longitudinal point-mass motion
-  structures.flow    Elastic stress and introductory fatigue\n  truss.flow         Local 2D truss element stiffness and force\n  uncertainty.flow   First-order covariance propagation
+  structures.flow    Elastic stress and introductory fatigue
+  truss.flow         Local 2D truss element stiffness and force
+  uncertainty.flow   First-order covariance propagation
   tolerances.flow    Interval clearance and statistical capability
   thermal.flow       Lumped temperature evolution
   control.flow       Bounded-output PID
@@ -41,4 +43,9 @@ A later spatial geometry and manufacturing layer can support meshes, element ass
 Interoperability should be layered: CSV/Parquet and unit-tagged datasets; parameter/config schemas; FMU/FMI import/export; CAN/CAN FD, XCP and automotive Ethernet adapters; test bench and sensor bindings; ROS 2/Middleware adapters where useful; and APIs for optimization and CAD/CAE geometry. None of these adapters is implemented in the first release.
 
 A future block-graph front end could compile model graphs to Flow state evolution with statically checked rates, initialization order, algebraic loops and scheduling. The graph must have a canonical serialized form, reproducible compiler lowering and round-trip tests.
-\n## Truss and statistical assumptions\n\nThe 2D truss element writes a 4x4 matrix in row-major order to a caller-provided 16-element buffer. It uses \`EA/L\` times the direction-cosine projection and returns failure for zero length or nonpositive area/modulus. It is an element kernel only, not a complete global FEA solver or structural certification system.\n\nThe correlated uncertainty module implements \`Var(aX+bY)=a²σx²+b²σy²+2abρσxσy\` and the corresponding three-variable covariance form. All inputs must specify valid standard deviations and a positive-semidefinite covariance matrix.\n
+
+## Truss and statistical assumptions
+
+The 2D truss element writes a 4x4 matrix in row-major order to a caller-provided 16-element buffer. It uses \`EA/L\` times the direction-cosine projection and returns failure for zero length or nonpositive area/modulus. It is an element kernel only, not a complete global FEA solver or structural certification system.
+
+The correlated uncertainty module implements \`Var(aX+bY)=a²σx²+b²σy²+2abρσxσy\` and the corresponding three-variable covariance form. All inputs must specify valid standard deviations and a positive-semidefinite covariance matrix.
