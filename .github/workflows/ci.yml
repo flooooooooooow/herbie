@@ -22,43 +22,47 @@ jobs:
           sudo apt-get install -y clang make
           git clone https://github.com/flooooooooooow/flow.git .flow-toolchain
           git -C .flow-toolchain checkout --detach 7687fc936365e17bc6286415585c55fcc6ea64c3
-          ./.flow-toolchain/flow version
+          echo "$PWD/.flow-toolchain" >> "$GITHUB_PATH"
+          export PATH="$PWD/.flow-toolchain:$PATH"
+          flow version
       - name: Check engineering regression values
-        run: ./.flow-toolchain/flow run tests/engineering_smoke.flow
+        run: flow run tests/engineering_smoke.flow
       - name: Check conservative quarter-car energy
-        run: ./.flow-toolchain/flow run tests/vehicle_energy.flow
+        run: flow run tests/vehicle_energy.flow
       - name: Check truss element and correlated tolerance models
-        run: ./.flow-toolchain/flow run tests/truss_uncertainty.flow
+        run: flow run tests/truss_uncertainty.flow
       - name: Check electrical mechanics and DC motor physics
-        run: ./.flow-toolchain/flow run tests/electromechanics.flow
+        run: flow run tests/electromechanics.flow
       - name: Check engine map and battery physics
-        run: ./.flow-toolchain/flow run tests/engine_battery.flow
+        run: flow run tests/engine_battery.flow
       - name: Check DC nodal circuit solver
-        run: ./.flow-toolchain/flow run tests/circuit_network.flow
+        run: flow run tests/circuit_network.flow
       - name: Run electric-drive demonstration
-        run: ./.flow-toolchain/flow run examples/electric_drive_demo.flow
+        run: flow run examples/electric_drive_demo.flow
       - name: Run mapped-engine demonstration
-        run: ./.flow-toolchain/flow run examples/engine_dyno_demo.flow
+        run: flow run examples/engine_dyno_demo.flow
       - name: Verify composed Flow full-car assembly
-        run: ./.flow-toolchain/flow run tests/full_car.flow
+        run: flow run tests/full_car.flow
       - name: Run composed Flow car example
-        run: ./.flow-toolchain/flow run examples/full_car_demo.flow
+        run: flow run examples/full_car_demo.flow
       - name: Verify native Flow equation-first RK4 vehicle model
-        run: ./.flow-toolchain/flow run examples/equation_vehicle.flow
+        run: flow run examples/equation_vehicle.flow
       - name: Verify correlated linear dimensional stacks
-        run: ./.flow-toolchain/flow run tests/linear_stackups.flow
+        run: flow run tests/linear_stackups.flow
       - name: Run dimensional stack demonstration
-        run: ./.flow-toolchain/flow run examples/linear_stackups_demo.flow
+        run: flow run examples/linear_stackups_demo.flow
       - name: Verify DC modified nodal analysis voltage-source regressions
-        run: ./.flow-toolchain/flow run tests/mna_voltage_sources.flow
+        run: flow run tests/mna_voltage_sources.flow
+      - name: Verify linear circuit transients
+        run: flow run tests/circuit_transient.flow
       - name: Run ideal voltage source circuit demonstration
-        run: ./.flow-toolchain/flow run examples/mna_voltage_sources_demo.flow
+        run: flow run examples/mna_voltage_sources_demo.flow
       - name: Verify first-class Flow physical units
-        run: ./.flow-toolchain/flow run examples/suspension_units.flow
+        run: flow run examples/suspension_units.flow
       - name: Run vehicle demo
-        run: ./.flow-toolchain/flow run examples/quarter_car_demo.flow
+        run: flow run examples/quarter_car_demo.flow
       - name: Run manufacturing demo
-        run: ./.flow-toolchain/flow run examples/manufacturing_demo.flow
+        run: flow run examples/manufacturing_demo.flow
 
   browser-vehicle-lab:
     runs-on: ubuntu-latest
