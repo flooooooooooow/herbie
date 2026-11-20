@@ -70,3 +70,7 @@ This establishes one model/solver/kernel agreement slice but **not** broad numer
 ## Modified nodal analysis validation (DC source stamping)
 
 `tests/mna_voltage_sources.flow` independently verifies a 12 V source with two 1 kΩ resistors in series. Node voltage is 6 V at the divider, and the oriented voltage-source current is -6 mA. Two resistors dissipate 72 mW while the source delivers 72 mW (power equality tolerance 10⁻¹² W); the maximum KCL/KVL residual must stay below 10⁻¹² in the SI-form mixed rows. After a 1 mA current injection at the divider, its node rises to 6.5 V and the ideal source current becomes -5.5 mA. Invalid element stamps and floating networks are rejected. The solver is dense and cubic in unknown count, so it is not adequate for large sparse electrical networks, diode nonlinearities, AC admittance or index-1 transient DAE. Those remain in [issue #11](https://github.com/flooooooooooow/herbie/issues/11).
+
+## Linear network transients
+
+See [the transient contract and analytical gates](circuit-transients.md). `flow run tests/circuit_transient.flow` verifies fixed-step backward Euler using the shared Flow circuit backend. General DAE initialization, external SPICE comparison and real-time qualification remain open.

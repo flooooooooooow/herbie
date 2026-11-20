@@ -1,0 +1,195 @@
+# @module herbie.transient
+import "stdlib/circuit.flow"
+
+export struct TransientElement {
+    kind: i32,
+    a: i32,
+    b: i32,
+    value: f64,
+    previous: f64
+}
+
+let mut tranElements: ptr<TransientElement> = null
+let mut tranCount: i32 = 0
+let mut tranCapacity: i32 = 0
+let mut tranNodes: i32 = 0
+let mut tranDt: f64 = 0.0
+let mut tranTime: f64 = 0.0
+let mut tranReady: bool = false
+let mut tranStatus: i32 = 0
+
+function tranFinite(x: f64) -> bool {
+    return x == x and x <= 1.7976931348623157e308 and x >= -1.7976931348623157e308
+}
+
+export function transientStatus() -> i32 { return tranStatus }
+export function transientTime() -> f64 { return tranTime }
+
+export function transientReset(nodes: i32, dt: f64, elements: ptr<TransientElement>, capacity: i32) -> bool {
+    tranReady = false
+    tranElements = null
+    tranStatus = 1
+    if nodes <= 0 or nodes > 80 or not tranFinite(dt) or dt <= 0.0
+        or capacity <= 0 or capacity > 256 or elements == null { return false }
+    if not circ_reset() { tranStatus = 2
+        return false }
+    circ_set_gmin(0.0)
+    circ_set_method(CIRC_BE)
+    tranElements = elements
+    tranCount = 0
+    tranCapacity = capacity
+    tranNodes = nodes
+    tranDt = dt
+    tranTime = 0.0
+    tranStatus = 0
+    return true
+}
+
+# Kinds: 0 R, 1 C, 2 L, 3 voltage source, 4 current source.
+function transientAdd(kind: i32, a: i32, b: i32, value: f64) -> i32 {
+    if tranElements == null or tranReady or tranStatus != 0 or tranCount >= tranCapacity
+        or kind < 0 or kind > 4 or a < -1 or b < -1 or a >= tranNodes or b >= tranNodes
+        or a == b or not tranFinite(value) { return -1 }
+    if kind <= 2 and value <= 0.0 { return -1 }
+    let mut id: i32 = -1
+    if kind == 0 { id = circ_add_r(a + 1, b + 1, value) }
+    if kind == 1 { id = circ_add_c(a + 1, b + 1, value, 0.0) }
+    if kind == 2 { id = circ_add_l(a + 1, b + 1, value, 0.0) }
+    if kind == 3 { id = circ_add_v(a + 1, b + 1, value) }
+    if kind == 4 { id = circ_add_i(a + 1, b + 1, value) }
+    if id < 0 { tranStatus = 2
+        return -1 }
+    tranElements[id] = TransientElement { kind: kind, a: a, b: b, value: value, previous: 0.0 }
+    tranCount += 1
+    return id
+}
+
+export function transientVoltage(node: i32) -> f64 { return circ_v(node + 1) }
+export function transientCurrent(id: i32) -> f64 { return circ_i(id) }
+
+# Independent physical residuals
+# Separate tolerances have units A and V respectively.
+function tranCheck(dynamic: bool) -> bool {
+    for n in 0 to tranNodes {
+        let mut kcl: f64 = 0.0
+        if not tranFinite(circ_v(n + 1)) { return false }
+        for e in 0 to tranCount {
+            let element: TransientElement = tranElements[e]
+            let current: f64 = circ_i(e)
+            if not tranFinite(current) { return false }
+            if element.a == n { kcl += current }
+            if element.b == n { kcl -= current }
+        }
+        if fabs(kcl) > 1e-12 { return false }
+    }
+    for e in 0 to tranCount {
+        let element: TransientElement = tranElements[e]
+        let v: f64 = circ_vd(element.a + 1, element.b + 1)
+        let i: f64 = circ_i(e)
+        if element.kind == 0 and fabs(i - v / element.value) > 1e-12 { return false }
+        if element.kind == 3 and fabs(v - element.value) > 1e-12 { return false }
+        if element.kind == 4 and fabs(i - element.value) > 1e-12 { return false }
+        if element.kind == 1 {
+            let mut expected: f64 = 0.0
+            if dynamic { expected = element.value / tranDt * (v - element.previous) }
+            if fabs(i - expected) > 1e-12 { return false }
+        }
+        if element.kind == 2 {
+            let mut expected: f64 = 0.0
+            if dynamic { expected = element.value / tranDt * (i - element.previous) }
+            if fabs(v - expected) > 1e-12 { return false }
+        }
+    }
+    return true
+}
+
+function tranTopologyValid() -> bool {
+    let mut group: array<i32, 81> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    let mut reached: array<i32, 81> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    for i in 0 to 81 { group[i] = i }
+    reached[0] = 1
+    for e in 0 to tranCount {
+        let element: TransientElement = tranElements[e]
+        if element.kind == 2 or element.kind == 3 {
+            let a: i32 = group[element.a + 1]
+            let b: i32 = group[element.b + 1]
+            if a == b { return false }
+            for i in 0 to tranNodes + 1 {
+                if group[i] == b { group[i] = a }
+            }
+        }
+    }
+    for pass in 0 to tranNodes {
+        for e in 0 to tranCount {
+            let element: TransientElement = tranElements[e]
+            if element.kind == 0 or element.kind == 2 or element.kind == 3 {
+                if reached[element.a + 1] == 1 or reached[element.b + 1] == 1 {
+                    reached[element.a + 1] = 1
+                    reached[element.b + 1] = 1
+                }
+            }
+        }
+    }
+    for i in 1 to tranNodes + 1 {
+        if reached[i] == 0 { return false }
+    }
+    return true
+}
+
+export function transientInitialize() -> bool {
+    if tranElements == null or tranReady or tranStatus != 0 { return false }
+    if not tranTopologyValid() { tranStatus = 4
+        return false }
+    if not circ_finalize() or not circ_tran_init(false, 0.0) { tranStatus = 2
+        return false }
+    if not tranCheck(false) { tranStatus = 3
+        return false }
+    tranReady = true
+    return true
+}
+
+export function transientSetSource(id: i32, value: f64) -> bool {
+    if not tranReady or id < 0 or id >= tranCount or not tranFinite(value) { return false }
+    if tranElements[id].kind < 3 { return false }
+    tranElements[id].value = value
+    circ_set_value(id, value)
+    return true
+}
+
+export function transientStep() -> bool {
+    if not tranReady { return false }
+    for e in 0 to tranCount {
+        if tranElements[e].kind == 1 {
+            tranElements[e].previous = circ_vd(tranElements[e].a + 1, tranElements[e].b + 1)
+        }
+        if tranElements[e].kind == 2 { tranElements[e].previous = circ_i(e) }
+    }
+    if not circ_tran_step(tranDt) { tranStatus = 2
+        tranReady = false
+        return false }
+    if not tranCheck(true) { tranStatus = 3
+        tranReady = false
+        return false }
+    tranTime += tranDt
+    return true
+}
+
+export function transientResistor(a: i32, b: i32, ohms: f64) -> i32 {
+    return transientAdd(0, a, b, ohms)
+}
+
+export function transientCapacitor(a: i32, b: i32, farads: f64) -> i32 {
+    return transientAdd(1, a, b, farads)
+}
+
+export function transientInductor(a: i32, b: i32, henries: f64) -> i32 {
+    return transientAdd(2, a, b, henries)
+}
+
+export function transientVoltageSource(a: i32, b: i32, volts: f64) -> i32 {
+    return transientAdd(3, a, b, volts)
+}
+
+export function transientCurrentSource(a: i32, b: i32, amperes: f64) -> i32 {
+    return transientAdd(4, a, b, amperes)
+}

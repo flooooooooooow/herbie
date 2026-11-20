@@ -8,8 +8,10 @@
 
 | Module | Models and numerical methods | Validity boundary |
 | --- | --- | --- |
+| `herbie.transient` | Shared Flow circuit backend, fixed-step backward Euler RLC networks, physical residual checks | One circuit per process; DC initialization only; small, well-scaled networks |
 | `herbie.mna` | Dense DC modified nodal analysis for resistors, oriented current sources and ideal voltage sources, KCL/KVL residual, pivoted solve | Small resistive DC circuits only; no nonlinear, transient, AC or sparse solver |
-| `herbie.circuits` | Sparse-API-shaped dense DC nodal assembly, resistors, current sources, Gaussian elimination with partial pivoting and KCL residual | Small linear resistive DC circuits only; no voltage-source MNA or nonlinear/transient components |\n| `herbie.electrical` | Closed-form RC/RL transients; series RLC RK4 and stored energy | Ideal lumped/passive networks only, no circuit graph, switching devices or circuit DAE |
+| `herbie.circuits` | Sparse-API-shaped dense DC nodal assembly, resistors, current sources, Gaussian elimination with partial pivoting and KCL residual | Small linear resistive DC circuits only; no voltage-source MNA or nonlinear/transient components |
+| `herbie.electrical` | Closed-form RC/RL transients; series RLC RK4 and stored energy | Ideal lumped/passive networks only, no circuit graph, switching devices or circuit DAE |
 | `herbie.mechanics` | Single-axis rotational inertia, torsional stiffness/damping RK4 and ideal fixed-ratio gear power balance | No joints, bearing dynamics, contact, clutch or multibody assembly |
 | `herbie.motors` | Brushed permanent-magnet DC motor, coupled armature/rotor RK4, energy and torque | Lumped motor only; no inverter, commutation, saturation or thermal losses |
 | `herbie.battery` | First-order Thevenin OCV + ohmic + polarization RC, coulomb-count SOC | No BMS, electrochemistry, heat, SoH, degradation or charge limits |
@@ -25,7 +27,7 @@
 | `herbie.control` | PID with derivative on measurement, output/integral clamps and conditional anti-windup | Caller must provide valid dt and output limits |
 | `herbie.thermal` | Lumped-capacitance heat balance, fixed-step Euler, thermal time constant | Uniform temperature, constant coefficients |
 
-All dynamic kernels are explicit functions of state, parameters, inputs and `dt`; they contain no I/O or dynamic allocation in the source and can be called by a real-time host. This alone does **not** demonstrate worst-case execution time or determinism of a target build.
+Except for `herbie.transient`, which uses the upstream single-session circuit workspace, dynamic kernels are explicit functions of state, parameters, inputs and `dt`; they contain no I/O or dynamic allocation in the source and can be called by a real-time host. This alone does **not** demonstrate worst-case execution time or determinism of a target build.
 
 ## Live Vehicle Lab
 
@@ -35,14 +37,26 @@ The native `herbie.assembly` scaffold composes longitudinal, quarter-car, therma
 
 ## Quickstart
 
-Use the compiler in [flooooooooooow/flow](https://github.com/flooooooooooow/flow).
+Install the pinned compiler once, then use `flow` directly:
+
+```sh
+git clone https://github.com/flooooooooooow/flow.git ../flow
+git -C ../flow checkout --detach 7687fc936365e17bc6286415585c55fcc6ea64c3
+(cd ../flow && ./flow install)
+export PATH="$HOME/.local/bin:$PATH"
+flow version
+```
+
+Keep `~/.local/bin` on your shell PATH. CI adds its pinned checkout to PATH automatically.
+See [linear circuit transients](docs/circuit-transients.md) for the API, equations and verification boundary.
 
 ```sh
 flow run tests/engineering_smoke.flow
 flow run tests/vehicle_energy.flow
 flow run tests/truss_uncertainty.flow
 flow run tests/electromechanics.flow
-flow run tests/engine_battery.flow\nflow run tests/circuit_network.flow
+flow run tests/engine_battery.flow
+flow run tests/circuit_network.flow
 flow run examples/quarter_car_demo.flow
 flow run examples/manufacturing_demo.flow
 flow run examples/electric_drive_demo.flow
@@ -53,6 +67,7 @@ flow run examples/equation_vehicle.flow
 flow run tests/linear_stackups.flow
 flow run examples/linear_stackups_demo.flow
 flow run examples/suspension_units.flow
+flow run tests/circuit_transient.flow
 flow run tests/mna_voltage_sources.flow
 flow run examples/mna_voltage_sources_demo.flow
 ```
