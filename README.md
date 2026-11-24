@@ -10,6 +10,7 @@
 | --- | --- | --- |
 | `herbie.transient` | Shared Flow circuit backend, fixed-step backward Euler RLC networks, physical residual checks | One circuit per process; DC initialization only; small, well-scaled networks |
 | `herbie.mna` | Dense DC modified nodal analysis for resistors, oriented current sources and ideal voltage sources, KCL/KVL residual, pivoted solve | Small resistive DC circuits only; no nonlinear, transient, AC or sparse solver |
+| `herbie.ac` | Dense AC phasor MNA for R/C/L with independent V/I sources, real 2n block solve, residual and average-power helpers | Small linear AC networks at fixed ω>0; no switches, diodes, sparse or SPICE parity |
 | `herbie.circuits` | Sparse-API-shaped dense DC nodal assembly, resistors, current sources, Gaussian elimination with partial pivoting and KCL residual | Small linear resistive DC circuits only; no voltage-source MNA or nonlinear/transient components |
 | `herbie.electrical` | Closed-form RC/RL transients; series RLC RK4 and stored energy | Ideal lumped/passive networks only, no circuit graph, switching devices or circuit DAE |
 | `herbie.mechanics` | Single-axis rotational inertia, torsional stiffness/damping RK4 and ideal fixed-ratio gear power balance | No joints, bearing dynamics, contact, clutch or multibody assembly |
@@ -70,6 +71,8 @@ flow run examples/suspension_units.flow
 flow run tests/circuit_transient.flow
 flow run tests/mna_voltage_sources.flow
 flow run examples/mna_voltage_sources_demo.flow
+flow run tests/ac_phasor_mna.flow
+flow run examples/ac_phasor_demo.flow
 ```
 
 The exact Flow compiler revision used by CI is pinned in [the CI workflow](.github/workflows/ci.yml). To consume a module from another Flow package, use a path dependency on this repository and import, for example, `herbie.vehicle { QuarterCarParameters, QuarterCarState, quarterCarStep }`.
@@ -83,6 +86,10 @@ The exact Flow compiler revision used by CI is pinned in [the CI workflow](.gith
 ## DC circuit network with voltage sources
 
 [The new MNA kernel](src/mna.flow) assembles an augmented conductance matrix for linear resistors, oriented current injections, and independent ideal voltage sources. Its caller-owned dense pivoted solver reports both node voltages and source currents, and measures all KCL/KVL residuals. [The executable reference circuit](tests/mna_voltage_sources.flow) checks a 12 V two-resistor divider, source/load power balance, a superimposed current source, invalid stamps, and floating-network rejection. This advances [electrical issue #11](https://github.com/flooooooooooow/herbie/issues/11) without claiming transient/SPICE parity.
+
+## AC phasor circuit solve
+
+[`herbie.ac`](src/ac.flow) stamps R/C/L and independent sources into a real block expansion of complex MNA at a caller-chosen `omega > 0`. Analytical fixtures cover a resistive divider, series RC/RL responses, series RLC resonance and a nodal R‖C current drive, with stated tolerances in [docs/ac-phasor-mna.md](docs/ac-phasor-mna.md). Switches, nonlinear devices, sparse assembly and SPICE cross-validation remain open under #11.
 
 The standalone browser has no third-party runtime CDN requirement: official Three.js r187 is vendored under `site/vendor/` with its MIT licence. The repository-root `index.html` redirects to `site/` when Pages is configured to publish from a branch; the Actions workflow publishes `site/` at the Pages root. A Chromium regression asserts CSS loads and the WebGL canvas actually renders.
 

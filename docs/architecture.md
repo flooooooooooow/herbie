@@ -9,12 +9,15 @@ The first implementation is intentionally small:
 ```
 src/
   circuits.flow      Nodal circuit assembly and dense pivoted DC solve
-  mna.flow           Dense DC MNA with ideal voltage-source branch unknowns\n  electrical.flow     Lumped passive RC/RL/RLC
-  mechanics.flow      Single-axis rotation and ideal gear
-  motors.flow         Coupled armature/rotor DC motor
-  battery.flow        Thevenin RC battery and SOC
-  maps.flow           Clamped bilinear lookup for calibrated models
-  engine.flow         Torque-map crank dynamics and fuel flow
+  mna.flow           Dense DC MNA with ideal voltage-source branch unknowns
+  ac.flow            Dense AC phasor MNA for linear R/C/L networks
+  transient.flow     Shared Flow-backend linear RLC transient facade
+  electrical.flow    Lumped passive RC/RL/RLC
+  mechanics.flow     Single-axis rotation and ideal gear
+  motors.flow        Coupled armature/rotor DC motor
+  battery.flow       Thevenin RC battery and SOC
+  maps.flow          Clamped bilinear lookup for calibrated models
+  engine.flow        Torque-map crank dynamics and fuel flow
   vehicle.flow       Vertical quarter car and planar bicycle
   powertrain.flow    Longitudinal point-mass motion
   structures.flow    Elastic stress and introductory fatigue
@@ -27,9 +30,11 @@ src/
 tests/
   engineering_smoke.flow
   vehicle_energy.flow
+  ac_phasor_mna.flow
 examples/
   quarter_car_demo.flow
   manufacturing_demo.flow
+  ac_phasor_demo.flow
 ```
 
 Every step function takes an explicit current state, immutable model parameters, the environmental inputs, and `dt`, and returns the next state. Call sites decide scheduling, checkpointing, telemetry, fault detection and synchronization. All values currently use SI units and `f64`.

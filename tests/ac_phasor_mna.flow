@@ -1,0 +1,369 @@
+import herbie.ac {
+    AcNetwork, acClear, acStampResistor, acStampCapacitor, acStampInductor,
+    acStampCurrentSource, acStampVoltageSource, acSolve, acMaxResidual,
+    acUnknownCount, acRealDim, acMagnitude, acPhase, acAveragePower
+}
+
+extern {
+    function printf(fmt: string, value: f64) -> i32
+}
+
+function near(a: f64, b: f64, tol: f64) -> bool {
+    return a >= b - tol and a <= b + tol
+}
+
+function absf(x: f64) -> f64 {
+    if x < 0.0 { return -x }
+    return x
+}
+
+# Resistive 12 V divider at 1 krad/s: voltages identical to DC MNA.
+function testResistiveDivider() -> i32 {
+    let mut matrix: array<f64, 36> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut rhs: array<f64, 6> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut solution: array<f64, 6> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut scratch: array<f64, 36> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut workRhs: array<f64, 6> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let n: AcNetwork = AcNetwork {
+        nodeCount: 2, voltageSourceCount: 1, omega: 1000.0,
+        matrix: &matrix[0], rhs: &rhs[0]
+    }
+    if acUnknownCount(n) != 3 or acRealDim(n) != 6 or not acClear(n) {
+        return 1
+    }
+    if not acStampVoltageSource(n, 0, 0, -1, 12.0, 0.0) {
+        return 2
+    }
+    if not acStampResistor(n, 0, 1, 1000.0) or not acStampResistor(n, 1, -1, 1000.0) {
+        return 3
+    }
+    if not acSolve(n, &solution[0], &scratch[0], &workRhs[0], 1.0e-12) {
+        println("FAIL resistive AC divider solve")
+        return 4
+    }
+    # solution layout: [V0re, V1re, Ire, V0im, V1im, Iim]
+    if not near(solution[0], 12.0, 1.0e-10) or not near(solution[1], 6.0, 1.0e-10)
+        or not near(solution[2], -0.006, 1.0e-12)
+        or not near(solution[3], 0.0, 1.0e-12) or not near(solution[4], 0.0, 1.0e-12)
+        or not near(solution[5], 0.0, 1.0e-12) {
+        println("FAIL resistive AC divider voltages")
+        return 5
+    }
+    if acMaxResidual(n, &solution[0]) > 1.0e-12 {
+        return 6
+    }
+    let loadPower: f64 = 0.5 * (
+        (solution[0] - solution[1]) * (solution[0] - solution[1]) / 1000.0
+        + solution[1] * solution[1] / 1000.0
+    )
+    # Source delivers -0.5 * Re(Vs * conj(I_source)); I_source is plus->minus.
+    let sourcePower: f64 = -acAveragePower(12.0, 0.0, solution[2], solution[5])
+    if not near(loadPower, sourcePower, 1.0e-12) or not near(sourcePower, 0.036, 1.0e-12) {
+        println("FAIL resistive AC power balance")
+        return 7
+    }
+    return 0
+}
+
+# Series RC low-pass: Vin -- R -- n1 -- C -- gnd. R=1 kohm, C=1 uF, omega=1000.
+# H = 1 / (1 + j omega R C); omega R C = 1 => |H|=1/sqrt(2), phase=-pi/4.
+function testRcLowPass() -> i32 {
+    let mut matrix: array<f64, 36> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut rhs: array<f64, 6> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut solution: array<f64, 6> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut scratch: array<f64, 36> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut workRhs: array<f64, 6> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let omega: f64 = 1000.0
+    let rc: AcNetwork = AcNetwork {
+        nodeCount: 2, voltageSourceCount: 1, omega: omega,
+        matrix: &matrix[0], rhs: &rhs[0]
+    }
+    if not acClear(rc) { return 11 }
+    if not acStampVoltageSource(rc, 0, 0, -1, 1.0, 0.0) { return 12 }
+    if not acStampResistor(rc, 0, 1, 1000.0) { return 13 }
+    if not acStampCapacitor(rc, 1, -1, 1.0e-6) { return 14 }
+    if not acSolve(rc, &solution[0], &scratch[0], &workRhs[0], 1.0e-12) {
+        println("FAIL RC AC solve")
+        return 15
+    }
+    let vRe: f64 = solution[1]
+    let vIm: f64 = solution[4]
+    let mag: f64 = acMagnitude(vRe, vIm)
+    let phase: f64 = acPhase(vRe, vIm)
+    let expectedMag: f64 = 1.0 / sqrt(2.0)
+    let expectedPhase: f64 = -0.7853981633974483
+    printf("RC |H|: %.12g\n", mag)
+    printf("RC phase (rad): %.12g\n", phase)
+    if not near(mag, expectedMag, 1.0e-10) or not near(phase, expectedPhase, 1.0e-10) {
+        println("FAIL RC low-pass analytic H")
+        return 16
+    }
+    if acMaxResidual(rc, &solution[0]) > 1.0e-12 {
+        return 17
+    }
+    # Current through R equals capacitor current j omega C Vout.
+    let iRre: f64 = (solution[0] - solution[1]) / 1000.0
+    let iRim: f64 = (solution[3] - solution[4]) / 1000.0
+    let iCre: f64 = -omega * 1.0e-6 * vIm
+    let iCim: f64 = omega * 1.0e-6 * vRe
+    if not near(iRre, iCre, 1.0e-12) or not near(iRim, iCim, 1.0e-12) {
+        println("FAIL RC branch current identity")
+        return 18
+    }
+    return 0
+}
+
+# Series RL: Vin -- R -- n1 -- L -- gnd. R=100 ohm, L=0.1 H, omega=1000.
+# Z = R + j omega L = 100 + j 100; I = 1/Z; |I| = 1/(100 sqrt(2)), phase=-pi/4.
+function testRlSeries() -> i32 {
+    let mut matrix: array<f64, 36> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut rhs: array<f64, 6> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut solution: array<f64, 6> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut scratch: array<f64, 36> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut workRhs: array<f64, 6> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let omega: f64 = 1000.0
+    let n: AcNetwork = AcNetwork {
+        nodeCount: 2, voltageSourceCount: 1, omega: omega,
+        matrix: &matrix[0], rhs: &rhs[0]
+    }
+    if not acClear(n) { return 20 }
+    if not acStampVoltageSource(n, 0, 0, -1, 1.0, 0.0) { return 21 }
+    if not acStampResistor(n, 0, 1, 100.0) { return 22 }
+    if not acStampInductor(n, 1, -1, 0.1) { return 23 }
+    if not acSolve(n, &solution[0], &scratch[0], &workRhs[0], 1.0e-12) {
+        println("FAIL RL AC solve")
+        return 24
+    }
+    # Inductor current = voltage across L / (j omega L) = V1 / (j 100).
+    let v1re: f64 = solution[1]
+    let v1im: f64 = solution[4]
+    let iRe: f64 = v1im / 100.0
+    let iIm: f64 = -v1re / 100.0
+    # Also I = (V0 - V1) / R
+    let iRre: f64 = (solution[0] - v1re) / 100.0
+    let iRim: f64 = (solution[3] - v1im) / 100.0
+    if not near(iRe, iRre, 1.0e-12) or not near(iIm, iRim, 1.0e-12) {
+        return 25
+    }
+    let iMag: f64 = acMagnitude(iRe, iIm)
+    let iPhase: f64 = acPhase(iRe, iIm)
+    let expectedMag: f64 = 1.0 / (100.0 * sqrt(2.0))
+    let expectedPhase: f64 = -0.7853981633974483
+    printf("RL |I|: %.12g\n", iMag)
+    if not near(iMag, expectedMag, 1.0e-12) or not near(iPhase, expectedPhase, 1.0e-10) {
+        println("FAIL RL analytic current")
+        return 26
+    }
+    if acMaxResidual(n, &solution[0]) > 1.0e-12 {
+        return 27
+    }
+    return 0
+}
+
+# Series RLC: Vin -- R -- n1 -- L -- n2 -- C -- gnd.
+# R=100, L=0.1, C=1uF. Resonance omega0 = 1/sqrt(LC) = 3162.27766.
+# At omega0, Z = R, I = 1/R real, Vc = I / (j omega C) magnitude I/(omega C).
+function testRlcResonance() -> i32 {
+    let mut matrix: array<f64, 64> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut rhs: array<f64, 8> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut solution: array<f64, 8> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut scratch: array<f64, 64> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut workRhs: array<f64, 8> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let omega: f64 = 1.0 / sqrt(0.1 * 1.0e-6)
+    let n: AcNetwork = AcNetwork {
+        nodeCount: 3, voltageSourceCount: 1, omega: omega,
+        matrix: &matrix[0], rhs: &rhs[0]
+    }
+    if not acClear(n) { return 30 }
+    if not acStampVoltageSource(n, 0, 0, -1, 1.0, 0.0) { return 31 }
+    if not acStampResistor(n, 0, 1, 100.0) { return 32 }
+    if not acStampInductor(n, 1, 2, 0.1) { return 33 }
+    if not acStampCapacitor(n, 2, -1, 1.0e-6) { return 34 }
+    if not acSolve(n, &solution[0], &scratch[0], &workRhs[0], 1.0e-12) {
+        println("FAIL RLC resonance solve")
+        return 35
+    }
+    # At resonance series impedance is R; source current (plus->minus) = -1/R.
+    let iSrcRe: f64 = solution[3]
+    let iSrcIm: f64 = solution[7]
+    if not near(iSrcRe, -0.01, 1.0e-10) or not near(iSrcIm, 0.0, 1.0e-10) {
+        printf("FAIL RLC source current re=%.12g\n", iSrcRe)
+        return 36
+    }
+    let vcRe: f64 = solution[2]
+    let vcIm: f64 = solution[6]
+    let vcMag: f64 = acMagnitude(vcRe, vcIm)
+    # |Vc| = |I| / (omega C) = 0.01 / (omega * 1e-6)
+    let expectedVc: f64 = 0.01 / (omega * 1.0e-6)
+    printf("RLC |Vc| at resonance: %.12g\n", vcMag)
+    if not near(vcMag, expectedVc, 1.0e-8) {
+        return 37
+    }
+    # Phase of Vc should be -90 deg for positive real current through C.
+    let vcPhase: f64 = acPhase(vcRe, vcIm)
+    if not near(vcPhase, -1.5707963267948966, 1.0e-8) {
+        return 38
+    }
+    if acMaxResidual(n, &solution[0]) > 1.0e-11 {
+        return 39
+    }
+    return 0
+}
+
+# Nodal current-driven RC: 1 mA into node0 with R||C to ground.
+# V = I / (1/R + j omega C).
+function testNodalRc() -> i32 {
+    let mut matrix: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut rhs: array<f64, 2> = [0.0, 0.0]
+    let mut solution: array<f64, 2> = [0.0, 0.0]
+    let mut scratch: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut workRhs: array<f64, 2> = [0.0, 0.0]
+    let omega: f64 = 1000.0
+    let n: AcNetwork = AcNetwork {
+        nodeCount: 1, voltageSourceCount: 0, omega: omega,
+        matrix: &matrix[0], rhs: &rhs[0]
+    }
+    if not acClear(n) { return 40 }
+    if not acStampResistor(n, 0, -1, 1000.0) { return 41 }
+    if not acStampCapacitor(n, 0, -1, 1.0e-6) { return 42 }
+    if not acStampCurrentSource(n, -1, 0, 0.001, 0.0) { return 43 }
+    if not acSolve(n, &solution[0], &scratch[0], &workRhs[0], 1.0e-12) {
+        return 44
+    }
+    # Y = 0.001 + j 0.001; V = 0.001 / Y = 0.5 - j 0.5
+    if not near(solution[0], 0.5, 1.0e-12) or not near(solution[1], -0.5, 1.0e-12) {
+        println("FAIL nodal RC phasor")
+        return 45
+    }
+    if acMaxResidual(n, &solution[0]) > 1.0e-12 {
+        return 46
+    }
+    return 0
+}
+
+function testGuards() -> i32 {
+    let mut matrix: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut rhs: array<f64, 2> = [0.0, 0.0]
+    let mut solution: array<f64, 2> = [0.0, 0.0]
+    let mut scratch: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut workRhs: array<f64, 2> = [0.0, 0.0]
+    let badOmega: AcNetwork = AcNetwork {
+        nodeCount: 1, voltageSourceCount: 0, omega: 0.0,
+        matrix: &matrix[0], rhs: &rhs[0]
+    }
+    if acClear(badOmega) { return 50 }
+    let n: AcNetwork = AcNetwork {
+        nodeCount: 1, voltageSourceCount: 0, omega: 1000.0,
+        matrix: &matrix[0], rhs: &rhs[0]
+    }
+    if not acClear(n) { return 51 }
+    if acStampResistor(n, 0, 0, 1000.0) or acStampCapacitor(n, 0, -1, 0.0)
+        or acStampInductor(n, 0, -1, -1.0) or acStampCurrentSource(n, 0, 0, 1.0, 0.0) {
+        return 52
+    }
+    # Floating single resistor between two nodes, no reference.
+    let mut fm: array<f64, 16> = [
+        0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0
+    ]
+    let mut fr: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut fs: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut fsc: array<f64, 16> = [
+        0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0
+    ]
+    let mut fw: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let floating: AcNetwork = AcNetwork {
+        nodeCount: 2, voltageSourceCount: 0, omega: 1000.0,
+        matrix: &fm[0], rhs: &fr[0]
+    }
+    if not acClear(floating) or not acStampResistor(floating, 0, 1, 1000.0) {
+        return 53
+    }
+    if acSolve(floating, &fs[0], &fsc[0], &fw[0], 1.0e-12) {
+        println("FAIL floating AC network solved")
+        return 54
+    }
+    return 0
+}
+
+function main() -> i32 {
+    let mut code: i32 = testResistiveDivider()
+    if code != 0 { return code }
+    code = testRcLowPass()
+    if code != 0 { return code }
+    code = testRlSeries()
+    if code != 0 { return code }
+    code = testRlcResonance()
+    if code != 0 { return code }
+    code = testNodalRc()
+    if code != 0 { return code }
+    code = testGuards()
+    if code != 0 { return code }
+    println("PASS AC phasor MNA analytical fixtures")
+    return 0
+}

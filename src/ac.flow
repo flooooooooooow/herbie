@@ -1,0 +1,290 @@
+# @module herbie.ac
+# Dense AC modified nodal analysis (phasor domain), linear R/C/L networks.
+# Unknowns = node voltage phasors followed by ideal voltage-source current phasors.
+# Real system dimension = 2 * (nodeCount + voltageSourceCount), block layout:
+#   [ G  -B ] [x_re] = [b_re]
+#   [ B   G ] [x_im]   [b_im]
+# where Y = G + j B is the complex MNA matrix at angular frequency omega (rad/s).
+# Reference ground node is -1. Voltage sources oriented from plus to minus.
+# Caller-owned dense buffers; no dynamic allocation or I/O in the kernel.
+# Restricted to omega > 0 and small linear networks. No nonlinear, sparse,
+# transient-DAE, diode, switch or SPICE-parity claims.
+
+export struct AcNetwork {
+    nodeCount: i32,
+    voltageSourceCount: i32,
+    omega: f64,
+    matrix: ptr<f64>,
+    rhs: ptr<f64>
+}
+
+export function acUnknownCount(n: AcNetwork) -> i32 {
+    return n.nodeCount + n.voltageSourceCount
+}
+
+export function acRealDim(n: AcNetwork) -> i32 {
+    return 2 * acUnknownCount(n)
+}
+
+function acAbs(value: f64) -> f64 {
+    if value < 0.0 {
+        return -value
+    }
+    return value
+}
+
+function acFinite(value: f64) -> bool {
+    return value == value and value <= 1.7976931348623157e308 and value >= -1.7976931348623157e308
+}
+
+function acNodeValid(n: AcNetwork, node: i32) -> bool {
+    return node >= -1 and node < n.nodeCount
+}
+
+export function acClear(n: AcNetwork) -> bool {
+    if n.nodeCount <= 0 or n.voltageSourceCount < 0 or not acFinite(n.omega) or n.omega <= 0.0 {
+        return false
+    }
+    let dim: i32 = acRealDim(n)
+    for i in 0 to dim * dim {
+        n.matrix[i] = 0.0
+    }
+    for i in 0 to dim {
+        n.rhs[i] = 0.0
+    }
+    return true
+}
+
+# Stamp real admittance g into the G diagonal blocks (top-left and bottom-right).
+function acStampG(n: AcNetwork, a: i32, b: i32, g: f64) -> void {
+    let size: i32 = acUnknownCount(n)
+    let dim: i32 = 2 * size
+    if a >= 0 {
+        n.matrix[a * dim + a] += g
+        n.matrix[(a + size) * dim + (a + size)] += g
+    }
+    if b >= 0 {
+        n.matrix[b * dim + b] += g
+        n.matrix[(b + size) * dim + (b + size)] += g
+    }
+    if a >= 0 and b >= 0 {
+        n.matrix[a * dim + b] -= g
+        n.matrix[b * dim + a] -= g
+        n.matrix[(a + size) * dim + (b + size)] -= g
+        n.matrix[(b + size) * dim + (a + size)] -= g
+    }
+}
+
+# Stamp susceptance b into the off-diagonal blocks: top-right -= b, bottom-left += b.
+function acStampB(n: AcNetwork, a: i32, b: i32, susceptance: f64) -> void {
+    let size: i32 = acUnknownCount(n)
+    let dim: i32 = 2 * size
+    if a >= 0 {
+        n.matrix[a * dim + (a + size)] -= susceptance
+        n.matrix[(a + size) * dim + a] += susceptance
+    }
+    if b >= 0 {
+        n.matrix[b * dim + (b + size)] -= susceptance
+        n.matrix[(b + size) * dim + b] += susceptance
+    }
+    if a >= 0 and b >= 0 {
+        n.matrix[a * dim + (b + size)] += susceptance
+        n.matrix[b * dim + (a + size)] += susceptance
+        n.matrix[(a + size) * dim + b] -= susceptance
+        n.matrix[(b + size) * dim + a] -= susceptance
+    }
+}
+
+export function acStampResistor(n: AcNetwork, a: i32, b: i32, ohms: f64) -> bool {
+    if n.nodeCount <= 0 or n.voltageSourceCount < 0 or n.omega <= 0.0
+        or not acNodeValid(n, a) or not acNodeValid(n, b)
+        or a == b or ohms <= 0.0 or not acFinite(ohms) {
+        return false
+    }
+    acStampG(n, a, b, 1.0 / ohms)
+    return true
+}
+
+# Capacitor admittance j * omega * C.
+export function acStampCapacitor(n: AcNetwork, a: i32, b: i32, farads: f64) -> bool {
+    if n.nodeCount <= 0 or n.voltageSourceCount < 0 or n.omega <= 0.0
+        or not acNodeValid(n, a) or not acNodeValid(n, b)
+        or a == b or farads <= 0.0 or not acFinite(farads) {
+        return false
+    }
+    acStampB(n, a, b, n.omega * farads)
+    return true
+}
+
+# Inductor admittance 1 / (j * omega * L) = -j / (omega * L).
+export function acStampInductor(n: AcNetwork, a: i32, b: i32, henries: f64) -> bool {
+    if n.nodeCount <= 0 or n.voltageSourceCount < 0 or n.omega <= 0.0
+        or not acNodeValid(n, a) or not acNodeValid(n, b)
+        or a == b or henries <= 0.0 or not acFinite(henries) {
+        return false
+    }
+    acStampB(n, a, b, -1.0 / (n.omega * henries))
+    return true
+}
+
+# Oriented current source from fromNode to toNode; positive injects at toNode.
+# Phasor peak amperes as (re, im).
+export function acStampCurrentSource(
+    n: AcNetwork,
+    fromNode: i32,
+    toNode: i32,
+    amperesRe: f64,
+    amperesIm: f64
+) -> bool {
+    if n.nodeCount <= 0 or n.voltageSourceCount < 0 or n.omega <= 0.0
+        or not acNodeValid(n, fromNode) or not acNodeValid(n, toNode)
+        or fromNode == toNode or not acFinite(amperesRe) or not acFinite(amperesIm) {
+        return false
+    }
+    let size: i32 = acUnknownCount(n)
+    if fromNode >= 0 {
+        n.rhs[fromNode] -= amperesRe
+        n.rhs[fromNode + size] -= amperesIm
+    }
+    if toNode >= 0 {
+        n.rhs[toNode] += amperesRe
+        n.rhs[toNode + size] += amperesIm
+    }
+    return true
+}
+
+# Voltage source s enforces V(plus) - V(minus) = voltsRe + j voltsIm.
+# Branch current unknown is positive flowing plus -> minus.
+export function acStampVoltageSource(
+    n: AcNetwork,
+    sourceIndex: i32,
+    plusNode: i32,
+    minusNode: i32,
+    voltsRe: f64,
+    voltsIm: f64
+) -> bool {
+    if n.nodeCount <= 0 or n.voltageSourceCount <= 0 or n.omega <= 0.0
+        or sourceIndex < 0 or sourceIndex >= n.voltageSourceCount
+        or not acNodeValid(n, plusNode) or not acNodeValid(n, minusNode)
+        or plusNode == minusNode or not acFinite(voltsRe) or not acFinite(voltsIm) {
+        return false
+    }
+    let size: i32 = acUnknownCount(n)
+    let dim: i32 = 2 * size
+    let branch: i32 = n.nodeCount + sourceIndex
+    # Incidence in G blocks (real topology) for both real and imag unknowns.
+    if plusNode >= 0 {
+        n.matrix[plusNode * dim + branch] += 1.0
+        n.matrix[branch * dim + plusNode] += 1.0
+        n.matrix[(plusNode + size) * dim + (branch + size)] += 1.0
+        n.matrix[(branch + size) * dim + (plusNode + size)] += 1.0
+    }
+    if minusNode >= 0 {
+        n.matrix[minusNode * dim + branch] -= 1.0
+        n.matrix[branch * dim + minusNode] -= 1.0
+        n.matrix[(minusNode + size) * dim + (branch + size)] -= 1.0
+        n.matrix[(branch + size) * dim + (minusNode + size)] -= 1.0
+    }
+    n.rhs[branch] += voltsRe
+    n.rhs[branch + size] += voltsIm
+    return true
+}
+
+# Partial-pivoted Gaussian elimination on the real 2n system.
+# n.matrix / n.rhs stay untouched. Returns false for singular networks.
+export function acSolve(
+    n: AcNetwork,
+    solution: ptr<f64>,
+    scratchMatrix: ptr<f64>,
+    scratchRhs: ptr<f64>,
+    absolutePivotTolerance: f64
+) -> bool {
+    if n.nodeCount <= 0 or n.voltageSourceCount < 0 or n.omega <= 0.0
+        or absolutePivotTolerance <= 0.0 {
+        return false
+    }
+    let dim: i32 = acRealDim(n)
+    for i in 0 to dim * dim {
+        scratchMatrix[i] = n.matrix[i]
+    }
+    for i in 0 to dim {
+        scratchRhs[i] = n.rhs[i]
+    }
+    for col in 0 to dim {
+        let mut pivotRow: i32 = col
+        let mut best: f64 = acAbs(scratchMatrix[col * dim + col])
+        for row in col + 1 to dim {
+            let candidate: f64 = acAbs(scratchMatrix[row * dim + col])
+            if candidate > best {
+                best = candidate
+                pivotRow = row
+            }
+        }
+        if best <= absolutePivotTolerance or best != best {
+            return false
+        }
+        if pivotRow != col {
+            for k in col to dim {
+                let a: i32 = col * dim + k
+                let b: i32 = pivotRow * dim + k
+                let temp: f64 = scratchMatrix[a]
+                scratchMatrix[a] = scratchMatrix[b]
+                scratchMatrix[b] = temp
+            }
+            let rhs: f64 = scratchRhs[col]
+            scratchRhs[col] = scratchRhs[pivotRow]
+            scratchRhs[pivotRow] = rhs
+        }
+        for row in col + 1 to dim {
+            let factor: f64 = scratchMatrix[row * dim + col] / scratchMatrix[col * dim + col]
+            scratchMatrix[row * dim + col] = 0.0
+            for k in col + 1 to dim {
+                scratchMatrix[row * dim + k] -= factor * scratchMatrix[col * dim + k]
+            }
+            scratchRhs[row] -= factor * scratchRhs[col]
+        }
+    }
+    let mut i: i32 = dim - 1
+    while i >= 0 {
+        let mut v: f64 = scratchRhs[i]
+        for j in i + 1 to dim {
+            v -= scratchMatrix[i * dim + j] * solution[j]
+        }
+        solution[i] = v / scratchMatrix[i * dim + i]
+        if solution[i] != solution[i] {
+            return false
+        }
+        i = i - 1
+    }
+    return true
+}
+
+# Infinity-norm residual of A x - b over the real 2n system.
+export function acMaxResidual(n: AcNetwork, solution: ptr<f64>) -> f64 {
+    let dim: i32 = acRealDim(n)
+    let mut worst: f64 = 0.0
+    for row in 0 to dim {
+        let mut residual: f64 = -n.rhs[row]
+        for col in 0 to dim {
+            residual += n.matrix[row * dim + col] * solution[col]
+        }
+        if acAbs(residual) > worst {
+            worst = acAbs(residual)
+        }
+    }
+    return worst
+}
+
+export function acMagnitude(re: f64, im: f64) -> f64 {
+    return sqrt(re * re + im * im)
+}
+
+# Two-argument arctangent phase in radians, matching atan2(im, re).
+export function acPhase(re: f64, im: f64) -> f64 {
+    return atan2(im, re)
+}
+
+# Average power for peak phasors: 0.5 * Re(V * conj(I)).
+export function acAveragePower(vRe: f64, vIm: f64, iRe: f64, iIm: f64) -> f64 {
+    return 0.5 * (vRe * iRe + vIm * iIm)
+}
