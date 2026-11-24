@@ -94,3 +94,7 @@ See [the transient contract and analytical gates](circuit-transients.md). `flow 
 ## ngspice cross-validation
 
 `tests/ngspice_crossval.flow` compares Herbie MNA/AC/NL (and netlist stamps) against stored ngspice-42 prints for a DC divider (1e-12), series RC AC at `ω=1000` (1e-9 V), and a 5 V diode OP (1e-3 V, fixed-`nVt` vs `TEMP=27`). Provenance and decks: `tests/ngspice_refs/`. See [ngspice-crossval.md](ngspice-crossval.md).
+
+## Index-1 DAE MNA transient validation
+
+`tests/dae_mna.flow` exercises `herbie.dae` companion models: RC/RL/RLC analytic steps (BE), LC oscillator energy under trapezoidal UIC, floating-network rejection, `maxSteps` enforcement, and RC points vs stored ngspice-42 `rc_tran` measurements (5e-4 V). See [dae-mna.md](dae-mna.md).

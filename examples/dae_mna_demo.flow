@@ -1,0 +1,47 @@
+import herbie.dae {
+    DAE_TRAP, DaeElement, DaeNetwork, daeClear, daeAddResistor, daeAddCapacitor,
+    daeAddVoltageSource, daeSetCapVoltage, daeInitUic, daeRun, daeNodeVoltage
+}
+
+function empty() -> DaeElement {
+    return DaeElement { kind: 0, a: 0, b: 0, aux: 0, value: 0.0, prevV: 0.0, prevI: 0.0 }
+}
+
+function main() -> i32 {
+    let mut elementCount: i32 = 0
+    let mut time: f64 = 0.0
+    let mut steps: i32 = 0
+    let mut ready: i32 = 0
+    let mut elements: array<DaeElement, 4> = [empty(), empty(), empty(), empty()]
+    let mut matrix: array<f64, 16> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut rhs: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut solution: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut previous: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut scratch: array<f64, 16> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut work: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let n: DaeNetwork = DaeNetwork {
+        nodeCount: 2, voltageSourceCount: 1, inductorCount: 0,
+        elementCount: &elementCount, elementCapacity: 4,
+        method: DAE_TRAP, maxSteps: 20000, dt: 1.0e-6,
+        elements: &elements[0], matrix: &matrix[0], rhs: &rhs[0],
+        solution: &solution[0], previous: &previous[0],
+        scratchMatrix: &scratch[0], scratchRhs: &work[0],
+        time: &time, steps: &steps, ready: &ready
+    }
+    if not daeClear(n) { return 1 }
+    if daeAddVoltageSource(n, 0, 0, -1, 1.0) < 0 { return 2 }
+    if daeAddResistor(n, 0, 1, 1000.0) < 0 { return 3 }
+    let c: i32 = daeAddCapacitor(n, 1, -1, 1.0e-6)
+    if c < 0 or not daeSetCapVoltage(n, c, 0.0) { return 4 }
+    if not daeInitUic(n, 1.0e-12) { return 5 }
+    if not daeRun(n, 1000, 1.0e-12) { return 6 }
+    println("Vout at 1 ms (V):")
+    println(daeNodeVoltage(n, 1))
+    return 0
+}

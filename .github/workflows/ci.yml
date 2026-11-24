@@ -65,6 +65,8 @@ jobs:
         run: flow run tests/netlist.flow
       - name: Cross-validate circuits against stored ngspice-42 references
         run: flow run tests/ngspice_crossval.flow
+      - name: Verify index-1 DAE MNA transient companions
+        run: flow run tests/dae_mna.flow
       - name: Run ideal voltage source circuit demonstration
         run: flow run examples/mna_voltage_sources_demo.flow
       - name: Run AC phasor circuit demonstration
@@ -75,6 +77,8 @@ jobs:
         run: flow run examples/nl_devices_demo.flow
       - name: Run netlist import demonstration
         run: flow run examples/netlist_demo.flow
+      - name: Run DAE MNA transient demonstration
+        run: flow run examples/dae_mna_demo.flow
       - name: Verify first-class Flow physical units
         run: flow run examples/suspension_units.flow
       - name: Run vehicle demo

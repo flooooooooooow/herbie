@@ -10,3 +10,6 @@ diode	v_in	5.0	V
 diode	v_load	4.307109	V
 diode	v_diode	0.692891	V
 diode	i_v1	-0.00430711	A
+rc_tran	v_out_1ms	0.6321206	V
+rc_tran	v_out_2ms	0.8646647	V
+rc_tran	v_out_5ms	0.9932621	V
