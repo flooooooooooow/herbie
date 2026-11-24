@@ -23,6 +23,7 @@
 | `herbie.circuits` | Sparse-API-shaped dense DC nodal assembly, resistors, current sources, Gaussian elimination with partial pivoting and KCL residual | Small linear resistive DC circuits only; no voltage-source MNA or nonlinear/transient components |
 | `herbie.electrical` | Closed-form RC/RL transients; series RLC RK4 and stored energy | Ideal lumped/passive networks only, no circuit graph, switching devices or circuit DAE |
 | `herbie.mechanics` | Single-axis rotational inertia, torsional stiffness/damping RK4 and ideal fixed-ratio gear power balance | No joints, bearing dynamics, contact, clutch or multibody assembly |
+| `herbie.driveline` | Simple pendulum, two-inertia torsional shaft, open differential power split, Coulomb clutch limit | Not 6-DOF multibody, torque converters, backlash maps or tire/suspension ports |
 | `herbie.motors` | Brushed permanent-magnet DC motor, coupled armature/rotor RK4, energy and torque | Lumped motor only; no inverter, commutation, saturation or thermal losses |
 | `herbie.battery` | First-order Thevenin OCV + ohmic + polarization RC, coulomb-count SOC | No BMS, electrochemistry, heat, SoH, degradation or charge limits |
 | `herbie.maps` | Validated monotone two-axis grids and clamped bilinear map lookup | Row-major, linear interpolation only, caller-owned data |
@@ -93,6 +94,8 @@ flow run tests/fem_truss.flow
 flow run examples/fem_truss_demo.flow
 flow run tests/fullcar_ride.flow
 flow run examples/fullcar_ride_demo.flow
+flow run tests/driveline.flow
+flow run examples/driveline_demo.flow
 flow run tests/ac_phasor_mna.flow
 flow run examples/ac_phasor_demo.flow
 flow run tests/sparse_mna.flow

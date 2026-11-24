@@ -111,6 +111,10 @@ jobs:
         run: flow run tests/fullcar_ride.flow
       - name: Run native full-car ride demonstration
         run: flow run examples/fullcar_ride_demo.flow
+      - name: Verify driveline pendulum, shaft, differential and clutch
+        run: flow run tests/driveline.flow
+      - name: Run driveline demonstration
+        run: flow run examples/driveline_demo.flow
       - name: Run vehicle demo
         run: flow run examples/quarter_car_demo.flow
       - name: Run manufacturing demo
