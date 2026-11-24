@@ -12,6 +12,7 @@
 | `herbie.mna` | Dense DC modified nodal analysis for resistors, oriented current sources and ideal voltage sources, KCL/KVL residual, pivoted solve | Small resistive DC circuits only; no nonlinear, transient, AC or sparse solver |
 | `herbie.ac` | Dense AC phasor MNA for R/C/L with independent V/I sources, real 2n block solve, residual and average-power helpers | Small linear AC networks at fixed ω>0; no switches, diodes, sparse or SPICE parity |
 | `herbie.sparse_mna` | COO→CSR DC MNA assembly for R/I/V, CSR SpMV residual, dense expand + pivoted solve with dense-reference checks | Sparse assembly only; factorisation still dense; no AC/nonlinear/fill-reducing LU |
+| `herbie.nl` | Dense DC NR MNA with Shockley diodes (pnjlim), resistive switches and explicit threshold events | DC operating points only; finite Ron/Roff; no transient diode C or BJT |
 | `herbie.circuits` | Sparse-API-shaped dense DC nodal assembly, resistors, current sources, Gaussian elimination with partial pivoting and KCL residual | Small linear resistive DC circuits only; no voltage-source MNA or nonlinear/transient components |
 | `herbie.electrical` | Closed-form RC/RL transients; series RLC RK4 and stored energy | Ideal lumped/passive networks only, no circuit graph, switching devices or circuit DAE |
 | `herbie.mechanics` | Single-axis rotational inertia, torsional stiffness/damping RK4 and ideal fixed-ratio gear power balance | No joints, bearing dynamics, contact, clutch or multibody assembly |
@@ -76,6 +77,8 @@ flow run tests/ac_phasor_mna.flow
 flow run examples/ac_phasor_demo.flow
 flow run tests/sparse_mna.flow
 flow run examples/sparse_mna_demo.flow
+flow run tests/nl_devices.flow
+flow run examples/nl_devices_demo.flow
 ```
 
 The exact Flow compiler revision used by CI is pinned in [the CI workflow](.github/workflows/ci.yml). To consume a module from another Flow package, use a path dependency on this repository and import, for example, `herbie.vehicle { QuarterCarParameters, QuarterCarState, quarterCarStep }`.
@@ -97,6 +100,10 @@ The exact Flow compiler revision used by CI is pinned in [the CI workflow](.gith
 ## Sparse DC MNA assembly
 
 [`herbie.sparse_mna`](src/sparse_mna.flow) accumulates stamps as COO triplets, compresses to CSR, checks residuals with SpMV, and solves by expanding to a dense scratch for pivoted elimination. Tests compare against analytic divider voltages and bit-close dense `herbie.mna` matrices. See [docs/sparse-mna.md](docs/sparse-mna.md). Fill-reducing sparse LU remains future work.
+
+## Nonlinear diodes and switches
+
+[`herbie.nl`](src/nl.flow) runs Newton–Raphson DC MNA with Shockley diodes (pnjlim damping) and resistive Ron/Roff switches. Switch open/close is an explicit threshold event. Analytical fixtures and a DC half-wave check are in [docs/nl-devices.md](docs/nl-devices.md).
 
 The standalone browser has no third-party runtime CDN requirement: official Three.js r187 is vendored under `site/vendor/` with its MIT licence. The repository-root `index.html` redirects to `site/` when Pages is configured to publish from a branch; the Actions workflow publishes `site/` at the Pages root. A Chromium regression asserts CSS loads and the WebGL canvas actually renders.
 

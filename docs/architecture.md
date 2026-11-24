@@ -12,6 +12,7 @@ src/
   mna.flow           Dense DC MNA with ideal voltage-source branch unknowns
   ac.flow            Dense AC phasor MNA for linear R/C/L networks
   sparse_mna.flow    COO→CSR DC MNA assembly with dense expand solve
+  nl.flow            Dense DC NR MNA with diodes and resistive switches
   transient.flow     Shared Flow-backend linear RLC transient facade
   electrical.flow    Lumped passive RC/RL/RLC
   mechanics.flow     Single-axis rotation and ideal gear
@@ -33,11 +34,13 @@ tests/
   vehicle_energy.flow
   ac_phasor_mna.flow
   sparse_mna.flow
+  nl_devices.flow
 examples/
   quarter_car_demo.flow
   manufacturing_demo.flow
   ac_phasor_demo.flow
   sparse_mna_demo.flow
+  nl_devices_demo.flow
 ```
 
 Every step function takes an explicit current state, immutable model parameters, the environmental inputs, and `dt`, and returns the next state. Call sites decide scheduling, checkpointing, telemetry, fault detection and synchronization. All values currently use SI units and `f64`.

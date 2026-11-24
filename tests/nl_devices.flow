@@ -1,0 +1,311 @@
+import herbie.nl {
+    NlElement, NlNetwork, nlClear, nlAddResistor, nlAddVoltageSource, nlAddDiode,
+    nlAddSwitch, nlSolve, nlDiodeVoltage, nlDiodeCurrent, nlNodeVoltage,
+    nlSwitchEvent, nlSwitchIsClosed, nlShockley, nlUnknownCount
+}
+
+extern {
+    function printf(fmt: string, value: f64) -> i32
+}
+
+const IS_SAT: f64 = 1.0e-14
+const NVT: f64 = 0.025852
+const RSER: f64 = 1000.0
+
+function near(a: f64, b: f64, tol: f64) -> bool {
+    return a >= b - tol and a <= b + tol
+}
+
+function absf(x: f64) -> f64 {
+    if x < 0.0 { return -x }
+    return x
+}
+
+function relerr(got: f64, want: f64) -> f64 {
+    let s: f64 = absf(want)
+    if s < 1.0e-30 {
+        return absf(got - want)
+    }
+    return absf(got - want) / s
+}
+
+function bisectVd(vsrc: f64) -> f64 {
+    let mut lo: f64 = -2.0
+    let mut hi: f64 = 2.0
+    if vsrc < lo { lo = vsrc - 1.0 }
+    if vsrc > hi { hi = vsrc + 1.0 }
+    for k in 0 to 200 {
+        let mid: f64 = 0.5 * (lo + hi)
+        let f: f64 = mid + RSER * nlShockley(IS_SAT, NVT, mid) - vsrc
+        if f > 0.0 {
+            hi = mid
+        } else {
+            lo = mid
+        }
+    }
+    return 0.5 * (lo + hi)
+}
+
+function emptyElem() -> NlElement {
+    return NlElement { kind: 0, a: 0, b: 0, aux: 0, p0: 0.0, p1: 0.0, state: 0.0 }
+}
+
+function testPinnedDiode() -> i32 {
+    let mut elementCount: i32 = 0
+    let mut iterations: i32 = 0
+    let mut elements: array<NlElement, 4> = [emptyElem(), emptyElem(), emptyElem(), emptyElem()]
+    let mut matrix: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut rhs: array<f64, 2> = [0.0, 0.0]
+    let mut solution: array<f64, 2> = [0.0, 0.0]
+    let mut previous: array<f64, 2> = [0.0, 0.0]
+    let mut scratch: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut work: array<f64, 2> = [0.0, 0.0]
+    let n: NlNetwork = NlNetwork {
+        nodeCount: 1, voltageSourceCount: 1,
+        elementCount: &elementCount, elementCapacity: 4,
+        maxIter: 50, relTol: 1.0e-9, absTol: 1.0e-12, gmin: 0.0,
+        elements: &elements[0], matrix: &matrix[0], rhs: &rhs[0],
+        solution: &solution[0], previous: &previous[0],
+        scratchMatrix: &scratch[0], scratchRhs: &work[0], iterations: &iterations
+    }
+    let mut worst: f64 = 0.0
+    for k in 0 to 15 {
+        let vd: f64 = -0.4 + 0.1 * (k as f64)
+        if not nlClear(n) { return 1 }
+        if nlAddVoltageSource(n, 0, 0, -1, vd) < 0 { return 2 }
+        let d: i32 = nlAddDiode(n, 0, -1, IS_SAT, NVT)
+        if d < 0 { return 3 }
+        if not nlSolve(n) {
+            println("FAIL pinned diode NR")
+            return 4
+        }
+        let id: f64 = nlDiodeCurrent(n, d)
+        let want: f64 = nlShockley(IS_SAT, NVT, vd)
+        let err: f64 = relerr(id, want)
+        if err > worst { worst = err }
+        if err > 1.0e-9 {
+            printf("FAIL pinned diode err=%.12g\n", err)
+            return 5
+        }
+    }
+    printf("pinned diode worst relerr: %.12g\n", worst)
+    return 0
+}
+
+function testSeriesDiode() -> i32 {
+    let mut elementCount: i32 = 0
+    let mut iterations: i32 = 0
+    let mut elements: array<NlElement, 4> = [emptyElem(), emptyElem(), emptyElem(), emptyElem()]
+    let mut matrix: array<f64, 9> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut rhs: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut solution: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut previous: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut scratch: array<f64, 9> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut work: array<f64, 3> = [0.0, 0.0, 0.0]
+    let n: NlNetwork = NlNetwork {
+        nodeCount: 2, voltageSourceCount: 1,
+        elementCount: &elementCount, elementCapacity: 4,
+        maxIter: 80, relTol: 1.0e-9, absTol: 1.0e-12, gmin: 0.0,
+        elements: &elements[0], matrix: &matrix[0], rhs: &rhs[0],
+        solution: &solution[0], previous: &previous[0],
+        scratchMatrix: &scratch[0], scratchRhs: &work[0], iterations: &iterations
+    }
+    let mut worst: f64 = 0.0
+    for k in 0 to 13 {
+        let vsrc: f64 = -1.0 + 0.5 * (k as f64)
+        if not nlClear(n) { return 10 }
+        if nlAddVoltageSource(n, 0, 0, -1, vsrc) < 0 { return 11 }
+        if nlAddResistor(n, 0, 1, RSER) < 0 { return 12 }
+        let d: i32 = nlAddDiode(n, 1, -1, IS_SAT, NVT)
+        if d < 0 { return 13 }
+        if not nlSolve(n) {
+            println("FAIL series diode NR")
+            return 14
+        }
+        let vd: f64 = nlDiodeVoltage(n, d)
+        let want: f64 = bisectVd(vsrc)
+        let err: f64 = absf(vd - want)
+        if err > worst { worst = err }
+        if err > 1.0e-9 {
+            printf("FAIL series diode abserr=%.12g\n", err)
+            return 15
+        }
+    }
+    printf("series diode worst abserr: %.12g\n", worst)
+    return 0
+}
+
+function testDecadeSlope() -> i32 {
+    # Pin Vd so Shockley currents are 1e-5 A and 1e-4 A; slope must be nVt ln 10.
+    let vdLow: f64 = NVT * log(1.0 + 1.0e-5 / IS_SAT)
+    let vdHigh: f64 = NVT * log(1.0 + 1.0e-4 / IS_SAT)
+    let mut elementCount: i32 = 0
+    let mut iterations: i32 = 0
+    let mut elements: array<NlElement, 4> = [emptyElem(), emptyElem(), emptyElem(), emptyElem()]
+    let mut matrix: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut rhs: array<f64, 2> = [0.0, 0.0]
+    let mut solution: array<f64, 2> = [0.0, 0.0]
+    let mut previous: array<f64, 2> = [0.0, 0.0]
+    let mut scratch: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut work: array<f64, 2> = [0.0, 0.0]
+    let n: NlNetwork = NlNetwork {
+        nodeCount: 1, voltageSourceCount: 1,
+        elementCount: &elementCount, elementCapacity: 4,
+        maxIter: 50, relTol: 1.0e-9, absTol: 1.0e-12, gmin: 0.0,
+        elements: &elements[0], matrix: &matrix[0], rhs: &rhs[0],
+        solution: &solution[0], previous: &previous[0],
+        scratchMatrix: &scratch[0], scratchRhs: &work[0], iterations: &iterations
+    }
+    if not nlClear(n) { return 60 }
+    if nlAddVoltageSource(n, 0, 0, -1, vdLow) < 0 { return 61 }
+    let d0: i32 = nlAddDiode(n, 0, -1, IS_SAT, NVT)
+    if d0 < 0 or not nlSolve(n) { return 62 }
+    if relerr(nlDiodeCurrent(n, d0), 1.0e-5) > 1.0e-9 { return 63 }
+    if not nlClear(n) { return 64 }
+    if nlAddVoltageSource(n, 0, 0, -1, vdHigh) < 0 { return 65 }
+    let d1: i32 = nlAddDiode(n, 0, -1, IS_SAT, NVT)
+    if d1 < 0 or not nlSolve(n) { return 66 }
+    if relerr(nlDiodeCurrent(n, d1), 1.0e-4) > 1.0e-9 { return 67 }
+    let decade: f64 = vdHigh - vdLow
+    let decadeRef: f64 = NVT * 2.302585092994046
+    printf("mV/decade: %.12g\n", decade * 1000.0)
+    if absf(decade - decadeRef) > 1.0e-6 {
+        return 68
+    }
+    return 0
+}
+
+function testSwitchEvents() -> i32 {
+    let mut elementCount: i32 = 0
+    let mut iterations: i32 = 0
+    let mut elements: array<NlElement, 4> = [emptyElem(), emptyElem(), emptyElem(), emptyElem()]
+    let mut matrix: array<f64, 9> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut rhs: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut solution: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut previous: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut scratch: array<f64, 9> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut work: array<f64, 3> = [0.0, 0.0, 0.0]
+    let n: NlNetwork = NlNetwork {
+        nodeCount: 2, voltageSourceCount: 1,
+        elementCount: &elementCount, elementCapacity: 4,
+        maxIter: 20, relTol: 1.0e-9, absTol: 1.0e-12, gmin: 0.0,
+        elements: &elements[0], matrix: &matrix[0], rhs: &rhs[0],
+        solution: &solution[0], previous: &previous[0],
+        scratchMatrix: &scratch[0], scratchRhs: &work[0], iterations: &iterations
+    }
+    if not nlClear(n) { return 20 }
+    if nlAddVoltageSource(n, 0, 0, -1, 12.0) < 0 { return 21 }
+    let sw: i32 = nlAddSwitch(n, 0, 1, 1.0e-3, 1.0e9, false)
+    if sw < 0 or nlAddResistor(n, 1, -1, 1000.0) < 0 { return 22 }
+    if not nlSolve(n) { return 23 }
+    # Open switch: load nearly floating through Roff; voltage ~0 with gmin off...
+    # With Roff=1e9 and Rload=1k, V1 = 12 * 1k/(1e9+1k) ≈ 1.2e-5 V.
+    if not near(nlNodeVoltage(n, 1), 12.0 * 1000.0 / (1.0e9 + 1000.0), 1.0e-9) {
+        return 24
+    }
+    if nlSwitchEvent(n, sw, 0.5, 1.0) {
+        return 25
+    }
+    if not nlSwitchEvent(n, sw, 1.5, 1.0) or not nlSwitchIsClosed(n, sw) {
+        return 26
+    }
+    if not nlSolve(n) { return 27 }
+    # Closed: nearly ideal short then 1 kΩ to ground => V1 ≈ 12 * 1000/(0.001+1000).
+    let expected: f64 = 12.0 * 1000.0 / (0.001 + 1000.0)
+    if not near(nlNodeVoltage(n, 1), expected, 1.0e-9) {
+        printf("FAIL closed switch V=%.12g\n", nlNodeVoltage(n, 1))
+        return 28
+    }
+    if not nlSwitchEvent(n, sw, 0.2, 1.0) or nlSwitchIsClosed(n, sw) {
+        return 29
+    }
+    return 0
+}
+
+function testHalfWaveRectifierDc() -> i32 {
+    # Positive DC source through diode into 1 kΩ: same as series diode at 5 V.
+    let mut elementCount: i32 = 0
+    let mut iterations: i32 = 0
+    let mut elements: array<NlElement, 4> = [emptyElem(), emptyElem(), emptyElem(), emptyElem()]
+    let mut matrix: array<f64, 9> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut rhs: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut solution: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut previous: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut scratch: array<f64, 9> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut work: array<f64, 3> = [0.0, 0.0, 0.0]
+    let n: NlNetwork = NlNetwork {
+        nodeCount: 2, voltageSourceCount: 1,
+        elementCount: &elementCount, elementCapacity: 4,
+        maxIter: 80, relTol: 1.0e-9, absTol: 1.0e-12, gmin: 0.0,
+        elements: &elements[0], matrix: &matrix[0], rhs: &rhs[0],
+        solution: &solution[0], previous: &previous[0],
+        scratchMatrix: &scratch[0], scratchRhs: &work[0], iterations: &iterations
+    }
+    if not nlClear(n) { return 30 }
+    if nlAddVoltageSource(n, 0, 0, -1, 5.0) < 0 { return 31 }
+    let d: i32 = nlAddDiode(n, 0, 1, IS_SAT, NVT)
+    if d < 0 or nlAddResistor(n, 1, -1, 1000.0) < 0 { return 32 }
+    if not nlSolve(n) { return 33 }
+    let vd: f64 = nlDiodeVoltage(n, d)
+    let id: f64 = nlDiodeCurrent(n, d)
+    let vload: f64 = nlNodeVoltage(n, 1)
+    if not near(vload + vd, 5.0, 1.0e-9) { return 34 }
+    if not near(id * 1000.0, vload, 1.0e-9) { return 35 }
+    if not near(id, nlShockley(IS_SAT, NVT, vd), 1.0e-12) { return 36 }
+    # Reverse bias: diode blocks, load ~0.
+    if not nlClear(n) { return 37 }
+    if nlAddVoltageSource(n, 0, 0, -1, -5.0) < 0 { return 38 }
+    let d2: i32 = nlAddDiode(n, 0, 1, IS_SAT, NVT)
+    if d2 < 0 or nlAddResistor(n, 1, -1, 1000.0) < 0 { return 39 }
+    if not nlSolve(n) { return 40 }
+    if absf(nlNodeVoltage(n, 1)) > 1.0e-6 { return 41 }
+    return 0
+}
+
+function testIterationCap() -> i32 {
+    let mut elementCount: i32 = 0
+    let mut iterations: i32 = 0
+    let mut elements: array<NlElement, 4> = [emptyElem(), emptyElem(), emptyElem(), emptyElem()]
+    let mut matrix: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut rhs: array<f64, 2> = [0.0, 0.0]
+    let mut solution: array<f64, 2> = [0.0, 0.0]
+    let mut previous: array<f64, 2> = [0.0, 0.0]
+    let mut scratch: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut work: array<f64, 2> = [0.0, 0.0]
+    let n: NlNetwork = NlNetwork {
+        nodeCount: 1, voltageSourceCount: 1,
+        elementCount: &elementCount, elementCapacity: 4,
+        maxIter: 1, relTol: 1.0e-15, absTol: 1.0e-15, gmin: 0.0,
+        elements: &elements[0], matrix: &matrix[0], rhs: &rhs[0],
+        solution: &solution[0], previous: &previous[0],
+        scratchMatrix: &scratch[0], scratchRhs: &work[0], iterations: &iterations
+    }
+    if not nlClear(n) { return 50 }
+    if nlAddVoltageSource(n, 0, 0, -1, 0.7) < 0 { return 51 }
+    if nlAddDiode(n, 0, -1, IS_SAT, NVT) < 0 { return 52 }
+    # maxIter=1 cannot satisfy it>=2 convergence rule.
+    if nlSolve(n) {
+        return 53
+    }
+    if iterations != 1 {
+        return 54
+    }
+    return 0
+}
+
+function main() -> i32 {
+    let mut code: i32 = testPinnedDiode()
+    if code != 0 { return code }
+    code = testSeriesDiode()
+    if code != 0 { return code }
+    code = testDecadeSlope()
+    if code != 0 { return code }
+    code = testSwitchEvents()
+    if code != 0 { return code }
+    code = testHalfWaveRectifierDc()
+    if code != 0 { return code }
+    code = testIterationCap()
+    if code != 0 { return code }
+    println("PASS nonlinear diode NR, switch events and rectifier fixtures")
+    return 0
+}
