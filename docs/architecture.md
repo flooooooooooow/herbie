@@ -29,6 +29,7 @@ src/
   powertrain.flow    Longitudinal point-mass motion
   structures.flow    Elastic stress and introductory fatigue
   truss.flow         Local 2D truss element stiffness and force
+  fem.flow           Global 2D truss FEM assembly, dense/CG solves
   uncertainty.flow   First-order covariance propagation
   tolerances.flow    Interval clearance and statistical capability
   stackups.flow      PSD-validated affine correlated dimension stacks

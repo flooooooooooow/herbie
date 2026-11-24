@@ -1,0 +1,58 @@
+# Two-bar V-truss demo: analytic tip deflection and support reactions.
+
+import herbie.fem {
+    FemTruss2D, femClearSystem, femAssembleDense, femBuildFreeMap,
+    femReduceSystem, femDenseSolve, femScatterFree, femReaction
+}
+
+function near(a: f64, b: f64, eps: f64) -> bool {
+    return a >= b - eps and a <= b + eps
+}
+
+function main() -> i32 {
+    let mut x: array<f64, 3> = [0.0, 1.0, 0.5]
+    let mut y: array<f64, 3> = [0.0, 0.0, 0.5]
+    let mut n1: array<i32, 2> = [0, 1]
+    let mut n2: array<i32, 2> = [2, 2]
+    let mut area: array<f64, 2> = [0.001, 0.001]
+    let mut young: array<f64, 2> = [1000000000.0, 1000000000.0]
+    let mesh: FemTruss2D = FemTruss2D {
+        nodeCount: 3, elementCount: 2,
+        nodeX: &x[0], nodeY: &y[0],
+        elemN1: &n1[0], elemN2: &n2[0],
+        elemArea: &area[0], elemE: &young[0]
+    }
+    let ndof: i32 = 6
+    let mut k: array<f64, 36> = [0.0; 36]
+    let mut f: array<f64, 6> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut ke: array<f64, 16> = [0.0; 16]
+    if not femClearSystem(ndof, &k[0], &f[0]) or not femAssembleDense(mesh, &k[0], &ke[0]) {
+        return 1
+    }
+    f[5] = -1000.0
+    let mut freeFlag: array<i32, 6> = [0, 0, 0, 0, 1, 1]
+    let mut freeDofs: array<i32, 6> = [0, 0, 0, 0, 0, 0]
+    let mut freeCount: array<i32, 1> = [0]
+    femBuildFreeMap(ndof, &freeFlag[0], &freeDofs[0], &freeCount[0])
+    let mut kff: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut ff: array<f64, 2> = [0.0, 0.0]
+    let mut uFree: array<f64, 2> = [0.0, 0.0]
+    let mut sk: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut sr: array<f64, 2> = [0.0, 0.0]
+    femReduceSystem(ndof, freeCount[0], &freeDofs[0], &k[0], &f[0], &kff[0], &ff[0])
+    if not femDenseSolve(freeCount[0], &kff[0], &ff[0], &uFree[0], &sk[0], &sr[0], 1.0e-18) {
+        return 2
+    }
+    let mut u: array<f64, 6> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    femScatterFree(ndof, freeCount[0], &freeDofs[0], &uFree[0], &u[0])
+    println("Tip uy [m]")
+    println(u[5])
+    println("Reaction Ay [N]")
+    println(femReaction(ndof, 1, &k[0], &u[0], &f[0]))
+    let expected: f64 = -1000.0 / (1000000.0 * sqrt(2.0))
+    if not near(u[5], expected, 1.0e-10) {
+        return 3
+    }
+    println("PASS fem truss demo")
+    return 0
+}

@@ -103,6 +103,10 @@ jobs:
         run: flow run tests/montecarlo_stack.flow
       - name: Run Monte Carlo stack demonstration
         run: flow run examples/montecarlo_stack_demo.flow
+      - name: Verify 2D truss FEM assembly, CG and reactions
+        run: flow run tests/fem_truss.flow
+      - name: Run FEM truss demonstration
+        run: flow run examples/fem_truss_demo.flow
       - name: Run vehicle demo
         run: flow run examples/quarter_car_demo.flow
       - name: Run manufacturing demo
