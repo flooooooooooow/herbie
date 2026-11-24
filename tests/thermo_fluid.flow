@@ -1,0 +1,148 @@
+# Laminar pipe, orifice, pump–pipe operating point, NTU exchanger, cooling loop.
+
+import herbie.fluids {
+    FluidProperties, PipeParameters, OrificeParameters, LinearPumpParameters,
+    HydraulicVolume, HeatExchangerParameters, CoolantNodeState, CoolantNodeParameters,
+    fluidPropertiesOk, pipeLaminarPressureDrop, pipeReynolds, orificeVolumeFlow,
+    pumpLinearFlow, pumpPipeOperatingPoint, hydraulicVolumeStep,
+    heatExchangerEffectiveness, heatExchangerHeatTransfer, coolantNodeStep, coolingLoopSteady
+}
+
+function near(a: f64, b: f64, eps: f64) -> bool {
+    return a >= b - eps and a <= b + eps
+}
+
+function absf(x: f64) -> f64 {
+    if x < 0.0 { return -x }
+    return x
+}
+
+function testPipeOrificePump() -> i32 {
+    let fluid: FluidProperties = FluidProperties {
+        density: 1000.0, dynamicViscosity: 0.001, specificHeat: 4180.0
+    }
+    if not fluidPropertiesOk(fluid) {
+        return 1
+    }
+    let pipe: PipeParameters = PipeParameters { length: 2.0, diameter: 0.02 }
+    let q: f64 = 0.0001
+    let dp: f64 = pipeLaminarPressureDrop(pipe, fluid, q)
+    # 128*0.001*2*1e-4 / (π * 1.6e-7) = 2.56e-5 / (π*1.6e-7) = 50.92958...
+    let d4: f64 = 0.02 * 0.02 * 0.02 * 0.02
+    let expected: f64 = 128.0 * 0.001 * 2.0 * q / (3.141592653589793 * d4)
+    if not near(dp, expected, 1.0e-9) {
+        println("FAIL Hagen-Poiseuille")
+        return 2
+    }
+    let re: f64 = pipeReynolds(pipe, fluid, q)
+    # v = Q/A = 0.0001 / (π*0.0001) = 1/π ≈ 0.318; Re = ρ v D / μ ≈ 6366
+    if re < 1000.0 {
+        return 3
+    }
+    let orifice: OrificeParameters = OrificeParameters { dischargeCoefficient: 0.6, area: 0.0001 }
+    let qOr: f64 = orificeVolumeFlow(orifice, fluid, 5000.0)
+    let qExp: f64 = 0.6 * 0.0001 * sqrt(2.0 * 5000.0 / 1000.0)
+    if not near(qOr, qExp, 1.0e-12) {
+        return 4
+    }
+    if orificeVolumeFlow(orifice, fluid, -5000.0) >= 0.0 {
+        return 5
+    }
+    let pump: LinearPumpParameters = LinearPumpParameters { freeFlow: 0.002, headGain: 1.0e-6 }
+    if not near(pumpLinearFlow(pump, 0.0), 0.002, 1.0e-15) {
+        return 6
+    }
+    if pumpLinearFlow(pump, 3000.0) != 0.0 {
+        return 7
+    }
+    let op = pumpPipeOperatingPoint(pump, pipe, fluid)
+    if not op.ok {
+        return 8
+    }
+    let rHyd: f64 = expected / q
+    let qOp: f64 = 0.002 / (1.0 + 1.0e-6 * rHyd)
+    if not near(op.flow, qOp, 1.0e-15) or not near(op.pipePressureDrop, rHyd * qOp, 1.0e-9) {
+        println("FAIL pump-pipe operating point")
+        return 9
+    }
+    if not near(op.pumpPressureRise, op.pipePressureDrop, 1.0e-12) {
+        return 10
+    }
+    return 0
+}
+
+function testVolumeHxAndLoop() -> i32 {
+    let vol: HydraulicVolume = HydraulicVolume { capacitance: 1.0e-8 }
+    let p1: f64 = hydraulicVolumeStep(1.0e5, vol, 0.001, 0.01)
+    if not near(p1, 1.0e5 + 0.001 * 0.01 / 1.0e-8, 1.0e-6) {
+        return 1
+    }
+    if hydraulicVolumeStep(1.0e5, vol, 0.0, 0.0) == hydraulicVolumeStep(1.0e5, vol, 0.0, 0.0) {
+        return 2
+    }
+    let hx: HeatExchangerParameters = HeatExchangerParameters { overallUA: 500.0 }
+    # Balanced streams C=1000: ε = NTU/(1+NTU), NTU=0.5 → ε=1/3
+    let eps: f64 = heatExchangerEffectiveness(hx, 1000.0, 1000.0)
+    if not near(eps, 1.0 / 3.0, 1.0e-12) {
+        println("FAIL balanced NTU")
+        return 3
+    }
+    let qHx: f64 = heatExchangerHeatTransfer(hx, 1000.0, 1000.0, 360.0, 300.0)
+    if not near(qHx, (1.0 / 3.0) * 1000.0 * 60.0, 1.0e-9) {
+        return 4
+    }
+    let nodeP: CoolantNodeParameters = CoolantNodeParameters { mass: 10.0, specificHeat: 4000.0 }
+    let s0: CoolantNodeState = CoolantNodeState { temperature: 350.0 }
+    let s1: CoolantNodeState = coolantNodeStep(s0, nodeP, 2000.0, 2000.0, 1.0)
+    if not near(s1.temperature, 350.0, 1.0e-12) {
+        return 5
+    }
+    # Closed loop steady: T = Tamb + Q/UA; flow from pump–pipe.
+    let fluid: FluidProperties = FluidProperties {
+        density: 1000.0, dynamicViscosity: 0.001, specificHeat: 4180.0
+    }
+    let pump: LinearPumpParameters = LinearPumpParameters { freeFlow: 0.0015, headGain: 5.0e-7 }
+    let pipe: PipeParameters = PipeParameters { length: 4.0, diameter: 0.025 }
+    let loop = coolingLoopSteady(pump, pipe, fluid, 800.0, 24000.0, 300.0)
+    if not loop.ok {
+        return 6
+    }
+    if not near(loop.coolantTemperature, 300.0 + 24000.0 / 800.0, 1.0e-12) {
+        println("FAIL cooling steady temperature")
+        return 7
+    }
+    if not near(loop.radiatorReject, 24000.0, 1.0e-12) {
+        return 8
+    }
+    if loop.flow <= 0.0 or absf(loop.pumpPressureRise - loop.pipePressureDrop) > 1.0e-9 {
+        return 9
+    }
+    # Transient node converges toward steady under constant heat with UA reject.
+    let mut t: CoolantNodeState = CoolantNodeState { temperature: 300.0 }
+    let ua: f64 = 800.0
+    let qEng: f64 = 24000.0
+    let tamb: f64 = 300.0
+    for i in 0 to 20000 {
+        let qRad: f64 = ua * (t.temperature - tamb)
+        t = coolantNodeStep(t, nodeP, qEng, qRad, 0.05)
+    }
+    if absf(t.temperature - loop.coolantTemperature) > 0.05 {
+        println("FAIL transient to steady")
+        println(t.temperature)
+        return 10
+    }
+    return 0
+}
+
+function main() -> i32 {
+    let a: i32 = testPipeOrificePump()
+    if a != 0 {
+        return 10 + a
+    }
+    let b: i32 = testVolumeHxAndLoop()
+    if b != 0 {
+        return 20 + b
+    }
+    println("PASS thermo-fluid: pipe, orifice, pump, NTU, cooling loop")
+    return 0
+}
