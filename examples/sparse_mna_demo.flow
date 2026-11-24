@@ -1,0 +1,42 @@
+import herbie.sparse_mna {
+    SparseMna, sparseMnaClear, sparseMnaStampResistor, sparseMnaStampVoltageSource,
+    sparseMnaFinalize, sparseMnaSolve, sparseMnaMaxResidual
+}
+
+function main() -> i32 {
+    let mut cooCount: i32 = 0
+    let mut csrNnz: i32 = 0
+    let mut ready: i32 = 0
+    let mut cooRow: array<i32, 16> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    let mut cooCol: array<i32, 16> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    let mut cooVal: array<f64, 16> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut rowPtr: array<i32, 4> = [0, 0, 0, 0]
+    let mut colIdx: array<i32, 16> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    let mut values: array<f64, 16> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut rhs: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut v: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut dense: array<f64, 9> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut factor: array<f64, 9> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut work: array<f64, 3> = [0.0, 0.0, 0.0]
+    let n: SparseMna = SparseMna {
+        nodeCount: 2, voltageSourceCount: 1, capacity: 16,
+        cooCount: &cooCount, csrNnz: &csrNnz, ready: &ready,
+        cooRow: &cooRow[0], cooCol: &cooCol[0], cooVal: &cooVal[0],
+        rowPtr: &rowPtr[0], colIdx: &colIdx[0], values: &values[0], rhs: &rhs[0]
+    }
+    if not sparseMnaClear(n) { return 1 }
+    if not sparseMnaStampVoltageSource(n, 0, 0, -1, 12.0) { return 2 }
+    if not sparseMnaStampResistor(n, 0, 1, 1000.0) { return 3 }
+    if not sparseMnaStampResistor(n, 1, -1, 1000.0) { return 4 }
+    if not sparseMnaFinalize(n) { return 5 }
+    if not sparseMnaSolve(n, &v[0], &dense[0], &factor[0], &work[0], 1.0e-12) { return 6 }
+    println("CSR nnz:")
+    println(csrNnz as f64)
+    println("Node 1 voltage (V):")
+    println(v[1])
+    println("Source current (A):")
+    println(v[2])
+    println("CSR residual:")
+    println(sparseMnaMaxResidual(n, &v[0]))
+    return 0
+}

@@ -1,0 +1,187 @@
+import herbie.sparse_mna {
+    SparseMna, sparseMnaClear, sparseMnaStampResistor, sparseMnaStampCurrentSource,
+    sparseMnaStampVoltageSource, sparseMnaFinalize, sparseMnaSolve, sparseMnaMaxResidual,
+    sparseMnaUnknownCount, sparseMnaExpandDense
+}
+import herbie.mna {
+    MnaNetwork, mnaClear, mnaStampResistor, mnaStampCurrentSource, mnaStampVoltageSource,
+    mnaSolve, mnaMaxResidual
+}
+
+function near(a: f64, b: f64, tol: f64) -> bool {
+    return a >= b - tol and a <= b + tol
+}
+
+function main() -> i32 {
+    let mut cooCount: i32 = 0
+    let mut csrNnz: i32 = 0
+    let mut ready: i32 = 0
+    let mut cooRow: array<i32, 16> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    let mut cooCol: array<i32, 16> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    let mut cooVal: array<f64, 16> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut rowPtr: array<i32, 4> = [0, 0, 0, 0]
+    let mut colIdx: array<i32, 16> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    let mut values: array<f64, 16> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut rhs: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut solution: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut dense: array<f64, 9> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut factor: array<f64, 9> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut workRhs: array<f64, 3> = [0.0, 0.0, 0.0]
+    let sparse: SparseMna = SparseMna {
+        nodeCount: 2, voltageSourceCount: 1, capacity: 16,
+        cooCount: &cooCount, csrNnz: &csrNnz, ready: &ready,
+        cooRow: &cooRow[0], cooCol: &cooCol[0], cooVal: &cooVal[0],
+        rowPtr: &rowPtr[0], colIdx: &colIdx[0], values: &values[0], rhs: &rhs[0]
+    }
+    if sparseMnaUnknownCount(sparse) != 3 or not sparseMnaClear(sparse) {
+        return 1
+    }
+    if not sparseMnaStampVoltageSource(sparse, 0, 0, -1, 12.0) {
+        return 2
+    }
+    if not sparseMnaStampResistor(sparse, 0, 1, 1000.0)
+        or not sparseMnaStampResistor(sparse, 1, -1, 1000.0) {
+        return 3
+    }
+    if cooCount != 7 {
+        println("FAIL expected 7 COO entries for divider")
+        return 4
+    }
+    if not sparseMnaFinalize(sparse) {
+        return 5
+    }
+    # Two (1,1) conductance contributions merge, so CSR nnz is 6.
+    if csrNnz != 6 {
+        println("FAIL CSR nnz after finalize")
+        return 6
+    }
+    if not sparseMnaSolve(sparse, &solution[0], &dense[0], &factor[0], &workRhs[0], 1.0e-12) {
+        println("FAIL sparse divider solve")
+        return 7
+    }
+    if not near(solution[0], 12.0, 1.0e-10) or not near(solution[1], 6.0, 1.0e-10)
+        or not near(solution[2], -0.006, 1.0e-12) {
+        println("FAIL sparse analytic voltages")
+        return 8
+    }
+    if sparseMnaMaxResidual(sparse, &solution[0]) > 1.0e-12 {
+        return 9
+    }
+
+    let mut dMatrix: array<f64, 9> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut dRhs: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut dSol: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut dScratch: array<f64, 9> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut dWork: array<f64, 3> = [0.0, 0.0, 0.0]
+    let denseNet: MnaNetwork = MnaNetwork {
+        nodeCount: 2, voltageSourceCount: 1, matrix: &dMatrix[0], rhs: &dRhs[0]
+    }
+    if not sparseMnaClear(sparse) or not mnaClear(denseNet) {
+        return 10
+    }
+    if not sparseMnaStampVoltageSource(sparse, 0, 0, -1, 12.0)
+        or not mnaStampVoltageSource(denseNet, 0, 0, -1, 12.0) {
+        return 11
+    }
+    if not sparseMnaStampResistor(sparse, 0, 1, 1000.0)
+        or not sparseMnaStampResistor(sparse, 1, -1, 1000.0)
+        or not mnaStampResistor(denseNet, 0, 1, 1000.0)
+        or not mnaStampResistor(denseNet, 1, -1, 1000.0) {
+        return 12
+    }
+    if not sparseMnaStampCurrentSource(sparse, -1, 1, 0.001)
+        or not mnaStampCurrentSource(denseNet, -1, 1, 0.001) {
+        return 13
+    }
+    if not sparseMnaFinalize(sparse) {
+        return 14
+    }
+    if not sparseMnaSolve(sparse, &solution[0], &dense[0], &factor[0], &workRhs[0], 1.0e-12) {
+        return 15
+    }
+    if not mnaSolve(denseNet, &dSol[0], &dScratch[0], &dWork[0], 1.0e-12) {
+        return 16
+    }
+    for i in 0 to 3 {
+        if not near(solution[i], dSol[i], 1.0e-12) {
+            println("FAIL sparse vs dense solution mismatch")
+            return 17
+        }
+    }
+    if not sparseMnaExpandDense(sparse, &dense[0]) {
+        return 18
+    }
+    for i in 0 to 9 {
+        if not near(dense[i], dMatrix[i], 1.0e-15) {
+            println("FAIL sparse expand vs dense matrix")
+            return 19
+        }
+    }
+    if not near(solution[1], 6.5, 1.0e-10) or not near(solution[2], -0.0055, 1.0e-10) {
+        return 20
+    }
+    if sparseMnaMaxResidual(sparse, &solution[0]) > 1.0e-12
+        or mnaMaxResidual(denseNet, &dSol[0]) > 1.0e-12 {
+        return 21
+    }
+
+    let mut tinyCount: i32 = 0
+    let mut tinyNnz: i32 = 0
+    let mut tinyReady: i32 = 0
+    let mut tinyRow: array<i32, 2> = [0, 0]
+    let mut tinyCol: array<i32, 2> = [0, 0]
+    let mut tinyVal: array<f64, 2> = [0.0, 0.0]
+    let mut tinyPtr: array<i32, 3> = [0, 0, 0]
+    let mut tinyCidx: array<i32, 2> = [0, 0]
+    let mut tinyVals: array<f64, 2> = [0.0, 0.0]
+    let mut tinyRhs: array<f64, 2> = [0.0, 0.0]
+    let tiny: SparseMna = SparseMna {
+        nodeCount: 2, voltageSourceCount: 0, capacity: 2,
+        cooCount: &tinyCount, csrNnz: &tinyNnz, ready: &tinyReady,
+        cooRow: &tinyRow[0], cooCol: &tinyCol[0], cooVal: &tinyVal[0],
+        rowPtr: &tinyPtr[0], colIdx: &tinyCidx[0], values: &tinyVals[0], rhs: &tinyRhs[0]
+    }
+    if not sparseMnaClear(tiny) {
+        return 22
+    }
+    if sparseMnaStampResistor(tiny, 0, 1, 1000.0) {
+        println("FAIL capacity overflow accepted")
+        return 23
+    }
+
+    let mut fCount: i32 = 0
+    let mut fNnz: i32 = 0
+    let mut fReady: i32 = 0
+    let mut fRow: array<i32, 8> = [0, 0, 0, 0, 0, 0, 0, 0]
+    let mut fCol: array<i32, 8> = [0, 0, 0, 0, 0, 0, 0, 0]
+    let mut fVal: array<f64, 8> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut fPtr: array<i32, 3> = [0, 0, 0]
+    let mut fCidx: array<i32, 8> = [0, 0, 0, 0, 0, 0, 0, 0]
+    let mut fVals: array<f64, 8> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut fRhs: array<f64, 2> = [0.0, 0.0]
+    let mut fSol: array<f64, 2> = [0.0, 0.0]
+    let mut fDense: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut fFactor: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut fWork: array<f64, 2> = [0.0, 0.0]
+    let floating: SparseMna = SparseMna {
+        nodeCount: 2, voltageSourceCount: 0, capacity: 8,
+        cooCount: &fCount, csrNnz: &fNnz, ready: &fReady,
+        cooRow: &fRow[0], cooCol: &fCol[0], cooVal: &fVal[0],
+        rowPtr: &fPtr[0], colIdx: &fCidx[0], values: &fVals[0], rhs: &fRhs[0]
+    }
+    if not sparseMnaClear(floating) or not sparseMnaStampResistor(floating, 0, 1, 1000.0) {
+        return 24
+    }
+    if not sparseMnaFinalize(floating) {
+        return 25
+    }
+    if sparseMnaSolve(floating, &fSol[0], &fDense[0], &fFactor[0], &fWork[0], 1.0e-12) {
+        println("FAIL floating sparse network solved")
+        return 26
+    }
+    if sparseMnaStampResistor(sparse, 0, -1, 100.0) {
+        return 27
+    }
+    println("PASS sparse MNA assembly, dense reference and singularity checks")
+    return 0
+}
