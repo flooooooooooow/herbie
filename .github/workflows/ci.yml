@@ -59,6 +59,8 @@ jobs:
         run: flow run tests/ac_phasor_mna.flow
       - name: Verify sparse DC MNA assembly against dense reference
         run: flow run tests/sparse_mna.flow
+      - name: Benchmark sparse 40-node ladder vs dense MNA
+        run: flow run tests/sparse_bench.flow
       - name: Verify nonlinear diode NR and switch events
         run: flow run tests/nl_devices.flow
       - name: Verify versioned netlist parse, export and solver stamps
@@ -77,6 +79,8 @@ jobs:
         run: flow run examples/ac_phasor_demo.flow
       - name: Run sparse MNA demonstration
         run: flow run examples/sparse_mna_demo.flow
+      - name: Run sparse ladder timing demonstration
+        run: flow run examples/sparse_bench_demo.flow
       - name: Run nonlinear devices demonstration
         run: flow run examples/nl_devices_demo.flow
       - name: Run netlist import demonstration

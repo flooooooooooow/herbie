@@ -28,4 +28,4 @@ flow run tests/sparse_mna.flow
 
 ## Boundary
 
-Factorisation remains dense O(n³) after CSR expansion. No AC/transient sparse path, no fill-in control, no nonlinear devices. Those remain open under #11.
+Factorisation remains dense O(n³) after CSR expansion. No AC/transient sparse path, no fill-in control, no nonlinear devices. A 40-node ladder timing assessment is recorded in [sparse-runtime.md](sparse-runtime.md).

@@ -17,6 +17,7 @@
 | `herbie.dae` | Dense index-1 DAE MNA transient with BE/TRAP C/L companions and consistent DC/UIC init | Linear R/C/L only; dense O(n³); no nonlinear/switch in this module |
 | `herbie.ideal_sw` | Dense DC MNA with zero-Ron ideal switches (branch-current shorts) and threshold events | DC linear only; not the Ron/Roff model in `herbie.nl` |
 | ngspice refs | Stored ngspice-42 divider / RC AC / diode OPs with provenance + tolerance tests | Three fixtures only; not general SPICE parity |
+| sparse bench | 40-node ladder timed sparse vs dense rebuild/solve with recorded host sample | Not WCET; factorisation still dense after CSR expand |
 | `herbie.circuits` | Sparse-API-shaped dense DC nodal assembly, resistors, current sources, Gaussian elimination with partial pivoting and KCL residual | Small linear resistive DC circuits only; no voltage-source MNA or nonlinear/transient components |
 | `herbie.electrical` | Closed-form RC/RL transients; series RLC RK4 and stored energy | Ideal lumped/passive networks only, no circuit graph, switching devices or circuit DAE |
 | `herbie.mechanics` | Single-axis rotational inertia, torsional stiffness/damping RK4 and ideal fixed-ratio gear power balance | No joints, bearing dynamics, contact, clutch or multibody assembly |
@@ -81,6 +82,8 @@ flow run tests/ac_phasor_mna.flow
 flow run examples/ac_phasor_demo.flow
 flow run tests/sparse_mna.flow
 flow run examples/sparse_mna_demo.flow
+flow run tests/sparse_bench.flow
+flow run examples/sparse_bench_demo.flow
 flow run tests/nl_devices.flow
 flow run examples/nl_devices_demo.flow
 flow run tests/netlist.flow
@@ -111,7 +114,7 @@ The exact Flow compiler revision used by CI is pinned in [the CI workflow](.gith
 
 ## Sparse DC MNA assembly
 
-[`herbie.sparse_mna`](src/sparse_mna.flow) accumulates stamps as COO triplets, compresses to CSR, checks residuals with SpMV, and solves by expanding to a dense scratch for pivoted elimination. Tests compare against analytic divider voltages and bit-close dense `herbie.mna` matrices. See [docs/sparse-mna.md](docs/sparse-mna.md). Fill-reducing sparse LU remains future work.
+[`herbie.sparse_mna`](src/sparse_mna.flow) accumulates stamps as COO triplets, compresses to CSR, checks residuals with SpMV, and solves by expanding to a dense scratch for pivoted elimination. Tests compare against analytic divider voltages and bit-close dense `herbie.mna` matrices. See [docs/sparse-mna.md](docs/sparse-mna.md). A 40-node ladder timing sample (honest: dense GE still dominates) is in [docs/sparse-runtime.md](docs/sparse-runtime.md). Fill-reducing sparse LU remains future work.
 
 ## Nonlinear diodes and switches
 

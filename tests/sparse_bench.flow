@@ -1,0 +1,189 @@
+# Larger-network sparse-path benchmark + correctness vs dense MNA.
+# Kernel APIs stay caller-owned; this harness allocates scratch with calloc.
+# Timing uses libc clock() (CLOCKS_PER_SEC ticks). Results are host-dependent;
+# see docs/sparse-runtime.md for recorded measurements on the agent VM.
+
+import herbie.sparse_mna {
+    SparseMna, sparseMnaClear, sparseMnaStampResistor, sparseMnaStampVoltageSource,
+    sparseMnaFinalize, sparseMnaSolve, sparseMnaMaxResidual, sparseMnaUnknownCount
+}
+import herbie.mna {
+    MnaNetwork, mnaClear, mnaStampResistor, mnaStampVoltageSource, mnaSolve, mnaMaxResidual
+}
+
+extern {
+    function calloc(n: i64, size: i64) -> ptr<void>
+    function clock() -> i64
+    function printf(fmt: string, v: f64) -> i32
+}
+
+const NODES: i32 = 40
+const NV: i32 = 1
+const SIZE: i32 = 41
+const MAT: i32 = 1681
+const COO_CAP: i32 = 512
+const REPEATS: i32 = 40
+
+function near(a: f64, b: f64, tol: f64) -> bool {
+    return a >= b - tol and a <= b + tol
+}
+
+function stampLadderSparse(s: SparseMna) -> bool {
+    if not sparseMnaClear(s) {
+        return false
+    }
+    if not sparseMnaStampVoltageSource(s, 0, 0, -1, 12.0) {
+        return false
+    }
+    for i in 0 to NODES - 1 {
+        if not sparseMnaStampResistor(s, i, -1, 1000.0) {
+            return false
+        }
+    }
+    for i in 0 to NODES - 1 {
+        if i + 1 < NODES {
+            if not sparseMnaStampResistor(s, i, i + 1, 100.0) {
+                return false
+            }
+        }
+    }
+    return sparseMnaFinalize(s)
+}
+
+function stampLadderDense(d: MnaNetwork) -> bool {
+    if not mnaClear(d) {
+        return false
+    }
+    if not mnaStampVoltageSource(d, 0, 0, -1, 12.0) {
+        return false
+    }
+    for i in 0 to NODES - 1 {
+        if not mnaStampResistor(d, i, -1, 1000.0) {
+            return false
+        }
+    }
+    for i in 0 to NODES - 1 {
+        if i + 1 < NODES {
+            if not mnaStampResistor(d, i, i + 1, 100.0) {
+                return false
+            }
+        }
+    }
+    return true
+}
+
+function main() -> i32 {
+    let mut cooCount: i32 = 0
+    let mut csrNnz: i32 = 0
+    let mut ready: i32 = 0
+    let cooRow: ptr<i32> = calloc(COO_CAP as i64, 4) as ptr<i32>
+    let cooCol: ptr<i32> = calloc(COO_CAP as i64, 4) as ptr<i32>
+    let cooVal: ptr<f64> = calloc(COO_CAP as i64, 8) as ptr<f64>
+    let rowPtr: ptr<i32> = calloc((SIZE + 1) as i64, 4) as ptr<i32>
+    let colIdx: ptr<i32> = calloc(COO_CAP as i64, 4) as ptr<i32>
+    let values: ptr<f64> = calloc(COO_CAP as i64, 8) as ptr<f64>
+    let sRhs: ptr<f64> = calloc(SIZE as i64, 8) as ptr<f64>
+    let sSol: ptr<f64> = calloc(SIZE as i64, 8) as ptr<f64>
+    let denseScratch: ptr<f64> = calloc(MAT as i64, 8) as ptr<f64>
+    let factorScratch: ptr<f64> = calloc(MAT as i64, 8) as ptr<f64>
+    let rhsScratch: ptr<f64> = calloc(SIZE as i64, 8) as ptr<f64>
+    let dMat: ptr<f64> = calloc(MAT as i64, 8) as ptr<f64>
+    let dRhs: ptr<f64> = calloc(SIZE as i64, 8) as ptr<f64>
+    let dSol: ptr<f64> = calloc(SIZE as i64, 8) as ptr<f64>
+    let dScratch: ptr<f64> = calloc(MAT as i64, 8) as ptr<f64>
+    let dWork: ptr<f64> = calloc(SIZE as i64, 8) as ptr<f64>
+    if cooRow == null or dMat == null {
+        println("FAIL calloc")
+        return 1
+    }
+
+    let sparse: SparseMna = SparseMna {
+        nodeCount: NODES, voltageSourceCount: NV, capacity: COO_CAP,
+        cooCount: &cooCount, csrNnz: &csrNnz, ready: &ready,
+        cooRow: cooRow, cooCol: cooCol, cooVal: cooVal,
+        rowPtr: rowPtr, colIdx: colIdx, values: values, rhs: sRhs
+    }
+    let dense: MnaNetwork = MnaNetwork {
+        nodeCount: NODES, voltageSourceCount: NV, matrix: dMat, rhs: dRhs
+    }
+    if sparseMnaUnknownCount(sparse) != SIZE {
+        return 2
+    }
+    if not stampLadderSparse(sparse) {
+        println("FAIL sparse ladder stamp")
+        return 3
+    }
+    if not sparseMnaSolve(sparse, sSol, denseScratch, factorScratch, rhsScratch, 1.0e-12) {
+        println("FAIL sparse ladder solve")
+        return 4
+    }
+    if not stampLadderDense(dense) {
+        return 5
+    }
+    if not mnaSolve(dense, dSol, dScratch, dWork, 1.0e-12) {
+        println("FAIL dense ladder solve")
+        return 6
+    }
+    for i in 0 to SIZE {
+        if not near(sSol[i], dSol[i], 1.0e-9) {
+            println("FAIL sparse/dense mismatch")
+            return 7
+        }
+    }
+    if sparseMnaMaxResidual(sparse, sSol) > 1.0e-9 or mnaMaxResidual(dense, dSol) > 1.0e-9 {
+        return 8
+    }
+    # Driven node is exactly 12 V.
+    if not near(sSol[0], 12.0, 1.0e-10) {
+        return 9
+    }
+    # Far end of ladder should be positive and below 12 V.
+    if sSol[NODES - 1] <= 0.0 or sSol[NODES - 1] >= 12.0 {
+        return 10
+    }
+    printf("ladder_nodes=%.0f\n", NODES as f64)
+    printf("csr_nnz=%.0f\n", csrNnz as f64)
+    printf("coo_count=%.0f\n", cooCount as f64)
+
+    # Timed rebuild+solve loops (honest wall of CPU ticks; not WCET).
+    let t0: i64 = clock()
+    for r in 0 to REPEATS {
+        if not stampLadderSparse(sparse) {
+            return 11
+        }
+        if not sparseMnaSolve(sparse, sSol, denseScratch, factorScratch, rhsScratch, 1.0e-12) {
+            return 12
+        }
+    }
+    let t1: i64 = clock()
+    let sparseTicks: f64 = (t1 - t0) as f64
+
+    let t2: i64 = clock()
+    for r in 0 to REPEATS {
+        if not stampLadderDense(dense) {
+            return 13
+        }
+        if not mnaSolve(dense, dSol, dScratch, dWork, 1.0e-12) {
+            return 14
+        }
+    }
+    let t3: i64 = clock()
+    let denseTicks: f64 = (t3 - t2) as f64
+
+    # CLOCKS_PER_SEC is typically 1e6; report milliseconds assuming that.
+    let sparseMs: f64 = sparseTicks / 1000.0
+    let denseMs: f64 = denseTicks / 1000.0
+    printf("repeats=%.0f\n", REPEATS as f64)
+    printf("sparse_ticks=%.0f\n", sparseTicks)
+    printf("dense_ticks=%.0f\n", denseTicks)
+    printf("sparse_ms_assumed_cps1e6=%.3f\n", sparseMs)
+    printf("dense_ms_assumed_cps1e6=%.3f\n", denseMs)
+    printf("per_solve_sparse_us=%.3f\n", (sparseTicks / (REPEATS as f64)))
+    printf("per_solve_dense_us=%.3f\n", (denseTicks / (REPEATS as f64)))
+
+    if sparseTicks < 0.0 or denseTicks < 0.0 {
+        return 15
+    }
+    println("PASS sparse 40-node ladder correctness and timed rebuild/solve")
+    return 0
+}
