@@ -1,0 +1,66 @@
+# Series/parallel pack step with current limit, ohmic heating and SOH capacity.
+
+import herbie.battery { BatteryParameters, BatteryState }
+import herbie.maps { Table2D }
+import herbie.pack {
+    PackTopology, PackLimits, PackThermalParameters, PackState,
+    packScaleCell, packOcvFromMap, packStep
+}
+
+function main() -> i32 {
+    let cell: BatteryParameters = BatteryParameters {
+        capacityAmpHours: 50.0, nominalVoltage: 3.7, openCircuitSlope: 0.4,
+        ohmicResistance: 0.002, polarizationResistance: 0.001, polarizationCapacitance: 800.0
+    }
+    let topo: PackTopology = PackTopology { seriesCount: 96, parallelCount: 2 }
+    let limits: PackLimits = PackLimits {
+        maxDischargeCurrent: 200.0, maxChargeCurrent: 100.0,
+        minVoltage: 250.0, maxVoltage: 400.0,
+        minTemperature: -10.0, maxTemperature: 55.0
+    }
+    let thermal: PackThermalParameters = PackThermalParameters {
+        heatCapacity: 80000.0, convection: 40.0, ambientTemperature: 25.0
+    }
+    let scaled: BatteryParameters = packScaleCell(cell, topo, 1.0)
+    println("Pack capacity [Ah]")
+    println(scaled.capacityAmpHours)
+    println("Pack nominal voltage [V]")
+    println(scaled.nominalVoltage)
+
+    let mut socAxis: array<f64, 2> = [0.1, 0.9]
+    let mut tempAxis: array<f64, 2> = [0.0, 40.0]
+    let mut ocv: array<f64, 4> = [3.4, 3.45, 4.05, 4.1]
+    let map: Table2D = Table2D {
+        xAxis: &socAxis[0], yAxis: &tempAxis[0], values: &ocv[0], xCount: 2, yCount: 2
+    }
+    let mut mapV: array<f64, 1> = [0.0]
+    if not packOcvFromMap(map, 0.5, 20.0, topo.seriesCount, &mapV[0]) {
+        println("FAIL OCV map")
+        return 1
+    }
+    println("Mapped pack OCV [V]")
+    println(mapV[0])
+
+    let mut s: PackState = PackState {
+        cell: BatteryState { stateOfCharge: 0.7, polarizationVoltage: 0.0 },
+        temperature: 25.0,
+        contactorClosed: true
+    }
+    let r = packStep(s, cell, topo, limits, thermal, 0.95, 250.0, 1.0)
+    println("Limited current [A]")
+    println(r.limitedCurrent)
+    println("Pack voltage [V]")
+    println(r.packVoltage)
+    println("Heat power [W]")
+    println(r.heatPower)
+    println("Temperature [C]")
+    println(r.state.temperature)
+    println("Fault code")
+    println(r.fault)
+    if r.fault != 2 or r.limitedCurrent != 200.0 {
+        println("FAIL expected current limit")
+        return 2
+    }
+    println("PASS battery pack demo")
+    return 0
+}

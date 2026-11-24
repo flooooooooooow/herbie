@@ -1,0 +1,180 @@
+# @module herbie.pack
+# Series/parallel battery pack from Thevenin cells, OCV/R maps, ohmic heating,
+# lumped thermal node, charge/discharge and temperature limits, contactor.
+# SOH is an input capacity factor (caller-supplied); no invented ageing curves.
+# Positive pack current = discharge.
+
+import herbie.maps { Table2D, table2DBilinearStrict }
+import herbie.battery { BatteryParameters, BatteryState, batteryStep }
+
+export struct PackTopology {
+    seriesCount: i32,
+    parallelCount: i32
+}
+
+export struct PackLimits {
+    maxDischargeCurrent: f64,
+    maxChargeCurrent: f64,
+    minVoltage: f64,
+    maxVoltage: f64,
+    minTemperature: f64,
+    maxTemperature: f64
+}
+
+export struct PackThermalParameters {
+    heatCapacity: f64,
+    convection: f64,
+    ambientTemperature: f64
+}
+
+export struct PackState {
+    # Representative cell SOC / polarization (assumes balanced pack).
+    cell: BatteryState,
+    temperature: f64,
+    contactorClosed: bool
+}
+
+export struct PackResult {
+    state: PackState,
+    packVoltage: f64,
+    packPower: f64,
+    heatPower: f64,
+    limitedCurrent: f64,
+    fault: i32
+}
+
+# Fault codes: 0 none, 1 open contactor, 2 current limit, 3 voltage, 4 temperature, 5 map
+
+function pkFinite(x: f64) -> bool {
+    return x == x and x <= 1.7976931348623157e308 and x >= -1.7976931348623157e308
+}
+
+export function packTopologyOk(t: PackTopology) -> bool {
+    return t.seriesCount > 0 and t.seriesCount <= 256 and t.parallelCount > 0 and t.parallelCount <= 64
+}
+
+# Scale a cell model to an Ns×Np pack: capacity *= Np, resistances /= Np, voltages *= Ns.
+export function packScaleCell(cell: BatteryParameters, topo: PackTopology, soh: f64) -> BatteryParameters {
+    if soh <= 0.0 or soh > 1.5 or not packTopologyOk(topo) {
+        return cell
+    }
+    let np: f64 = topo.parallelCount as f64
+    let ns: f64 = topo.seriesCount as f64
+    return BatteryParameters {
+        capacityAmpHours: cell.capacityAmpHours * np * soh,
+        nominalVoltage: cell.nominalVoltage * ns,
+        openCircuitSlope: cell.openCircuitSlope * ns,
+        ohmicResistance: cell.ohmicResistance * ns / np,
+        polarizationResistance: cell.polarizationResistance * ns / np,
+        polarizationCapacitance: cell.polarizationCapacitance * np / ns
+    }
+}
+
+# OCV map: x = SOC, y = temperature (or a singleton temperature axis).
+export function packOcvFromMap(ocvMap: Table2D, soc: f64, temperature: f64, seriesCount: i32, out: ptr<f64>) -> bool {
+    if seriesCount <= 0 {
+        return false
+    }
+    let mut cellV: array<f64, 1> = [0.0]
+    if not table2DBilinearStrict(ocvMap, soc, temperature, &cellV[0]) {
+        return false
+    }
+    out[0] = cellV[0] * (seriesCount as f64)
+    return true
+}
+
+# Passive balance: move charge from higher-SOC cell toward lower with conductance G.
+# Returns dSOC for cell A (negative if A is higher). Cell B gets -dSOC * (capA/capB) handled by caller.
+export function packBalanceDeltaSoc(
+    socA: f64,
+    socB: f64,
+    capacityAh: f64,
+    conductanceSiemens: f64,
+    dt: f64
+) -> f64 {
+    if capacityAh <= 0.0 or conductanceSiemens < 0.0 or dt <= 0.0 {
+        return 0.0 / 0.0
+    }
+    # Approximate: I = G * (OCV_A - OCV_B) ~ G * slope * (socA - socB); use unity slope volt/SOC for kernel.
+    let current: f64 = conductanceSiemens * (socA - socB)
+    return -current * dt / (3600.0 * capacityAh)
+}
+
+export function packStep(
+    s: PackState,
+    cell: BatteryParameters,
+    topo: PackTopology,
+    limits: PackLimits,
+    thermal: PackThermalParameters,
+    soh: f64,
+    requestedDischargeCurrent: f64,
+    dt: f64
+) -> PackResult {
+    let failOpen: PackResult = PackResult {
+        state: s, packVoltage: 0.0, packPower: 0.0, heatPower: 0.0,
+        limitedCurrent: 0.0, fault: 1
+    }
+    if not packTopologyOk(topo) or soh <= 0.0 or dt <= 0.0 {
+        return PackResult {
+            state: s, packVoltage: 0.0, packPower: 0.0, heatPower: 0.0,
+            limitedCurrent: 0.0, fault: 5
+        }
+    }
+    if not s.contactorClosed {
+        return failOpen
+    }
+    if s.temperature < limits.minTemperature or s.temperature > limits.maxTemperature {
+        let opened: PackState = PackState {
+            cell: s.cell, temperature: s.temperature, contactorClosed: false
+        }
+        return PackResult {
+            state: opened, packVoltage: 0.0, packPower: 0.0, heatPower: 0.0,
+            limitedCurrent: 0.0, fault: 4
+        }
+    }
+    let mut current: f64 = requestedDischargeCurrent
+    let mut fault: i32 = 0
+    if current > limits.maxDischargeCurrent {
+        current = limits.maxDischargeCurrent
+        fault = 2
+    }
+    if current < -limits.maxChargeCurrent {
+        current = -limits.maxChargeCurrent
+        fault = 2
+    }
+    let scaled: BatteryParameters = packScaleCell(cell, topo, soh)
+    let stepped = batteryStep(s.cell, scaled, current, dt)
+    let voltage: f64 = stepped.terminalVoltage
+    if voltage < limits.minVoltage or voltage > limits.maxVoltage {
+        let opened: PackState = PackState {
+            cell: stepped.state, temperature: s.temperature, contactorClosed: false
+        }
+        return PackResult {
+            state: opened, packVoltage: voltage, packPower: 0.0, heatPower: 0.0,
+            limitedCurrent: 0.0, fault: 3
+        }
+    }
+    # Ohmic + polarization dissipation as heat.
+    let heat: f64 = current * current * scaled.ohmicResistance
+        + stepped.state.polarizationVoltage * stepped.state.polarizationVoltage / scaled.polarizationResistance
+    let dT: f64 = (heat - thermal.convection * (s.temperature - thermal.ambientTemperature)) * dt / thermal.heatCapacity
+    let nextTemp: f64 = s.temperature + dT
+    if not pkFinite(nextTemp) {
+        return PackResult {
+            state: s, packVoltage: voltage, packPower: 0.0, heatPower: 0.0,
+            limitedCurrent: current, fault: 5
+        }
+    }
+    return PackResult {
+        state: PackState {
+            cell: stepped.state,
+            temperature: nextTemp,
+            contactorClosed: true
+        },
+        packVoltage: voltage,
+        packPower: voltage * current,
+        heatPower: heat,
+        limitedCurrent: current,
+        fault: fault
+    }
+}

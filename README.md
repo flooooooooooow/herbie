@@ -25,7 +25,8 @@
 | `herbie.mechanics` | Single-axis rotational inertia, torsional stiffness/damping RK4 and ideal fixed-ratio gear power balance | No joints, bearing dynamics, contact, clutch or multibody assembly |
 | `herbie.driveline` | Simple pendulum, two-inertia torsional shaft, open differential power split, Coulomb clutch limit | Not 6-DOF multibody, torque converters, backlash maps or tire/suspension ports |
 | `herbie.motors` | Brushed permanent-magnet DC motor, coupled armature/rotor RK4, energy and torque | Lumped motor only; no inverter, commutation, saturation or thermal losses |
-| `herbie.battery` | First-order Thevenin OCV + ohmic + polarization RC, coulomb-count SOC | No BMS, electrochemistry, heat, SoH, degradation or charge limits |
+| `herbie.battery` | First-order Thevenin OCV + ohmic + polarization RC, coulomb-count SOC | Cell-level only; pack/BMS live in `herbie.pack` |
+| `herbie.pack` | Ns×Np scale, OCV map, current/voltage/temp limits, contactor, ohmic+polarization heat, lumped thermal, balance ΔSOC; SOH as capacity input | No ageing curves, coolant network, pre-charge, Kalman SOC or chemistry ID |
 | `herbie.maps` | Validated monotone two-axis grids, clamped bilinear lookup and strict in-domain bilinear (no extrapolation) | Row-major, linear interpolation only, caller-owned data |
 | `herbie.engine` | Mapped engine torque vs RPM/throttle, crank acceleration and idealized fuel accounting | Dyno-map scaffold only, not transient combustion, emissions, idle, or certification |
 | `herbie.meanvalue` | Multi-map torque/fuel/VE/Texh with strict no-extrapolation, intake manifold filling-emptying, 4-stroke air flow | No emissions factors, turbo lag, crank-angle combustion or ECU faults |
@@ -99,6 +100,8 @@ flow run tests/driveline.flow
 flow run examples/driveline_demo.flow
 flow run tests/meanvalue_engine.flow
 flow run examples/meanvalue_engine_demo.flow
+flow run tests/battery_pack.flow
+flow run examples/battery_pack_demo.flow
 flow run tests/ac_phasor_mna.flow
 flow run examples/ac_phasor_demo.flow
 flow run tests/sparse_mna.flow

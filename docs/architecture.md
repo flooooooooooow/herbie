@@ -24,6 +24,7 @@ src/
   driveline.flow     Pendulum, torsional shaft, differential, clutch
   motors.flow        Coupled armature/rotor DC motor
   battery.flow       Thevenin RC battery and SOC
+  pack.flow          Ns×Np pack, BMS limits, heating/thermal, SOH input
   maps.flow          Clamped bilinear lookup for calibrated models
   engine.flow        Torque-map crank dynamics and fuel flow
   meanvalue.flow     Multi-map mean-value engine + intake manifold
