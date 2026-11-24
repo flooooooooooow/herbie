@@ -1,0 +1,318 @@
+# @module herbie.ode
+# Shared fixed-step ODE integrators, event detection and multirate scheduling.
+# Caller-owned state buffers; no heap allocation or I/O in the hot path.
+# Methods: forward Euler, semi-implicit (symplectic) Euler, classical RK4.
+# This is an explicit ODE platform only — not an implicit stiff DAE solver.
+
+export struct OdeConfig {
+    dimension: i32,
+    dt: f64
+}
+
+export struct OdeTrace {
+    capacity: i32,
+    count: i32,
+    times: ptr<f64>,
+    states: ptr<f64>
+}
+
+export struct OdeEvent {
+    detected: bool,
+    time: f64,
+    previousSign: f64,
+    currentSign: f64
+}
+
+export struct MultirateSchedule {
+    fastStepsPerSlow: i32,
+    fastCount: i32,
+    slowCount: i32
+}
+
+function odeFinite(x: f64) -> bool {
+    return x == x and x <= 1.7976931348623157e308 and x >= -1.7976931348623157e308
+}
+
+function odeAbs(x: f64) -> f64 {
+    if x < 0.0 {
+        return -x
+    }
+    return x
+}
+
+# Reject nonphysical configuration before entering a real-time loop.
+export function odeValidateConfig(config: OdeConfig) -> bool {
+    if config.dimension <= 0 or config.dimension > 64 {
+        return false
+    }
+    if not odeFinite(config.dt) or config.dt <= 0.0 {
+        return false
+    }
+    return true
+}
+
+export function odeTraceReset(trace: ptr<OdeTrace>) -> bool {
+    if trace[0].capacity <= 0 or trace[0].times == null or trace[0].states == null {
+        return false
+    }
+    trace[0].count = 0
+    return true
+}
+
+# Append one sample. states layout is row-major: sample i occupies
+# states[i * dimension .. i * dimension + dimension).
+export function odeTraceAppend(trace: ptr<OdeTrace>, time: f64, state: ptr<f64>, dimension: i32) -> bool {
+    if trace[0].count >= trace[0].capacity or dimension <= 0 or not odeFinite(time) {
+        return false
+    }
+    let base: i32 = trace[0].count * dimension
+    trace[0].times[trace[0].count] = time
+    for i in 0 to dimension {
+        let value: f64 = state[i]
+        if not odeFinite(value) {
+            return false
+        }
+        trace[0].states[base + i] = value
+    }
+    trace[0].count = trace[0].count + 1
+    return true
+}
+
+# y' = f(t, y). Methods operate on caller-owned y and scratch buffers of length dimension.
+# derivative must write dy into dyOut; return false on failure.
+
+export function odeEulerStep(
+    config: OdeConfig,
+    t: f64,
+    y: ptr<f64>,
+    dyScratch: ptr<f64>,
+    plantKind: i32,
+    plantParam: f64
+) -> bool {
+    if not odeValidateConfig(config) or not odeFinite(t) {
+        return false
+    }
+    if not odeEvaluate(plantKind, plantParam, t, y, dyScratch, config.dimension) {
+        return false
+    }
+    for i in 0 to config.dimension {
+        let next: f64 = y[i] + config.dt * dyScratch[i]
+        if not odeFinite(next) {
+            return false
+        }
+        y[i] = next
+    }
+    return true
+}
+
+# Semi-implicit Euler for second-order mechanical form encoded as
+# y = [q0..q_{n-1}, v0..v_{n-1}] with n = dimension/2.
+# Updates velocities with forces at current positions, then positions with new velocities.
+export function odeSemiImplicitEulerStep(
+    config: OdeConfig,
+    t: f64,
+    y: ptr<f64>,
+    dyScratch: ptr<f64>,
+    plantKind: i32,
+    plantParam: f64
+) -> bool {
+    if not odeValidateConfig(config) or not odeFinite(t) {
+        return false
+    }
+    if config.dimension < 2 or (config.dimension % 2) != 0 {
+        return false
+    }
+    if not odeEvaluate(plantKind, plantParam, t, y, dyScratch, config.dimension) {
+        return false
+    }
+    let half: i32 = config.dimension / 2
+    for i in 0 to half {
+        let nextV: f64 = y[half + i] + config.dt * dyScratch[half + i]
+        if not odeFinite(nextV) {
+            return false
+        }
+        y[half + i] = nextV
+    }
+    for i in 0 to half {
+        let nextQ: f64 = y[i] + config.dt * y[half + i]
+        if not odeFinite(nextQ) {
+            return false
+        }
+        y[i] = nextQ
+    }
+    return true
+}
+
+export function odeRk4Step(
+    config: OdeConfig,
+    t: f64,
+    y: ptr<f64>,
+    k1: ptr<f64>,
+    k2: ptr<f64>,
+    k3: ptr<f64>,
+    k4: ptr<f64>,
+    yTemp: ptr<f64>,
+    plantKind: i32,
+    plantParam: f64
+) -> bool {
+    if not odeValidateConfig(config) or not odeFinite(t) {
+        return false
+    }
+    let dt: f64 = config.dt
+    let n: i32 = config.dimension
+    if not odeEvaluate(plantKind, plantParam, t, y, k1, n) {
+        return false
+    }
+    for i in 0 to n {
+        yTemp[i] = y[i] + 0.5 * dt * k1[i]
+    }
+    if not odeEvaluate(plantKind, plantParam, t + 0.5 * dt, yTemp, k2, n) {
+        return false
+    }
+    for i in 0 to n {
+        yTemp[i] = y[i] + 0.5 * dt * k2[i]
+    }
+    if not odeEvaluate(plantKind, plantParam, t + 0.5 * dt, yTemp, k3, n) {
+        return false
+    }
+    for i in 0 to n {
+        yTemp[i] = y[i] + dt * k3[i]
+    }
+    if not odeEvaluate(plantKind, plantParam, t + dt, yTemp, k4, n) {
+        return false
+    }
+    let sixth: f64 = dt / 6.0
+    for i in 0 to n {
+        let next: f64 = y[i] + sixth * (k1[i] + 2.0 * k2[i] + 2.0 * k3[i] + k4[i])
+        if not odeFinite(next) {
+            return false
+        }
+        y[i] = next
+    }
+    return true
+}
+
+# Built-in analytic plants for platform verification (indexed; no function pointers).
+# 0: scalar exponential decay y' = -lambda * y, plantParam = lambda > 0
+# 1: undamped harmonic oscillator [q, v]' = [v, -omega^2 q], plantParam = omega
+# 2: scalar linear growth y' = lambda * y, plantParam = lambda
+export function odeEvaluate(
+    plantKind: i32,
+    plantParam: f64,
+    t: f64,
+    y: ptr<f64>,
+    dyOut: ptr<f64>,
+    dimension: i32
+) -> bool {
+    if dimension <= 0 or not odeFinite(plantParam) or not odeFinite(t) {
+        return false
+    }
+    if plantKind == 0 {
+        if dimension != 1 or plantParam <= 0.0 {
+            return false
+        }
+        dyOut[0] = -plantParam * y[0]
+        return odeFinite(dyOut[0])
+    }
+    if plantKind == 1 {
+        if dimension != 2 or plantParam <= 0.0 {
+            return false
+        }
+        dyOut[0] = y[1]
+        dyOut[1] = -plantParam * plantParam * y[0]
+        return odeFinite(dyOut[0]) and odeFinite(dyOut[1])
+    }
+    if plantKind == 2 {
+        if dimension != 1 {
+            return false
+        }
+        dyOut[0] = plantParam * y[0]
+        return odeFinite(dyOut[0])
+    }
+    return false
+}
+
+export function odeExactScalarDecay(y0: f64, lambda: f64, t: f64) -> f64 {
+    return y0 * exp(-lambda * t)
+}
+
+export function odeExactHarmonicQ(q0: f64, v0: f64, omega: f64, t: f64) -> f64 {
+    return q0 * cos(omega * t) + (v0 / omega) * sin(omega * t)
+}
+
+export function odeExactHarmonicV(q0: f64, v0: f64, omega: f64, t: f64) -> f64 {
+    return -q0 * omega * sin(omega * t) + v0 * cos(omega * t)
+}
+
+export function odeHarmonicEnergy(q: f64, v: f64, omega: f64) -> f64 {
+    return 0.5 * v * v + 0.5 * omega * omega * q * q
+}
+
+# Detect a zero crossing of signal between previous and current samples.
+# Linearly interpolates the event time inside [tPrev, tCurr].
+export function odeDetectZeroCrossing(
+    tPrev: f64,
+    signalPrev: f64,
+    tCurr: f64,
+    signalCurr: f64
+) -> OdeEvent {
+    let empty: OdeEvent = OdeEvent {
+        detected: false,
+        time: tCurr,
+        previousSign: signalPrev,
+        currentSign: signalCurr
+    }
+    if not odeFinite(tPrev) or not odeFinite(tCurr) or not odeFinite(signalPrev) or not odeFinite(signalCurr) {
+        return empty
+    }
+    if tCurr <= tPrev {
+        return empty
+    }
+    if signalPrev == 0.0 {
+        return OdeEvent {
+            detected: true,
+            time: tPrev,
+            previousSign: signalPrev,
+            currentSign: signalCurr
+        }
+    }
+    if signalPrev * signalCurr > 0.0 {
+        return empty
+    }
+    if signalPrev * signalCurr == 0.0 and signalCurr == 0.0 {
+        return OdeEvent {
+            detected: true,
+            time: tCurr,
+            previousSign: signalPrev,
+            currentSign: signalCurr
+        }
+    }
+    let alpha: f64 = signalPrev / (signalPrev - signalCurr)
+    let te: f64 = tPrev + alpha * (tCurr - tPrev)
+    return OdeEvent {
+        detected: true,
+        time: te,
+        previousSign: signalPrev,
+        currentSign: signalCurr
+    }
+}
+
+export function odeMultirateReset(schedule: ptr<MultirateSchedule>, fastStepsPerSlow: i32) -> bool {
+    if fastStepsPerSlow <= 0 {
+        return false
+    }
+    schedule[0].fastStepsPerSlow = fastStepsPerSlow
+    schedule[0].fastCount = 0
+    schedule[0].slowCount = 0
+    return true
+}
+
+# Advance the fast clock. Returns true when a slow tick should also run.
+export function odeMultirateFastTick(schedule: ptr<MultirateSchedule>) -> bool {
+    schedule[0].fastCount = schedule[0].fastCount + 1
+    if schedule[0].fastCount % schedule[0].fastStepsPerSlow == 0 {
+        schedule[0].slowCount = schedule[0].slowCount + 1
+        return true
+    }
+    return false
+}

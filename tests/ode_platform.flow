@@ -1,0 +1,322 @@
+# Analytical and convergence-order gates for herbie.ode.
+# Plants: y' = -y and undamped harmonic oscillator q'' + omega^2 q = 0.
+
+import herbie.ode {
+    OdeConfig, OdeTrace, OdeEvent, MultirateSchedule,
+    odeValidateConfig, odeTraceReset, odeTraceAppend,
+    odeEulerStep, odeSemiImplicitEulerStep, odeRk4Step,
+    odeExactScalarDecay, odeExactHarmonicQ, odeExactHarmonicV,
+    odeHarmonicEnergy, odeDetectZeroCrossing,
+    odeMultirateReset, odeMultirateFastTick
+}
+
+function near(a: f64, b: f64, epsilon: f64) -> bool {
+    return a >= b - epsilon and a <= b + epsilon
+}
+
+function absf(x: f64) -> f64 {
+    if x < 0.0 {
+        return -x
+    }
+    return x
+}
+
+function maxf(a: f64, b: f64) -> f64 {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+function testConfigValidation() -> i32 {
+    if odeValidateConfig(OdeConfig { dimension: 0, dt: 0.001 }) {
+        return 1
+    }
+    if odeValidateConfig(OdeConfig { dimension: 1, dt: 0.0 }) {
+        return 2
+    }
+    if odeValidateConfig(OdeConfig { dimension: 1, dt: -0.1 }) {
+        return 3
+    }
+    if not odeValidateConfig(OdeConfig { dimension: 2, dt: 0.001 }) {
+        return 4
+    }
+    return 0
+}
+
+# Integrate y' = -y from y(0)=1 to t=1; compare to e^{-1}.
+function integrateDecay(method: i32, dt: f64) -> f64 {
+    let config: OdeConfig = OdeConfig { dimension: 1, dt: dt }
+    let mut y: array<f64, 1> = [1.0]
+    let mut k1: array<f64, 1> = [0.0]
+    let mut k2: array<f64, 1> = [0.0]
+    let mut k3: array<f64, 1> = [0.0]
+    let mut k4: array<f64, 1> = [0.0]
+    let mut yTemp: array<f64, 1> = [0.0]
+    let steps: i32 = (1.0 / dt + 0.5) as i32
+    let mut t: f64 = 0.0
+    for s in 0 to steps {
+        if method == 0 {
+            if not odeEulerStep(config, t, &y[0], &k1[0], 0, 1.0) {
+                return -1.0
+            }
+        }
+        if method == 2 {
+            if not odeRk4Step(config, t, &y[0], &k1[0], &k2[0], &k3[0], &k4[0], &yTemp[0], 0, 1.0) {
+                return -1.0
+            }
+        }
+        t = t + dt
+    }
+    return y[0]
+}
+
+function testDecayAccuracy() -> i32 {
+    let exact: f64 = odeExactScalarDecay(1.0, 1.0, 1.0)
+    let eulerFine: f64 = integrateDecay(0, 0.001)
+    let rk4Fine: f64 = integrateDecay(2, 0.001)
+    if eulerFine < 0.0 or rk4Fine < 0.0 {
+        return 1
+    }
+    if absf(eulerFine - exact) > 5.0e-4 {
+        println("FAIL Euler decay accuracy")
+        return 2
+    }
+    if absf(rk4Fine - exact) > 1.0e-10 {
+        println("FAIL RK4 decay accuracy")
+        return 3
+    }
+    return 0
+}
+
+# Observed order p ~= log2(E(h)/E(h/2)). Euler ~1, RK4 ~4.
+function testConvergenceOrder() -> i32 {
+    let exact: f64 = odeExactScalarDecay(1.0, 1.0, 1.0)
+    let e1: f64 = absf(integrateDecay(0, 0.05) - exact)
+    let e2: f64 = absf(integrateDecay(0, 0.025) - exact)
+    let eulerOrder: f64 = log(e1 / e2) / log(2.0)
+    if eulerOrder < 0.85 or eulerOrder > 1.25 {
+        println("FAIL Euler convergence order")
+        return 1
+    }
+
+    let r1: f64 = absf(integrateDecay(2, 0.1) - exact)
+    let r2: f64 = absf(integrateDecay(2, 0.05) - exact)
+    let rk4Order: f64 = log(r1 / r2) / log(2.0)
+    if rk4Order < 3.5 or rk4Order > 4.6 {
+        println("FAIL RK4 convergence order")
+        return 2
+    }
+    return 0
+}
+
+function testHarmonicEnergyAndExact() -> i32 {
+    let omega: f64 = 2.0
+    let config: OdeConfig = OdeConfig { dimension: 2, dt: 0.001 }
+    let mut y: array<f64, 2> = [1.0, 0.0]
+    let mut k1: array<f64, 2> = [0.0, 0.0]
+    let mut k2: array<f64, 2> = [0.0, 0.0]
+    let mut k3: array<f64, 2> = [0.0, 0.0]
+    let mut k4: array<f64, 2> = [0.0, 0.0]
+    let mut yTemp: array<f64, 2> = [0.0, 0.0]
+    let e0: f64 = odeHarmonicEnergy(y[0], y[1], omega)
+    let mut t: f64 = 0.0
+    for s in 0 to 5000 {
+        if not odeRk4Step(config, t, &y[0], &k1[0], &k2[0], &k3[0], &k4[0], &yTemp[0], 1, omega) {
+            return 1
+        }
+        t = t + config.dt
+    }
+    let e1: f64 = odeHarmonicEnergy(y[0], y[1], omega)
+    if absf(e1 - e0) / e0 > 1.0e-8 {
+        println("FAIL harmonic RK4 energy")
+        return 2
+    }
+    let qExact: f64 = odeExactHarmonicQ(1.0, 0.0, omega, t)
+    let vExact: f64 = odeExactHarmonicV(1.0, 0.0, omega, t)
+    if absf(y[0] - qExact) > 1.0e-8 or absf(y[1] - vExact) > 1.0e-8 {
+        println("FAIL harmonic RK4 vs analytic")
+        return 3
+    }
+    return 0
+}
+
+function testSemiImplicitEuler() -> i32 {
+    let omega: f64 = 1.0
+    let config: OdeConfig = OdeConfig { dimension: 2, dt: 0.01 }
+    let mut y: array<f64, 2> = [1.0, 0.0]
+    let mut dy: array<f64, 2> = [0.0, 0.0]
+    let e0: f64 = odeHarmonicEnergy(y[0], y[1], omega)
+    let mut t: f64 = 0.0
+    let mut eMax: f64 = e0
+    let mut eMin: f64 = e0
+    for s in 0 to 1000 {
+        if not odeSemiImplicitEulerStep(config, t, &y[0], &dy[0], 1, omega) {
+            return 1
+        }
+        t = t + config.dt
+        let e: f64 = odeHarmonicEnergy(y[0], y[1], omega)
+        eMax = maxf(eMax, e)
+        if e < eMin {
+            eMin = e
+        }
+    }
+    # Symplectic Euler conserves a nearby modified energy; relative drift stays bounded.
+    if (eMax - eMin) / e0 > 0.05 {
+        println("FAIL semi-implicit Euler energy bound")
+        return 2
+    }
+    # Position should still oscillate near unit amplitude.
+    if absf(y[0]) > 1.2 {
+        return 3
+    }
+    return 0
+}
+
+function testZeroCrossing() -> i32 {
+    let event: OdeEvent = odeDetectZeroCrossing(0.0, -1.0, 0.2, 1.0)
+    if not event.detected {
+        return 1
+    }
+    if not near(event.time, 0.1, 1.0e-12) {
+        println("FAIL zero-crossing interpolation")
+        return 2
+    }
+    let none: OdeEvent = odeDetectZeroCrossing(0.0, 1.0, 0.2, 2.0)
+    if none.detected {
+        return 3
+    }
+    # Harmonic oscillator q = cos(omega t) crosses zero at pi/(2 omega).
+    let omega: f64 = 2.0
+    let config: OdeConfig = OdeConfig { dimension: 2, dt: 0.001 }
+    let mut y: array<f64, 2> = [1.0, 0.0]
+    let mut k1: array<f64, 2> = [0.0, 0.0]
+    let mut k2: array<f64, 2> = [0.0, 0.0]
+    let mut k3: array<f64, 2> = [0.0, 0.0]
+    let mut k4: array<f64, 2> = [0.0, 0.0]
+    let mut yTemp: array<f64, 2> = [0.0, 0.0]
+    let mut t: f64 = 0.0
+    let mut prevQ: f64 = y[0]
+    let mut found: bool = false
+    let mut te: f64 = 0.0
+    for s in 0 to 2000 {
+        let tPrev: f64 = t
+        if not odeRk4Step(config, t, &y[0], &k1[0], &k2[0], &k3[0], &k4[0], &yTemp[0], 1, omega) {
+            return 4
+        }
+        t = t + config.dt
+        let crossing: OdeEvent = odeDetectZeroCrossing(tPrev, prevQ, t, y[0])
+        if crossing.detected and not found {
+            found = true
+            te = crossing.time
+        }
+        prevQ = y[0]
+    }
+    if not found {
+        return 5
+    }
+    let expected: f64 = 3.141592653589793 / (2.0 * omega)
+    if absf(te - expected) > 0.001 {
+        println("FAIL oscillator zero-crossing time")
+        return 6
+    }
+    return 0
+}
+
+function testMultirateAndTrace() -> i32 {
+    let mut schedule: MultirateSchedule = MultirateSchedule {
+        fastStepsPerSlow: 0, fastCount: 0, slowCount: 0
+    }
+    if not odeMultirateReset(&schedule, 4) {
+        return 1
+    }
+    let mut slowTicks: i32 = 0
+    for i in 0 to 12 {
+        if odeMultirateFastTick(&schedule) {
+            slowTicks = slowTicks + 1
+        }
+    }
+    if slowTicks != 3 or schedule.fastCount != 12 or schedule.slowCount != 3 {
+        println("FAIL multirate schedule counts")
+        return 2
+    }
+
+    let mut times: array<f64, 8> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut states: array<f64, 8> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut trace: OdeTrace = OdeTrace {
+        capacity: 8, count: 0, times: &times[0], states: &states[0]
+    }
+    if not odeTraceReset(&trace) {
+        return 3
+    }
+    let mut y: array<f64, 1> = [1.0]
+    let config: OdeConfig = OdeConfig { dimension: 1, dt: 0.1 }
+    let mut k1: array<f64, 1> = [0.0]
+    let mut k2: array<f64, 1> = [0.0]
+    let mut k3: array<f64, 1> = [0.0]
+    let mut k4: array<f64, 1> = [0.0]
+    let mut yTemp: array<f64, 1> = [0.0]
+    let mut t: f64 = 0.0
+    if not odeTraceAppend(&trace, t, &y[0], 1) {
+        return 4
+    }
+    for s in 0 to 5 {
+        if not odeRk4Step(config, t, &y[0], &k1[0], &k2[0], &k3[0], &k4[0], &yTemp[0], 0, 1.0) {
+            return 5
+        }
+        t = t + config.dt
+        if not odeTraceAppend(&trace, t, &y[0], 1) {
+            return 6
+        }
+    }
+    if trace.count != 6 {
+        return 7
+    }
+    if not near(times[0], 0.0, 1.0e-15) or not near(times[5], 0.5, 1.0e-12) {
+        return 8
+    }
+    let exact: f64 = odeExactScalarDecay(1.0, 1.0, 0.5)
+    # Global RK4 error at dt=0.1 is O(dt^4); keep a conservative absolute gate.
+    if absf(states[5] - exact) > 1.0e-6 {
+        return 9
+    }
+    if absf(y[0] - states[5]) > 1.0e-15 {
+        return 10
+    }
+    return 0
+}
+
+function main() -> i32 {
+    let c: i32 = testConfigValidation()
+    if c != 0 {
+        println("FAIL config validation")
+        return 10 + c
+    }
+    let d: i32 = testDecayAccuracy()
+    if d != 0 {
+        return 20 + d
+    }
+    let o: i32 = testConvergenceOrder()
+    if o != 0 {
+        return 30 + o
+    }
+    let h: i32 = testHarmonicEnergyAndExact()
+    if h != 0 {
+        return 40 + h
+    }
+    let s: i32 = testSemiImplicitEuler()
+    if s != 0 {
+        return 50 + s
+    }
+    let z: i32 = testZeroCrossing()
+    if z != 0 {
+        return 60 + z
+    }
+    let m: i32 = testMultirateAndTrace()
+    if m != 0 {
+        println("FAIL multirate/trace")
+        return 70 + m
+    }
+    println("PASS ode platform: Euler/semi-implicit/RK4 orders, events, multirate, traces")
+    return 0
+}

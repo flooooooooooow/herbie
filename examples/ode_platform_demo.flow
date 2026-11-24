@@ -1,0 +1,76 @@
+# Demonstrate shared ODE integrators on y' = -y and a harmonic oscillator.
+
+import herbie.ode {
+    OdeConfig, odeEulerStep, odeRk4Step,
+    odeExactScalarDecay, odeExactHarmonicQ, odeHarmonicEnergy
+}
+
+function near(a: f64, b: f64, epsilon: f64) -> bool {
+    return a >= b - epsilon and a <= b + epsilon
+}
+
+function main() -> i32 {
+    let config: OdeConfig = OdeConfig { dimension: 1, dt: 0.001 }
+    let mut y: array<f64, 1> = [1.0]
+    let mut k1: array<f64, 1> = [0.0]
+    let mut k2: array<f64, 1> = [0.0]
+    let mut k3: array<f64, 1> = [0.0]
+    let mut k4: array<f64, 1> = [0.0]
+    let mut yTemp: array<f64, 1> = [0.0]
+    let mut t: f64 = 0.0
+    for s in 0 to 1000 {
+        if not odeRk4Step(config, t, &y[0], &k1[0], &k2[0], &k3[0], &k4[0], &yTemp[0], 0, 1.0) {
+            println("FAIL decay step")
+            return 1
+        }
+        t = t + config.dt
+    }
+    if not near(y[0], odeExactScalarDecay(1.0, 1.0, 1.0), 1.0e-10) {
+        println("FAIL decay vs exact")
+        return 2
+    }
+
+    let osc: OdeConfig = OdeConfig { dimension: 2, dt: 0.001 }
+    let mut qv: array<f64, 2> = [1.0, 0.0]
+    let mut o1: array<f64, 2> = [0.0, 0.0]
+    let mut o2: array<f64, 2> = [0.0, 0.0]
+    let mut o3: array<f64, 2> = [0.0, 0.0]
+    let mut o4: array<f64, 2> = [0.0, 0.0]
+    let mut ot: array<f64, 2> = [0.0, 0.0]
+    let omega: f64 = 3.0
+    let e0: f64 = odeHarmonicEnergy(qv[0], qv[1], omega)
+    t = 0.0
+    for s in 0 to 2000 {
+        if not odeRk4Step(osc, t, &qv[0], &o1[0], &o2[0], &o3[0], &o4[0], &ot[0], 1, omega) {
+            return 3
+        }
+        t = t + osc.dt
+    }
+    if not near(qv[0], odeExactHarmonicQ(1.0, 0.0, omega, t), 1.0e-8) {
+        println("FAIL oscillator position")
+        return 4
+    }
+    if not near(odeHarmonicEnergy(qv[0], qv[1], omega), e0, 1.0e-8) {
+        println("FAIL oscillator energy")
+        return 5
+    }
+
+    # Show Euler is less accurate at the same step for the same plant.
+    let mut ye: array<f64, 1> = [1.0]
+    let mut scratch: array<f64, 1> = [0.0]
+    t = 0.0
+    for s in 0 to 1000 {
+        if not odeEulerStep(config, t, &ye[0], &scratch[0], 0, 1.0) {
+            return 6
+        }
+        t = t + config.dt
+    }
+    let eulerErr: f64 = ye[0] - odeExactScalarDecay(1.0, 1.0, 1.0)
+    if eulerErr >= 0.0 or eulerErr <= -0.01 {
+        println("FAIL Euler error magnitude unexpected")
+        return 7
+    }
+
+    println("PASS ode platform demo")
+    return 0
+}

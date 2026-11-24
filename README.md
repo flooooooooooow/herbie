@@ -8,6 +8,7 @@
 
 | Module | Models and numerical methods | Validity boundary |
 | --- | --- | --- |
+| `herbie.ode` | Fixed-step forward Euler, semi-implicit Euler and RK4; zero-crossing events; multirate schedule; caller-owned step traces; analytic decay/oscillator plants | Explicit ODE only; no implicit stiff DAE, adaptive step or general plant callbacks |
 | `herbie.transient` | Shared Flow circuit backend, fixed-step backward Euler RLC networks, physical residual checks | One circuit per process; DC initialization only; small, well-scaled networks |
 | `herbie.mna` | Dense DC modified nodal analysis for resistors, oriented current sources and ideal voltage sources, KCL/KVL residual, pivoted solve | Small resistive DC circuits only; no nonlinear, transient, AC or sparse solver |
 | `herbie.circuits` | Sparse-API-shaped dense DC nodal assembly, resistors, current sources, Gaussian elimination with partial pivoting and KCL residual | Small linear resistive DC circuits only; no voltage-source MNA or nonlinear/transient components |
@@ -70,6 +71,8 @@ flow run examples/suspension_units.flow
 flow run tests/circuit_transient.flow
 flow run tests/mna_voltage_sources.flow
 flow run examples/mna_voltage_sources_demo.flow
+flow run tests/ode_platform.flow
+flow run examples/ode_platform_demo.flow
 ```
 
 The exact Flow compiler revision used by CI is pinned in [the CI workflow](.github/workflows/ci.yml). To consume a module from another Flow package, use a path dependency on this repository and import, for example, `herbie.vehicle { QuarterCarParameters, QuarterCarState, quarterCarStep }`.
