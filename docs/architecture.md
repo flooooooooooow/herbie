@@ -42,6 +42,7 @@ tests/
   ngspice_crossval.flow
   dae_mna.flow
   ideal_switch.flow
+  ngspice_fixtures.flow
   ngspice_refs/        Stored ngspice-42 prints + provenance
 examples/
   quarter_car_demo.flow

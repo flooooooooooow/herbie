@@ -38,3 +38,15 @@ ngspice -b tests/ngspice_refs/rc_tran.cir | tee tests/ngspice_refs/rc_tran.raw
 ```
 
 4. **rc_tran** — R=1 kΩ, C=1 µF, 1 V step, UIC, `meas` at 1/2/5 ms. Used by `tests/dae_mna.flow` against `herbie.dae` trapezoidal.
+
+## Additional fixtures (broader SPICE parity)
+
+```sh
+ngspice -b tests/ngspice_refs/bridge.cir | tee tests/ngspice_refs/bridge.raw
+ngspice -b tests/ngspice_refs/bridge_rect.cir | tee tests/ngspice_refs/bridge_rect.raw
+ngspice -b tests/ngspice_refs/rlc_tran.cir | tee tests/ngspice_refs/rlc_tran.raw
+```
+
+5. **bridge** — unbalanced resistive bridge, 10 V excitation (`.op`).
+6. **bridge_rect** — four-diode bridge rectifier with `IS=1e-14 N=1`, +5 V DC, 1 kΩ load (`.op`).
+7. **rlc_tran** — series R=100 Ω, L=0.1 H, C=1 µF, 1 V step UIC; `meas` at 1/2/5 ms.
