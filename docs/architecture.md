@@ -37,6 +37,8 @@ tests/
   sparse_mna.flow
   nl_devices.flow
   netlist.flow
+  ngspice_crossval.flow
+  ngspice_refs/        Stored ngspice-42 prints + provenance
 examples/
   quarter_car_demo.flow
   manufacturing_demo.flow

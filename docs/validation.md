@@ -89,4 +89,8 @@ See [the transient contract and analytical gates](circuit-transients.md). `flow 
 
 ## Versioned netlist validation
 
-`tests/netlist.flow` parses format-version-1 decks, stamps them into `herbie.mna` / `herbie.ac` / `herbie.nl`, and round-trips through `netlistExport`. The 12 V divider recovers 6 V / −6 mA; series RC at `ω=1000` matches `0.5−j0.5` V; a diode+switch deck satisfies Shockley+KVL within 1e-9 A; engineering suffixes and skipped `.model` cards are checked; unsupported format versions are rejected. See [netlist.md](netlist.md). External ngspice waveform comparisons remain a separate increment under [#11](https://github.com/flooooooooooow/herbie/issues/11).
+`tests/netlist.flow` parses format-version-1 decks, stamps them into `herbie.mna` / `herbie.ac` / `herbie.nl`, and round-trips through `netlistExport`. The 12 V divider recovers 6 V / −6 mA; series RC at `ω=1000` matches `0.5−j0.5` V; a diode+switch deck satisfies Shockley+KVL within 1e-9 A; engineering suffixes and skipped `.model` cards are checked; unsupported format versions are rejected. See [netlist.md](netlist.md).
+
+## ngspice cross-validation
+
+`tests/ngspice_crossval.flow` compares Herbie MNA/AC/NL (and netlist stamps) against stored ngspice-42 prints for a DC divider (1e-12), series RC AC at `ω=1000` (1e-9 V), and a 5 V diode OP (1e-3 V, fixed-`nVt` vs `TEMP=27`). Provenance and decks: `tests/ngspice_refs/`. See [ngspice-crossval.md](ngspice-crossval.md).

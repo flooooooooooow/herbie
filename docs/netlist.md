@@ -58,4 +58,4 @@ Example decks: `examples/netlists/*.cir`.
 
 ## Boundary
 
-Optional I/O front end only. No SPICE waveform parity, no subcircuits, no `.model` library, no automatic analysis dispatch beyond stamp helpers. External ngspice waveform cross-validation is a separate increment under [#11](https://github.com/flooooooooooow/herbie/issues/11).
+Optional I/O front end only. No SPICE waveform parity, no subcircuits, no `.model` library, no automatic analysis dispatch beyond stamp helpers. Stored ngspice-42 cross-checks for a divider, RC AC case and diode OP are in [ngspice-crossval.md](ngspice-crossval.md).

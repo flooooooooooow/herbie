@@ -1,0 +1,5 @@
+# ngspice batch print results at f = 1000/(2*pi) Hz
+vre = 5.000000e-01
+vim = -5.00000e-01
+mag = 7.071068e-01
+v(in) = 1.000000e+00,0.000000e+00
