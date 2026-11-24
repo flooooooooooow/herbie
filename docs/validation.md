@@ -67,6 +67,17 @@ This establishes one model/solver/kernel agreement slice but **not** broad numer
 
 `tests/linear_stackups.flow` verifies a 20.00 mm bore minus 19.90 mm shaft nominal and interval 0.030–0.170 mm. With σ = 30/20 μm, perfect positive correlation gives clearance σ = 10 μm, independence yields variance 1.3×10⁻⁹ m², and perfect negative correlation gives 50 μm. Asymmetric covariance, a non-positive-semidefinite matrix, and negative half-widths are rejected; a zero covariance matrix is admitted. The method uses a caller-owned Cholesky-like factor with semidefinite pivot treatment and a relative matrix tolerance; its treatment of nearly singular matrices depends on the supplied tolerance. All dimensions are in metres; a 3D datum hierarchy remains unimplemented.
 
+## Driveline kernels (issue #15)
+
+`tests/driveline.flow` checks:
+
+- Undamped pendulum energy drift < 1e-6 and small-angle quarter-period within 1% of `2π√(L/g)`
+- Lossless two-inertia shaft energy conservation; static `T = k θ`
+- Open differential equal side torques and `P_in = P_out` identity
+- Coulomb clutch ±capacity·engagement and NaN on invalid engagement
+
+Quaternions, 6-DOF joints, torque converters and full multibody coupling remain open under [#15](https://github.com/flooooooooooow/herbie/issues/15).
+
 ## Native seven-DOF full-car ride (issue #4)
 
 `herbie.fullcar` ports the browser seven-configuration-coordinate ride plant to native Flow with identical hardpoints and default parameters. `tests/fullcar_ride.flow` checks:

@@ -1,0 +1,180 @@
+# @module herbie.driveline
+# Mechanical driveline kernels: simple pendulum, two-inertia torsional shaft,
+# open differential kinematics/power split and Coulomb clutch limit.
+# SI units. Explicit fixed-step RK4 where dynamic. Not a general multibody DAE.
+
+export struct PendulumParameters {
+    length: f64,
+    mass: f64,
+    gravity: f64,
+    viscousDamping: f64
+}
+
+export struct PendulumState {
+    angle: f64,
+    angularVelocity: f64
+}
+
+struct PendulumDerivative {
+    angle: f64,
+    angularVelocity: f64
+}
+
+function dlFinite(x: f64) -> bool {
+    return x == x and x <= 1.7976931348623157e308 and x >= -1.7976931348623157e308
+}
+
+function pendulumDerivative(s: PendulumState, p: PendulumParameters) -> PendulumDerivative {
+    return PendulumDerivative {
+        angle: s.angularVelocity,
+        angularVelocity: -(p.gravity / p.length) * sin(s.angle) - p.viscousDamping * s.angularVelocity
+    }
+}
+
+function pendulumAdvance(s: PendulumState, d: PendulumDerivative, dt: f64) -> PendulumState {
+    return PendulumState {
+        angle: s.angle + d.angle * dt,
+        angularVelocity: s.angularVelocity + d.angularVelocity * dt
+    }
+}
+
+export function pendulumParamsOk(p: PendulumParameters) -> bool {
+    return p.length > 0.0 and p.mass > 0.0 and p.gravity > 0.0 and p.viscousDamping >= 0.0
+        and dlFinite(p.length) and dlFinite(p.mass) and dlFinite(p.gravity)
+}
+
+export function pendulumStep(s: PendulumState, p: PendulumParameters, dt: f64) -> PendulumState {
+    let k1: PendulumDerivative = pendulumDerivative(s, p)
+    let k2: PendulumDerivative = pendulumDerivative(pendulumAdvance(s, k1, 0.5 * dt), p)
+    let k3: PendulumDerivative = pendulumDerivative(pendulumAdvance(s, k2, 0.5 * dt), p)
+    let k4: PendulumDerivative = pendulumDerivative(pendulumAdvance(s, k3, dt), p)
+    let d: f64 = dt / 6.0
+    return PendulumState {
+        angle: s.angle + d * (k1.angle + 2.0 * k2.angle + 2.0 * k3.angle + k4.angle),
+        angularVelocity: s.angularVelocity + d * (k1.angularVelocity + 2.0 * k2.angularVelocity + 2.0 * k3.angularVelocity + k4.angularVelocity)
+    }
+}
+
+export function pendulumEnergy(s: PendulumState, p: PendulumParameters) -> f64 {
+    # Zero potential at the lowest point: m g L (1 - cos θ)
+    return 0.5 * p.mass * p.length * p.length * s.angularVelocity * s.angularVelocity
+        + p.mass * p.gravity * p.length * (1.0 - cos(s.angle))
+}
+
+export function pendulumSmallPeriod(p: PendulumParameters) -> f64 {
+    return 2.0 * 3.141592653589793 * sqrt(p.length / p.gravity)
+}
+
+# Two rotational inertias coupled by a massless torsional shaft.
+export struct ShaftParameters {
+    inertiaA: f64,
+    inertiaB: f64,
+    stiffness: f64,
+    damping: f64
+}
+
+export struct ShaftState {
+    angleA: f64,
+    speedA: f64,
+    angleB: f64,
+    speedB: f64
+}
+
+struct ShaftDerivative {
+    angleA: f64,
+    speedA: f64,
+    angleB: f64,
+    speedB: f64
+}
+
+function shaftDerivative(s: ShaftState, p: ShaftParameters, torqueA: f64, torqueB: f64) -> ShaftDerivative {
+    let twist: f64 = s.angleA - s.angleB
+    let twistRate: f64 = s.speedA - s.speedB
+    let shaftTorque: f64 = p.stiffness * twist + p.damping * twistRate
+    return ShaftDerivative {
+        angleA: s.speedA,
+        speedA: (torqueA - shaftTorque) / p.inertiaA,
+        angleB: s.speedB,
+        speedB: (torqueB + shaftTorque) / p.inertiaB
+    }
+}
+
+function shaftAdvance(s: ShaftState, d: ShaftDerivative, dt: f64) -> ShaftState {
+    return ShaftState {
+        angleA: s.angleA + d.angleA * dt,
+        speedA: s.speedA + d.speedA * dt,
+        angleB: s.angleB + d.angleB * dt,
+        speedB: s.speedB + d.speedB * dt
+    }
+}
+
+export function shaftParamsOk(p: ShaftParameters) -> bool {
+    return p.inertiaA > 0.0 and p.inertiaB > 0.0 and p.stiffness > 0.0 and p.damping >= 0.0
+}
+
+export function shaftStep(s: ShaftState, p: ShaftParameters, torqueA: f64, torqueB: f64, dt: f64) -> ShaftState {
+    let k1: ShaftDerivative = shaftDerivative(s, p, torqueA, torqueB)
+    let k2: ShaftDerivative = shaftDerivative(shaftAdvance(s, k1, 0.5 * dt), p, torqueA, torqueB)
+    let k3: ShaftDerivative = shaftDerivative(shaftAdvance(s, k2, 0.5 * dt), p, torqueA, torqueB)
+    let k4: ShaftDerivative = shaftDerivative(shaftAdvance(s, k3, dt), p, torqueA, torqueB)
+    let d: f64 = dt / 6.0
+    return ShaftState {
+        angleA: s.angleA + d * (k1.angleA + 2.0 * k2.angleA + 2.0 * k3.angleA + k4.angleA),
+        speedA: s.speedA + d * (k1.speedA + 2.0 * k2.speedA + 2.0 * k3.speedA + k4.speedA),
+        angleB: s.angleB + d * (k1.angleB + 2.0 * k2.angleB + 2.0 * k3.angleB + k4.angleB),
+        speedB: s.speedB + d * (k1.speedB + 2.0 * k2.speedB + 2.0 * k3.speedB + k4.speedB)
+    }
+}
+
+export function shaftEnergy(s: ShaftState, p: ShaftParameters) -> f64 {
+    let twist: f64 = s.angleA - s.angleB
+    return 0.5 * p.inertiaA * s.speedA * s.speedA
+        + 0.5 * p.inertiaB * s.speedB * s.speedB
+        + 0.5 * p.stiffness * twist * twist
+}
+
+# Ideal open bevel differential: equal side torques, carrier speed arithmetic mean.
+export struct DiffResult {
+    torqueLeft: f64,
+    torqueRight: f64,
+    carrierSpeed: f64,
+    powerIn: f64,
+    powerOut: f64
+}
+
+export function openDifferential(
+    inputTorque: f64,
+    speedLeft: f64,
+    speedRight: f64
+) -> DiffResult {
+    let tSide: f64 = 0.5 * inputTorque
+    let carrier: f64 = 0.5 * (speedLeft + speedRight)
+    return DiffResult {
+        torqueLeft: tSide,
+        torqueRight: tSide,
+        carrierSpeed: carrier,
+        powerIn: inputTorque * carrier,
+        powerOut: tSide * speedLeft + tSide * speedRight
+    }
+}
+
+# Coulomb clutch: transmitted torque limited by capacity; sign follows slip speed.
+export function clutchTorque(
+    speedInput: f64,
+    speedOutput: f64,
+    capacity: f64,
+    engagement: f64
+) -> f64 {
+    if capacity < 0.0 or engagement < 0.0 or engagement > 1.0 {
+        return 0.0 / 0.0
+    }
+    let slip: f64 = speedInput - speedOutput
+    let limit: f64 = capacity * engagement
+    if slip > 0.0 {
+        return limit
+    }
+    if slip < 0.0 {
+        return -limit
+    }
+    return 0.0
+}

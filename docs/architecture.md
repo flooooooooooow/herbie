@@ -21,6 +21,7 @@ src/
   transient.flow     Shared Flow-backend linear RLC transient facade
   electrical.flow    Lumped passive RC/RL/RLC
   mechanics.flow     Single-axis rotation and ideal gear
+  driveline.flow     Pendulum, torsional shaft, differential, clutch
   motors.flow        Coupled armature/rotor DC motor
   battery.flow       Thevenin RC battery and SOC
   maps.flow          Clamped bilinear lookup for calibrated models

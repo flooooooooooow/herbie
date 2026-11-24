@@ -1,0 +1,33 @@
+import herbie.driveline {
+    PendulumParameters, PendulumState, pendulumStep, pendulumEnergy, pendulumSmallPeriod,
+    openDifferential, clutchTorque
+}
+
+function main() -> i32 {
+    let p: PendulumParameters = PendulumParameters {
+        length: 1.0, mass: 1.0, gravity: 9.80665, viscousDamping: 0.0
+    }
+    println("Small-angle period [s]")
+    println(pendulumSmallPeriod(p))
+    let mut s: PendulumState = PendulumState { angle: 0.1, angularVelocity: 0.0 }
+    let e0: f64 = pendulumEnergy(s, p)
+    for i in 0 to 5000 {
+        s = pendulumStep(s, p, 0.001)
+    }
+    println("Energy after 5 s")
+    println(pendulumEnergy(s, p))
+    let d = openDifferential(100.0, 20.0, 30.0)
+    println("Diff power in/out")
+    println(d.powerIn)
+    println(d.powerOut)
+    println("Clutch torque")
+    println(clutchTorque(50.0, 40.0, 80.0, 1.0))
+    if d.powerIn != d.powerOut {
+        return 1
+    }
+    if pendulumEnergy(s, p) <= 0.0 or e0 <= 0.0 {
+        return 2
+    }
+    println("PASS driveline demo")
+    return 0
+}

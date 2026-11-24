@@ -34,8 +34,12 @@ try{
  assert(w>500,"WebGL drawing surface must be sized for desktop");
  const bgcolor=await page.locator("body").evaluate(el=>getComputedStyle(el).backgroundColor);
  assert.notEqual(bgcolor,"rgba(0, 0, 0, 0)","Site CSS must load");
- const initial=await page.locator("#elapsed").textContent();
- await page.waitForTimeout(1300);
+  const initial=await page.locator("#elapsed").textContent();
+ // Wait until the telemetry clock moves; fixed sleeps are flaky under SwiftShader.
+ await page.waitForFunction((start)=>{
+  const el=document.querySelector("#elapsed");
+  return el && el.textContent && el.textContent!==start;
+ },initial,{timeout:8000});
  const after=await page.locator("#elapsed").textContent();
  assert.notEqual(after,initial,"Physics must advance without interaction");
  await page.getByRole("button",{name:/Hard braking/i}).click();

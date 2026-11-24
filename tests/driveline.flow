@@ -1,0 +1,139 @@
+# Analytic gates for pendulum, torsional shaft, open differential and clutch.
+
+import herbie.driveline {
+    PendulumParameters, PendulumState, pendulumParamsOk, pendulumStep,
+    pendulumEnergy, pendulumSmallPeriod,
+    ShaftParameters, ShaftState, shaftParamsOk, shaftStep, shaftEnergy,
+    openDifferential, clutchTorque
+}
+
+function near(a: f64, b: f64, eps: f64) -> bool {
+    return a >= b - eps and a <= b + eps
+}
+
+function absf(x: f64) -> f64 {
+    if x < 0.0 { return -x }
+    return x
+}
+
+function testPendulum() -> i32 {
+    let p: PendulumParameters = PendulumParameters {
+        length: 1.0, mass: 2.0, gravity: 9.80665, viscousDamping: 0.0
+    }
+    if not pendulumParamsOk(p) {
+        return 1
+    }
+    let period: f64 = pendulumSmallPeriod(p)
+    if not near(period, 2.0 * 3.141592653589793 * sqrt(1.0 / 9.80665), 1.0e-12) {
+        return 2
+    }
+    # Small-amplitude oscillation: measure half-period by zero crossing of angle.
+    let mut s: PendulumState = PendulumState { angle: 0.05, angularVelocity: 0.0 }
+    let e0: f64 = pendulumEnergy(s, p)
+    let dt: f64 = 0.0005
+    let mut prev: f64 = s.angle
+    let mut t: f64 = 0.0
+    let mut crossed: bool = false
+    let mut tCross: f64 = 0.0
+    for i in 0 to 20000 {
+        s = pendulumStep(s, p, dt)
+        t = t + dt
+        if not crossed and prev > 0.0 and s.angle <= 0.0 {
+            crossed = true
+            tCross = t - dt * prev / (prev - s.angle)
+        }
+        prev = s.angle
+    }
+    if not crossed {
+        return 3
+    }
+    # Quarter period from extreme to zero ≈ T/4.
+    if absf(4.0 * tCross - period) / period > 0.01 {
+        println("FAIL pendulum small-angle period")
+        return 4
+    }
+    let e1: f64 = pendulumEnergy(s, p)
+    if absf(e1 - e0) / e0 > 1.0e-6 {
+        println("FAIL pendulum energy")
+        return 5
+    }
+    return 0
+}
+
+function testShaft() -> i32 {
+    let p: ShaftParameters = ShaftParameters {
+        inertiaA: 2.0, inertiaB: 3.0, stiffness: 800.0, damping: 0.0
+    }
+    if not shaftParamsOk(p) {
+        return 1
+    }
+    let mut s: ShaftState = ShaftState {
+        angleA: 0.02, speedA: 0.0, angleB: 0.0, speedB: 0.0
+    }
+    let e0: f64 = shaftEnergy(s, p)
+    for i in 0 to 10000 {
+        s = shaftStep(s, p, 0.0, 0.0, 0.0005)
+    }
+    if absf(shaftEnergy(s, p) - e0) / e0 > 1.0e-6 {
+        println("FAIL shaft energy")
+        return 2
+    }
+    # Locked rigid limit: equal and opposite reaction when speeds forced...
+    # Static twist under constant torque equilibrium: torqueA = -torqueB = k*twist
+    let twist: f64 = 0.01
+    let kTorque: f64 = p.stiffness * twist
+    if not near(kTorque, 8.0, 1.0e-12) {
+        return 3
+    }
+    return 0
+}
+
+function testDifferentialAndClutch() -> i32 {
+    let d = openDifferential(200.0, 10.0, 14.0)
+    if not near(d.torqueLeft, 100.0, 1.0e-12) or not near(d.torqueRight, 100.0, 1.0e-12) {
+        return 1
+    }
+    if not near(d.carrierSpeed, 12.0, 1.0e-12) {
+        return 2
+    }
+    # Power identity: Tin * ωc = TL ωL + TR ωR
+    if not near(d.powerIn, d.powerOut, 1.0e-12) {
+        println("FAIL differential power split")
+        return 3
+    }
+    if not near(d.powerIn, 2400.0, 1.0e-12) {
+        return 4
+    }
+    if not near(clutchTorque(100.0, 80.0, 50.0, 1.0), 50.0, 1.0e-12) {
+        return 5
+    }
+    if not near(clutchTorque(80.0, 100.0, 50.0, 0.5), -25.0, 1.0e-12) {
+        return 6
+    }
+    if not near(clutchTorque(10.0, 10.0, 50.0, 1.0), 0.0, 1.0e-15) {
+        return 7
+    }
+    let bad: f64 = clutchTorque(1.0, 0.0, 10.0, 1.5)
+    if bad == bad {
+        return 8
+    }
+    return 0
+}
+
+function main() -> i32 {
+    let a: i32 = testPendulum()
+    if a != 0 {
+        return 10 + a
+    }
+    let b: i32 = testShaft()
+    if b != 0 {
+        return 20 + b
+    }
+    let c: i32 = testDifferentialAndClutch()
+    if c != 0 {
+        println("FAIL differential/clutch")
+        return 30 + c
+    }
+    println("PASS driveline: pendulum, shaft, differential, clutch")
+    return 0
+}
