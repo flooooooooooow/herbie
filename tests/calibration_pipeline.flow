@@ -1,0 +1,170 @@
+# Train/val split, MAD outlier gate, affine fit, holdout RMSE, sensitivity, golden slope.
+
+import "stdlib/io.flow"
+import herbie.calibrate {
+    CalibSplit, CalibAffine, CalibFitReport,
+    calibSplitOk, calibAffineEval, calibAffineRmse, calibRejectOutliersMad,
+    calibFitReport, calibAffineSensitivity, calibFitSlopeGolden, calibLoadXyzCsv
+}
+
+function near(a: f64, b: f64, eps: f64) -> bool {
+    return a >= b - eps and a <= b + eps
+}
+
+function absf(x: f64) -> f64 {
+    if x < 0.0 { return -x }
+    return x
+}
+
+function testSplitAndPlane() -> i32 {
+    # Exact plane z = 2 + 3x + 4y on 6 points; train 4 / val 2.
+    let mut values: array<f64, 18> = [
+        0.0, 0.0, 2.0,
+        1.0, 0.0, 5.0,
+        0.0, 1.0, 6.0,
+        1.0, 1.0, 9.0,
+        2.0, 0.0, 8.0,
+        0.0, 2.0, 10.0
+    ]
+    let split: CalibSplit = CalibSplit { trainCount: 4, valCount: 2 }
+    if not calibSplitOk(split, 6) {
+        return 1
+    }
+    if calibSplitOk(CalibSplit { trainCount: 5, valCount: 2 }, 6) {
+        return 2
+    }
+    let report: CalibFitReport = calibFitReport(&values[0], split)
+    if not report.ok {
+        println("FAIL affine fit")
+        return 3
+    }
+    if not near(report.coefficients.a, 2.0, 1.0e-9)
+        or not near(report.coefficients.b, 3.0, 1.0e-9)
+        or not near(report.coefficients.c, 4.0, 1.0e-9) {
+        println("FAIL coefficients")
+        println(report.coefficients.a)
+        println(report.coefficients.b)
+        println(report.coefficients.c)
+        return 4
+    }
+    if not near(report.trainRmse, 0.0, 1.0e-9) or not near(report.valRmse, 0.0, 1.0e-9) {
+        return 5
+    }
+    # Leakage gate: changing a validation z must not change coefficients.
+    values[5 * 3 + 2] = 50.0
+    let report2: CalibFitReport = calibFitReport(&values[0], split)
+    if not report2.ok {
+        return 6
+    }
+    if not near(report2.coefficients.a, 2.0, 1.0e-9)
+        or not near(report2.coefficients.b, 3.0, 1.0e-9)
+        or not near(report2.coefficients.c, 4.0, 1.0e-9) {
+        println("FAIL validation leakage")
+        return 7
+    }
+    if report2.valRmse <= report.valRmse {
+        return 8
+    }
+    let sens = calibAffineSensitivity(2.0, 3.0)
+    if not near(sens.dZdA, 1.0, 1.0e-15) or not near(sens.dZdB, 2.0, 1.0e-15) or not near(sens.dZdC, 3.0, 1.0e-15) {
+        return 9
+    }
+    return 0
+}
+
+function testOutliersAndGolden() -> i32 {
+    let mut values: array<f64, 15> = [
+        0.0, 0.0, 1.0,
+        1.0, 0.0, 2.0,
+        2.0, 0.0, 3.0,
+        3.0, 0.0, 4.0,
+        1.5, 0.0, 100.0
+    ]
+    let mut scratch: array<f64, 5> = [0.0, 0.0, 0.0, 0.0, 0.0]
+    let kept: i32 = calibRejectOutliersMad(&values[0], 5, 3.5, &scratch[0])
+    if kept != 4 {
+        println("FAIL MAD reject count")
+        println(kept)
+        return 1
+    }
+    let mut xs: array<f64, 4> = [0.0, 1.0, 2.0, 3.0]
+    let mut zs: array<f64, 4> = [1.0, 3.0, 5.0, 7.0]
+    let mut slope: array<f64, 1> = [0.0]
+    if not calibFitSlopeGolden(&xs[0], &zs[0], 4, 1.0, 0.0, 5.0, 42 as u32, &slope[0]) {
+        return 2
+    }
+    # z = 1 + 2x
+    if not near(slope[0], 2.0, 1.0e-4) {
+        println("FAIL golden slope")
+        println(slope[0])
+        return 3
+    }
+    return 0
+}
+
+function testCsvFixture() -> i32 {
+    let file: FileRead = io_read_file("tests/scenarios/torque_surface.csv")
+    if not file.ok {
+        println("FAIL read torque_surface.csv")
+        return 1
+    }
+    let mut values: array<f64, 36> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let rows: i32 = calibLoadXyzCsv(file.data, &values[0], 12)
+    if rows != 12 {
+        println("FAIL CSV row count")
+        println(rows)
+        return 1
+    }
+    let mut scratch: array<f64, 12> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let kept: i32 = calibRejectOutliersMad(&values[0], rows, 3.5, &scratch[0])
+    if kept != 11 {
+        println("FAIL CSV outlier")
+        println(kept)
+        return 2
+    }
+    # After reject, use first 8 train / next 3 val of kept rows.
+    let split: CalibSplit = CalibSplit { trainCount: 8, valCount: 3 }
+    let report: CalibFitReport = calibFitReport(&values[0], split)
+    if not report.ok {
+        return 3
+    }
+    if not near(report.coefficients.a, 20.0, 0.05)
+        or not near(report.coefficients.b, 30.0, 0.05)
+        or not near(report.coefficients.c, 80.0, 0.05) {
+        println("FAIL CSV plane recover")
+        println(report.coefficients.a)
+        println(report.coefficients.b)
+        println(report.coefficients.c)
+        return 4
+    }
+    if report.trainRmse > 0.1 or report.valRmse > 0.1 {
+        return 5
+    }
+    if not near(calibAffineEval(report.coefficients, 2.0, 0.5), 20.0 + 60.0 + 40.0, 0.2) {
+        return 6
+    }
+    return 0
+}
+
+function main() -> i32 {
+    let a: i32 = testSplitAndPlane()
+    if a != 0 {
+        return 10 + a
+    }
+    let b: i32 = testOutliersAndGolden()
+    if b != 0 {
+        return 20 + b
+    }
+    let c: i32 = testCsvFixture()
+    if c != 0 {
+        return 30 + c
+    }
+    println("PASS calibration: split, MAD, affine, golden, CSV")
+    return 0
+}

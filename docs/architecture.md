@@ -41,6 +41,7 @@ src/
   montecarlo.flow    Seeded MC stacks, percentiles, Pp/Ppk, X̄ limits
   thermal.flow       Lumped temperature evolution
   fluids.flow        Incompressible pipe/orifice/pump, NTU HX, cooling loop
+  calibrate.flow     Train/val split, MAD outliers, affine fit, holdout RMSE
   control.flow       Bounded-output PID
 tests/
   engineering_smoke.flow
