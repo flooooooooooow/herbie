@@ -1,0 +1,7 @@
+* herbie-netlist 1
+* Series diode + 1 kOhm at 5 V DC
+V1 in 0 DC 5
+D1 in load IS=1e-14 N=1
+R1 load 0 1k
+.op
+.end

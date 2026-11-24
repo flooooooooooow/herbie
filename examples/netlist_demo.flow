@@ -1,0 +1,98 @@
+import herbie.netlist {
+    netlistLoadFile, netlistParse, netlistNode, netlistStampMna, netlistStampNl,
+    netlistStampAc, netlistExport, netlistErrorLine, netlistElementCount,
+    netlistNodeCount, netlistAcOmega
+}
+import herbie.mna { MnaNetwork, mnaSolve }
+import herbie.ac { AcNetwork, acSolve }
+import herbie.nl {
+    NlElement, NlNetwork, nlSolve, nlNodeVoltage
+}
+
+function emptyNl() -> NlElement {
+    return NlElement { kind: 0, a: 0, b: 0, aux: 0, p0: 0.0, p1: 0.0, state: 0.0 }
+}
+
+function main() -> i32 {
+    if not netlistLoadFile("examples/netlists/divider.cir") or not netlistParse() {
+        print("FAIL divider parse ")
+        print(netlistErrorLine())
+        println("")
+        return 1
+    }
+    let n_mid: i32 = netlistNode("mid")
+    let mut matrix: array<f64, 9> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut rhs: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut solution: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut scratch: array<f64, 9> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut work: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mna: MnaNetwork = MnaNetwork {
+        nodeCount: netlistNodeCount(), voltageSourceCount: 1,
+        matrix: &matrix[0], rhs: &rhs[0]
+    }
+    if not netlistStampMna(mna) or not mnaSolve(mna, &solution[0], &scratch[0], &work[0], 1.0e-12) {
+        return 2
+    }
+    println("Divider mid (V):")
+    println(solution[n_mid])
+    let nexp: i32 = netlistExport()
+    println("Exported divider bytes:")
+    println(nexp as f64)
+
+    if not netlistLoadFile("examples/netlists/rc_ac.cir") or not netlistParse() {
+        return 3
+    }
+    let n_out: i32 = netlistNode("out")
+    let mut amat: array<f64, 36> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut arhs: array<f64, 6> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut asol: array<f64, 6> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut ascr: array<f64, 36> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut aw: array<f64, 6> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let ac: AcNetwork = AcNetwork {
+        nodeCount: 2, voltageSourceCount: 1, omega: netlistAcOmega(),
+        matrix: &amat[0], rhs: &arhs[0]
+    }
+    if not netlistStampAc(ac) or not acSolve(ac, &asol[0], &ascr[0], &aw[0], 1.0e-12) {
+        return 4
+    }
+    println("RC |Vout| (V peak):")
+    println(sqrt(asol[n_out] * asol[n_out] + asol[n_out + 3] * asol[n_out + 3]))
+
+    if not netlistLoadFile("examples/netlists/diode_load.cir") or not netlistParse() {
+        return 5
+    }
+    let n_load: i32 = netlistNode("load")
+    let mut elementCount: i32 = 0
+    let mut iterations: i32 = 0
+    let mut elements: array<NlElement, 4> = [emptyNl(), emptyNl(), emptyNl(), emptyNl()]
+    let mut nmat: array<f64, 9> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut nrhs: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut nsol: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut nprev: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut nscr: array<f64, 9> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut nw: array<f64, 3> = [0.0, 0.0, 0.0]
+    let nl: NlNetwork = NlNetwork {
+        nodeCount: 2, voltageSourceCount: 1,
+        elementCount: &elementCount, elementCapacity: 4,
+        maxIter: 80, relTol: 1.0e-9, absTol: 1.0e-12, gmin: 0.0,
+        elements: &elements[0], matrix: &nmat[0], rhs: &nrhs[0],
+        solution: &nsol[0], previous: &nprev[0],
+        scratchMatrix: &nscr[0], scratchRhs: &nw[0], iterations: &iterations
+    }
+    if not netlistStampNl(nl) or not nlSolve(nl) {
+        return 6
+    }
+    println("Diode load (V):")
+    println(nlNodeVoltage(nl, n_load))
+    println("Elements in diode deck:")
+    println(netlistElementCount() as f64)
+    return 0
+}

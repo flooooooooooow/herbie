@@ -1,0 +1,7 @@
+* herbie-netlist 1
+* Series RC, omega=1000 rad/s — |H|=1/sqrt(2), angle=-pi/4
+V1 in 0 DC 1
+R1 in out 1k
+C1 out 0 1u
+.ac omega=1000
+.end
