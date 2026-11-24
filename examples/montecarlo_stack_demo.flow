@@ -1,0 +1,51 @@
+# Demonstrate seeded Monte Carlo clearance stack vs analytic RSS sigma.
+
+import herbie.stackups { LinearToleranceStack }
+import herbie.montecarlo {
+    MonteCarloConfig, MonteCarloResult, mcStackSample, mcSummarize, processPpk
+}
+
+function main() -> i32 {
+    let mut nominal: array<f64, 2> = [0.020, 0.0199]
+    let mut half: array<f64, 2> = [0.00005, 0.00002]
+    let mut coef: array<f64, 2> = [1.0, -1.0]
+    let mut cov: array<f64, 4> = [9.0e-10, 0.0, 0.0, 4.0e-10]
+    let mut factor: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut work: array<f64, 2> = [0.0, 0.0]
+    let n: i32 = 2000
+    let mut samples: array<f64, 2000> = [0.0; 2000]
+    let mut scratch: array<f64, 2000> = [0.0; 2000]
+    let stack: LinearToleranceStack = LinearToleranceStack {
+        count: 2, nominal: &nominal[0], halfWidths: &half[0],
+        coefficients: &coef[0], covariance: &cov[0]
+    }
+    let config: MonteCarloConfig = MonteCarloConfig {
+        samples: n, seed: 42, distribution: 0
+    }
+    if not mcStackSample(stack, config, &factor[0], &samples[0], &work[0]) {
+        println("FAIL sample")
+        return 1
+    }
+    let mut out: MonteCarloResult = MonteCarloResult {
+        mean: 0.0, variance: 0.0, sigma: 0.0, minimum: 0.0, maximum: 0.0,
+        percentileLow: 0.0, percentileHigh: 0.0, samplesUsed: 0
+    }
+    if not mcSummarize(&samples[0], n, 0.025, 0.975, &scratch[0], &out) {
+        return 2
+    }
+    println("MC clearance mean [m]")
+    println(out.mean)
+    println("MC clearance sigma [m]")
+    println(out.sigma)
+    println("95% empirical interval [m]")
+    println(out.percentileLow)
+    println(out.percentileHigh)
+    let ppk: f64 = processPpk(out.mean, out.sigma, 0.00003, 0.00017)
+    println("Ppk vs 30–170 µm clearance window")
+    println(ppk)
+    if out.sigma <= 0.0 or ppk <= 0.0 {
+        return 3
+    }
+    println("PASS monte carlo stack demo")
+    return 0
+}

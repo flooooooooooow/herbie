@@ -99,6 +99,10 @@ jobs:
         run: flow run tests/verification_matrix.flow
       - name: Run verification matrix demonstration
         run: flow run examples/verification_matrix_demo.flow
+      - name: Verify seeded Monte Carlo stacks, Pp/Ppk and SPC limits
+        run: flow run tests/montecarlo_stack.flow
+      - name: Run Monte Carlo stack demonstration
+        run: flow run examples/montecarlo_stack_demo.flow
       - name: Run vehicle demo
         run: flow run examples/quarter_car_demo.flow
       - name: Run manufacturing demo
