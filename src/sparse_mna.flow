@@ -1,0 +1,305 @@
+# @module herbie.sparse_mna
+# Sparse DC modified nodal analysis assembly (COO triplets -> CSR) with
+# dense pivoted solve of the expanded matrix. Unknowns = node voltages
+# followed by ideal voltage-source currents. Ground node is -1.
+# Caller-owned buffers; no dynamic allocation or I/O in the kernel.
+# Mutable cooCount/csrNnz/ready live in caller-owned i32 cells because Flow
+# passes structs by value. Assembly is sparse; the indefinite direct
+# factorisation expands CSR to a dense scratch (same GE as herbie.mna).
+# Not a fill-reducing sparse LU.
+
+export struct SparseMna {
+    nodeCount: i32,
+    voltageSourceCount: i32,
+    capacity: i32,
+    cooCount: ptr<i32>,
+    csrNnz: ptr<i32>,
+    ready: ptr<i32>,
+    cooRow: ptr<i32>,
+    cooCol: ptr<i32>,
+    cooVal: ptr<f64>,
+    rowPtr: ptr<i32>,
+    colIdx: ptr<i32>,
+    values: ptr<f64>,
+    rhs: ptr<f64>
+}
+
+export function sparseMnaUnknownCount(n: SparseMna) -> i32 {
+    return n.nodeCount + n.voltageSourceCount
+}
+
+function sparseAbs(value: f64) -> f64 {
+    if value < 0.0 {
+        return -value
+    }
+    return value
+}
+
+function sparseFinite(value: f64) -> bool {
+    return value == value and value <= 1.7976931348623157e308 and value >= -1.7976931348623157e308
+}
+
+function sparseNodeValid(n: SparseMna, node: i32) -> bool {
+    return node >= -1 and node < n.nodeCount
+}
+
+function sparseIsReady(n: SparseMna) -> bool {
+    return n.ready[0] != 0
+}
+
+export function sparseMnaClear(n: SparseMna) -> bool {
+    if n.nodeCount <= 0 or n.voltageSourceCount < 0 or n.capacity <= 0 {
+        return false
+    }
+    let size: i32 = sparseMnaUnknownCount(n)
+    n.cooCount[0] = 0
+    n.csrNnz[0] = 0
+    n.ready[0] = 0
+    for i in 0 to size + 1 {
+        n.rowPtr[i] = 0
+    }
+    for i in 0 to size {
+        n.rhs[i] = 0.0
+    }
+    return true
+}
+
+function sparseAddEntry(n: SparseMna, row: i32, col: i32, value: f64) -> bool {
+    if sparseIsReady(n) or row < 0 or col < 0 or not sparseFinite(value) {
+        return false
+    }
+    let count: i32 = n.cooCount[0]
+    if count >= n.capacity {
+        return false
+    }
+    n.cooRow[count] = row
+    n.cooCol[count] = col
+    n.cooVal[count] = value
+    n.cooCount[0] = count + 1
+    return true
+}
+
+export function sparseMnaStampResistor(n: SparseMna, a: i32, b: i32, ohms: f64) -> bool {
+    if n.nodeCount <= 0 or n.voltageSourceCount < 0 or sparseIsReady(n)
+        or not sparseNodeValid(n, a) or not sparseNodeValid(n, b)
+        or a == b or ohms <= 0.0 or not sparseFinite(ohms) {
+        return false
+    }
+    let g: f64 = 1.0 / ohms
+    if a >= 0 {
+        if not sparseAddEntry(n, a, a, g) { return false }
+    }
+    if b >= 0 {
+        if not sparseAddEntry(n, b, b, g) { return false }
+    }
+    if a >= 0 and b >= 0 {
+        if not sparseAddEntry(n, a, b, -g) { return false }
+        if not sparseAddEntry(n, b, a, -g) { return false }
+    }
+    return true
+}
+
+export function sparseMnaStampCurrentSource(n: SparseMna, fromNode: i32, toNode: i32, amperes: f64) -> bool {
+    if n.nodeCount <= 0 or n.voltageSourceCount < 0 or sparseIsReady(n)
+        or not sparseNodeValid(n, fromNode) or not sparseNodeValid(n, toNode)
+        or fromNode == toNode or not sparseFinite(amperes) {
+        return false
+    }
+    if fromNode >= 0 {
+        n.rhs[fromNode] -= amperes
+    }
+    if toNode >= 0 {
+        n.rhs[toNode] += amperes
+    }
+    return true
+}
+
+export function sparseMnaStampVoltageSource(
+    n: SparseMna,
+    sourceIndex: i32,
+    plusNode: i32,
+    minusNode: i32,
+    volts: f64
+) -> bool {
+    if n.nodeCount <= 0 or n.voltageSourceCount <= 0 or sparseIsReady(n)
+        or sourceIndex < 0 or sourceIndex >= n.voltageSourceCount
+        or not sparseNodeValid(n, plusNode) or not sparseNodeValid(n, minusNode)
+        or plusNode == minusNode or not sparseFinite(volts) {
+        return false
+    }
+    let branch: i32 = n.nodeCount + sourceIndex
+    if plusNode >= 0 {
+        if not sparseAddEntry(n, plusNode, branch, 1.0) { return false }
+        if not sparseAddEntry(n, branch, plusNode, 1.0) { return false }
+    }
+    if minusNode >= 0 {
+        if not sparseAddEntry(n, minusNode, branch, -1.0) { return false }
+        if not sparseAddEntry(n, branch, minusNode, -1.0) { return false }
+    }
+    n.rhs[branch] += volts
+    return true
+}
+
+# Sort COO by (row, col) with insertion sort, then merge duplicate positions into CSR.
+export function sparseMnaFinalize(n: SparseMna) -> bool {
+    if sparseIsReady(n) or n.nodeCount <= 0 or n.voltageSourceCount < 0 or n.capacity <= 0 {
+        return false
+    }
+    let size: i32 = sparseMnaUnknownCount(n)
+    let count: i32 = n.cooCount[0]
+    let mut i: i32 = 1
+    while i < count {
+        let keyRow: i32 = n.cooRow[i]
+        let keyCol: i32 = n.cooCol[i]
+        let keyVal: f64 = n.cooVal[i]
+        let mut j: i32 = i - 1
+        while j >= 0 and (n.cooRow[j] > keyRow or (n.cooRow[j] == keyRow and n.cooCol[j] > keyCol)) {
+            n.cooRow[j + 1] = n.cooRow[j]
+            n.cooCol[j + 1] = n.cooCol[j]
+            n.cooVal[j + 1] = n.cooVal[j]
+            j = j - 1
+        }
+        n.cooRow[j + 1] = keyRow
+        n.cooCol[j + 1] = keyCol
+        n.cooVal[j + 1] = keyVal
+        i = i + 1
+    }
+    for r in 0 to size + 1 {
+        n.rowPtr[r] = 0
+    }
+    let mut nnz: i32 = 0
+    let mut k: i32 = 0
+    while k < count {
+        let row: i32 = n.cooRow[k]
+        let col: i32 = n.cooCol[k]
+        let mut val: f64 = n.cooVal[k]
+        k = k + 1
+        while k < count and n.cooRow[k] == row and n.cooCol[k] == col {
+            val += n.cooVal[k]
+            k = k + 1
+        }
+        if row < 0 or row >= size or col < 0 or col >= size or nnz >= n.capacity {
+            return false
+        }
+        n.colIdx[nnz] = col
+        n.values[nnz] = val
+        nnz += 1
+        n.rowPtr[row + 1] += 1
+    }
+    for r in 0 to size {
+        n.rowPtr[r + 1] += n.rowPtr[r]
+    }
+    n.csrNnz[0] = nnz
+    n.ready[0] = 1
+    return true
+}
+
+export function sparseMnaExpandDense(n: SparseMna, dense: ptr<f64>) -> bool {
+    if not sparseIsReady(n) {
+        return false
+    }
+    let size: i32 = sparseMnaUnknownCount(n)
+    for i in 0 to size * size {
+        dense[i] = 0.0
+    }
+    for row in 0 to size {
+        let start: i32 = n.rowPtr[row]
+        let stop: i32 = n.rowPtr[row + 1]
+        for p in start to stop {
+            dense[row * size + n.colIdx[p]] = n.values[p]
+        }
+    }
+    return true
+}
+
+# Expand CSR to dense scratch, then partial-pivoted GE. Sparse structure untouched.
+export function sparseMnaSolve(
+    n: SparseMna,
+    solution: ptr<f64>,
+    denseScratch: ptr<f64>,
+    factorScratch: ptr<f64>,
+    rhsScratch: ptr<f64>,
+    absolutePivotTolerance: f64
+) -> bool {
+    if not sparseIsReady(n) or absolutePivotTolerance <= 0.0 {
+        return false
+    }
+    let size: i32 = sparseMnaUnknownCount(n)
+    if not sparseMnaExpandDense(n, denseScratch) {
+        return false
+    }
+    for i in 0 to size * size {
+        factorScratch[i] = denseScratch[i]
+    }
+    for i in 0 to size {
+        rhsScratch[i] = n.rhs[i]
+    }
+    for col in 0 to size {
+        let mut pivotRow: i32 = col
+        let mut best: f64 = sparseAbs(factorScratch[col * size + col])
+        for row in col + 1 to size {
+            let candidate: f64 = sparseAbs(factorScratch[row * size + col])
+            if candidate > best {
+                best = candidate
+                pivotRow = row
+            }
+        }
+        if best <= absolutePivotTolerance or best != best {
+            return false
+        }
+        if pivotRow != col {
+            for k in col to size {
+                let a: i32 = col * size + k
+                let b: i32 = pivotRow * size + k
+                let temp: f64 = factorScratch[a]
+                factorScratch[a] = factorScratch[b]
+                factorScratch[b] = temp
+            }
+            let rhsTemp: f64 = rhsScratch[col]
+            rhsScratch[col] = rhsScratch[pivotRow]
+            rhsScratch[pivotRow] = rhsTemp
+        }
+        for row in col + 1 to size {
+            let factor: f64 = factorScratch[row * size + col] / factorScratch[col * size + col]
+            factorScratch[row * size + col] = 0.0
+            for k in col + 1 to size {
+                factorScratch[row * size + k] -= factor * factorScratch[col * size + k]
+            }
+            rhsScratch[row] -= factor * rhsScratch[col]
+        }
+    }
+    let mut i: i32 = size - 1
+    while i >= 0 {
+        let mut v: f64 = rhsScratch[i]
+        for j in i + 1 to size {
+            v -= factorScratch[i * size + j] * solution[j]
+        }
+        solution[i] = v / factorScratch[i * size + i]
+        if solution[i] != solution[i] {
+            return false
+        }
+        i = i - 1
+    }
+    return true
+}
+
+# Infinity-norm residual via CSR SpMV: A x - b.
+export function sparseMnaMaxResidual(n: SparseMna, solution: ptr<f64>) -> f64 {
+    if not sparseIsReady(n) {
+        return 1.0e300
+    }
+    let size: i32 = sparseMnaUnknownCount(n)
+    let mut worst: f64 = 0.0
+    for row in 0 to size {
+        let mut residual: f64 = -n.rhs[row]
+        let start: i32 = n.rowPtr[row]
+        let stop: i32 = n.rowPtr[row + 1]
+        for p in start to stop {
+            residual += n.values[p] * solution[n.colIdx[p]]
+        }
+        if sparseAbs(residual) > worst {
+            worst = sparseAbs(residual)
+        }
+    }
+    return worst
+}
