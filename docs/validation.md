@@ -4,7 +4,7 @@
 
 **Level 1, implemented:** analytically checkable elementary stress, elastic extension, thermal expansion, fit clearances, RSS, Cpk, PID output bounds, linear-powertrain kinematics, and zero-input equilibrium. The undamped quarter car is integrated with fixed-step RK4 and checked for bounded energy drift over 10,000 steps. A 2D linear-elastic horizontal truss reference and two-/three-variable correlated variances are also tested. Tests live in `tests/` and CI runs them with a pinned Flow compiler revision.
 
-**Level 2, partial:** `tests/ode_platform.flow` measures observed convergence order for forward Euler (~1) and RK4 (~4) on `y'=-y` via dt refinement, checks undamped harmonic energy and analytic phase, semi-implicit Euler bounded energy drift, zero-crossing event time against `π/(2ω)`, and multirate/trace bookkeeping. Still open: stiff-system rejection, independent high-precision reference integrations, randomized/property tests, sensitivity/Jacobian comparisons, and sustained million-step profiling.
+**Level 2, partial:** `tests/ode_platform.flow` measures observed convergence order for forward Euler (~1) and RK4 (~4) on `y'=-y` via dt refinement, checks undamped harmonic energy and analytic phase, semi-implicit Euler bounded energy drift, zero-crossing event time against `π/(2ω)`, and multirate/trace bookkeeping. `tests/verification_matrix.flow` loads versioned scenario CSVs, exports absolute/relative/RMS error budgets and observed orders, and enforces readiness-label discipline (`experimental` / `validated_for_domain` / `realtime_qualified_for_target`; never `safety_assessed` from CI). Still open: stiff-system rejection, independent high-precision reference integrations, randomized/property tests, sensitivity/Jacobian comparisons, sustained million-step profiling, memory/stack auditing and target WCET.
 
 **Level 3, not yet implemented:** validated vehicle/rig datasets, test-bench/HIL comparison, measurement uncertainty, traceable material data, fault injection, production-target WCET measurement and release qualification.
 
@@ -74,6 +74,20 @@ This establishes one model/solver/kernel agreement slice but **not** broad numer
 ## Linear network transients
 
 See [the transient contract and analytical gates](circuit-transients.md). `flow run tests/circuit_transient.flow` verifies fixed-step backward Euler using the shared Flow circuit backend. General DAE initialization, external SPICE comparison and real-time qualification remain open.
+
+## Verification matrix (issue #9)
+
+`herbie.verify` defines readiness labels and refuses to treat unit-test success as `safety_assessed`. Scenario files under `tests/scenarios/` are format-version-1 CSV with `#` metadata (id, model, compiler pin, SI provenance). `verifyParseCsvTable` loads numeric rows; `verifyErrorBudget` reports max absolute/relative and RMS errors against per-sample tolerances; `verifyObservedOrder` exports measured convergence order from two step sizes.
+
+`tests/verification_matrix.flow` gates:
+
+- Decay RK4 samples at t=0/0.5/1 s against analytic `e^{-t}` via `decay_rk4.csv`
+- Euler (~1) and RK4 (~4) observed orders on the same plant
+- 12 V MNA divider unknowns against `mna_divider.csv`
+- Undamped quarter-car energy invariant within the published 0.001 relative drift
+- Rejection of malformed CSV and of test-assigned `safety_assessed`
+
+This does **not** claim WCET, stack audits, real vehicle datasets or ISO 26262. See [verification issue #9](https://github.com/flooooooooooow/herbie/issues/9).
 
 ## Shared ODE platform (issue #3)
 

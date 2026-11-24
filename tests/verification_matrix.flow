@@ -1,0 +1,306 @@
+# Cross-module verification matrix: scenario CSV load, error budgets,
+# convergence-order export and readiness-label discipline (issue #9).
+
+import "stdlib/io.flow"
+import herbie.verify {
+    VerifyScenario, VerifyErrorBudget, VerifyOrderEstimate,
+    verifyReadinessExperimental, verifyReadinessValidatedDomain,
+    verifyReadinessSafetyAssessed, verifyReadinessName,
+    verifyReadinessAllowedFromTests, verifyScenarioOk,
+    verifyErrorBudget, verifyObservedOrder, verifyParseCsvTable
+}
+import herbie.ode {
+    OdeConfig, odeRk4Step, odeEulerStep, odeExactScalarDecay
+}
+import herbie.mna {
+    MnaNetwork, mnaClear, mnaStampResistor, mnaStampVoltageSource, mnaSolve
+}
+import herbie.vehicle {
+    QuarterCarParameters, QuarterCarState, quarterCarStep, quarterCarEnergy
+}
+
+function near(a: f64, b: f64, eps: f64) -> bool {
+    return a >= b - eps and a <= b + eps
+}
+
+function absf(x: f64) -> f64 {
+    if x < 0.0 { return -x }
+    return x
+}
+
+function testReadinessDiscipline() -> i32 {
+    if not verifyReadinessAllowedFromTests(verifyReadinessExperimental()) {
+        return 1
+    }
+    if not verifyReadinessAllowedFromTests(verifyReadinessValidatedDomain()) {
+        return 2
+    }
+    if verifyReadinessAllowedFromTests(verifyReadinessSafetyAssessed()) {
+        println("FAIL safety_assessed must not be assignable from tests")
+        return 3
+    }
+    let bad: VerifyScenario = VerifyScenario {
+        formatVersion: 1,
+        id: "x",
+        model: "none",
+        compilerPin: "7687fc936365e17bc6286415585c55fcc6ea64c3",
+        readiness: verifyReadinessSafetyAssessed(),
+        columnCount: 1,
+        provenance: "should reject"
+    }
+    if verifyScenarioOk(bad) {
+        return 4
+    }
+    if verifyReadinessName(0) != "experimental" {
+        return 5
+    }
+    return 0
+}
+
+function integrateDecayRk4(dt: f64, tEnd: f64) -> f64 {
+    let config: OdeConfig = OdeConfig { dimension: 1, dt: dt }
+    let mut y: array<f64, 1> = [1.0]
+    let mut k1: array<f64, 1> = [0.0]
+    let mut k2: array<f64, 1> = [0.0]
+    let mut k3: array<f64, 1> = [0.0]
+    let mut k4: array<f64, 1> = [0.0]
+    let mut yTemp: array<f64, 1> = [0.0]
+    let steps: i32 = (tEnd / dt + 0.5) as i32
+    let mut t: f64 = 0.0
+    for s in 0 to steps {
+        if not odeRk4Step(config, t, &y[0], &k1[0], &k2[0], &k3[0], &k4[0], &yTemp[0], 0, 1.0) {
+            return -1.0
+        }
+        t = t + dt
+    }
+    return y[0]
+}
+
+function integrateDecayEuler(dt: f64, tEnd: f64) -> f64 {
+    let config: OdeConfig = OdeConfig { dimension: 1, dt: dt }
+    let mut y: array<f64, 1> = [1.0]
+    let mut dy: array<f64, 1> = [0.0]
+    let steps: i32 = (tEnd / dt + 0.5) as i32
+    let mut t: f64 = 0.0
+    for s in 0 to steps {
+        if not odeEulerStep(config, t, &y[0], &dy[0], 0, 1.0) {
+            return -1.0
+        }
+        t = t + dt
+    }
+    return y[0]
+}
+
+function testDecayScenarioCsvAndBudget() -> i32 {
+    let file: FileRead = io_read_file("tests/scenarios/decay_rk4.csv")
+    if not file.ok {
+        println("FAIL read decay_rk4.csv")
+        return 1
+    }
+    let mut table: array<f64, 24> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let rows: i32 = verifyParseCsvTable(file.data, 3, true, &table[0], 8)
+    if rows != 3 {
+        println("FAIL decay CSV row count")
+        return 2
+    }
+    let scenario: VerifyScenario = VerifyScenario {
+        formatVersion: 1,
+        id: "decay_rk4",
+        model: "herbie.ode",
+        compilerPin: "7687fc936365e17bc6286415585c55fcc6ea64c3",
+        readiness: verifyReadinessExperimental(),
+        columnCount: 3,
+        provenance: "analytic y'=-y"
+    }
+    if not verifyScenarioOk(scenario) {
+        return 3
+    }
+
+    let mut sample: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut reference: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut tol: array<f64, 3> = [0.0, 0.0, 0.0]
+    for i in 0 to rows {
+        let t: f64 = table[i * 3 + 0]
+        reference[i] = table[i * 3 + 1]
+        tol[i] = table[i * 3 + 2]
+        if t == 0.0 {
+            sample[i] = 1.0
+        } else {
+            let y: f64 = integrateDecayRk4(0.001, t)
+            if y < 0.0 {
+                return 4
+            }
+            sample[i] = y
+        }
+    }
+    let mut budget: VerifyErrorBudget = VerifyErrorBudget {
+        count: 0, maxAbsError: 0.0, maxRelError: 0.0, rmsAbsError: 0.0, withinTolerance: false
+    }
+    if not verifyErrorBudget(&sample[0], &reference[0], &tol[0], rows, 1.0e-15, &budget) {
+        return 5
+    }
+    if not budget.withinTolerance {
+        println("FAIL decay error budget exceeded")
+        return 6
+    }
+    if budget.maxAbsError > 1.0e-6 {
+        return 7
+    }
+    return 0
+}
+
+function testConvergenceOrderExport() -> i32 {
+    let exact: f64 = odeExactScalarDecay(1.0, 1.0, 1.0)
+    let eEulerC: f64 = absf(integrateDecayEuler(0.05, 1.0) - exact)
+    let eEulerF: f64 = absf(integrateDecayEuler(0.025, 1.0) - exact)
+    let euler: VerifyOrderEstimate = verifyObservedOrder(eEulerC, eEulerF, 0.05, 0.025)
+    if not euler.valid or euler.observedOrder < 0.85 or euler.observedOrder > 1.25 {
+        println("FAIL Euler order export")
+        return 1
+    }
+    let eRk4C: f64 = absf(integrateDecayRk4(0.1, 1.0) - exact)
+    let eRk4F: f64 = absf(integrateDecayRk4(0.05, 1.0) - exact)
+    let rk4: VerifyOrderEstimate = verifyObservedOrder(eRk4C, eRk4F, 0.1, 0.05)
+    if not rk4.valid or rk4.observedOrder < 3.5 or rk4.observedOrder > 4.6 {
+        println("FAIL RK4 order export")
+        return 2
+    }
+    return 0
+}
+
+function testMnaScenarioBudget() -> i32 {
+    let file: FileRead = io_read_file("tests/scenarios/mna_divider.csv")
+    if not file.ok {
+        println("FAIL read mna_divider.csv")
+        return 1
+    }
+    let mut table: array<f64, 12> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let rows: i32 = verifyParseCsvTable(file.data, 3, true, &table[0], 4)
+    if rows != 3 {
+        return 2
+    }
+    let mut matrix: array<f64, 9> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut rhs: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut solution: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut scratch: array<f64, 9> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut workRhs: array<f64, 3> = [0.0, 0.0, 0.0]
+    let network: MnaNetwork = MnaNetwork {
+        nodeCount: 2, voltageSourceCount: 1, matrix: &matrix[0], rhs: &rhs[0]
+    }
+    if not mnaClear(network)
+        or not mnaStampVoltageSource(network, 0, 0, -1, 12.0)
+        or not mnaStampResistor(network, 0, 1, 1000.0)
+        or not mnaStampResistor(network, 1, -1, 1000.0)
+        or not mnaSolve(network, &solution[0], &scratch[0], &workRhs[0], 1.0e-12) {
+        println("FAIL MNA solve in verification matrix")
+        return 3
+    }
+    let mut sample: array<f64, 3> = [solution[0], solution[1], solution[2]]
+    let mut reference: array<f64, 3> = [table[1], table[4], table[7]]
+    let mut tol: array<f64, 3> = [table[2], table[5], table[8]]
+    let mut budget: VerifyErrorBudget = VerifyErrorBudget {
+        count: 0, maxAbsError: 0.0, maxRelError: 0.0, rmsAbsError: 0.0, withinTolerance: false
+    }
+    if not verifyErrorBudget(&sample[0], &reference[0], &tol[0], 3, 1.0e-15, &budget) {
+        return 4
+    }
+    if not budget.withinTolerance {
+        println("FAIL MNA divider budget")
+        return 5
+    }
+    let scenario: VerifyScenario = VerifyScenario {
+        formatVersion: 1,
+        id: "mna_divider_12v",
+        model: "herbie.mna",
+        compilerPin: "7687fc936365e17bc6286415585c55fcc6ea64c3",
+        readiness: verifyReadinessValidatedDomain(),
+        columnCount: 3,
+        provenance: "analytic resistive divider"
+    }
+    if not verifyScenarioOk(scenario) {
+        return 6
+    }
+    return 0
+}
+
+function testQuarterCarEnergyInvariant() -> i32 {
+    let p: QuarterCarParameters = QuarterCarParameters {
+        sprungMass: 300.0, unsprungMass: 40.0,
+        suspensionStiffness: 16000.0, suspensionDamping: 0.0,
+        tireStiffness: 200000.0, tireDamping: 0.0
+    }
+    let mut s: QuarterCarState = QuarterCarState {
+        sprungPosition: 0.015, sprungVelocity: 0.0,
+        unsprungPosition: 0.0, unsprungVelocity: 0.0
+    }
+    let e0: f64 = quarterCarEnergy(s, p, 0.0)
+    for i in 0 to 10000 {
+        s = quarterCarStep(s, p, 0.0, 0.0, 0.0005)
+    }
+    let e1: f64 = quarterCarEnergy(s, p, 0.0)
+    let mut sample: array<f64, 1> = [e1]
+    let mut reference: array<f64, 1> = [e0]
+    # Published Level-1 gate: relative energy drift ≤ 0.001 over 10k steps.
+    let mut tol: array<f64, 1> = [0.001 * e0]
+    let mut budget: VerifyErrorBudget = VerifyErrorBudget {
+        count: 0, maxAbsError: 0.0, maxRelError: 0.0, rmsAbsError: 0.0, withinTolerance: false
+    }
+    if not verifyErrorBudget(&sample[0], &reference[0], &tol[0], 1, 1.0e-15, &budget) {
+        return 1
+    }
+    if not budget.withinTolerance {
+        println("FAIL quarter-car energy invariant budget")
+        return 2
+    }
+    return 0
+}
+
+function testCsvRejectsJunk() -> i32 {
+    let mut buf: array<f64, 8> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let bad2: i32 = verifyParseCsvTable("1.0,2.0\nnot_a_number,3.0\n", 2, false, &buf[0], 4)
+    if bad2 != -1 {
+        return 1
+    }
+    let bad3: i32 = verifyParseCsvTable("1.0\n", 2, false, &buf[0], 4)
+    if bad3 != -1 {
+        return 2
+    }
+    return 0
+}
+
+function main() -> i32 {
+    let r: i32 = testReadinessDiscipline()
+    if r != 0 {
+        println("FAIL readiness discipline")
+        return 10 + r
+    }
+    let c: i32 = testCsvRejectsJunk()
+    if c != 0 {
+        println("FAIL CSV rejection")
+        return 20 + c
+    }
+    let d: i32 = testDecayScenarioCsvAndBudget()
+    if d != 0 {
+        return 30 + d
+    }
+    let o: i32 = testConvergenceOrderExport()
+    if o != 0 {
+        return 40 + o
+    }
+    let m: i32 = testMnaScenarioBudget()
+    if m != 0 {
+        return 50 + m
+    }
+    let q: i32 = testQuarterCarEnergyInvariant()
+    if q != 0 {
+        return 60 + q
+    }
+    println("PASS verification matrix: scenarios, budgets, orders, readiness")
+    return 0
+}

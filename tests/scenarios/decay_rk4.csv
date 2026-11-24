@@ -1,0 +1,11 @@
+# herbie.scenario formatVersion=1
+# id=decay_rk4
+# model=herbie.ode
+# readiness=experimental
+# compiler_pin=7687fc936365e17bc6286415585c55fcc6ea64c3
+# provenance=analytic y'= -y, y(0)=1 → y=e^{-t}; SI: t in s, y dimensionless
+# columns: t_s,y_ref,abs_tol
+t_s,y_ref,abs_tol
+0.0,1.0,1.0e-15
+0.5,0.6065306597126334,1.0e-6
+1.0,0.3678794411714423,1.0e-6

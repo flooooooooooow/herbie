@@ -9,6 +9,7 @@
 | Module | Models and numerical methods | Validity boundary |
 | --- | --- | --- |
 | `herbie.ode` | Fixed-step forward Euler, semi-implicit Euler and RK4; zero-crossing events; multirate schedule; caller-owned step traces; analytic decay/oscillator plants | Explicit ODE only; no implicit stiff DAE, adaptive step or general plant callbacks |
+| `herbie.verify` | Readiness labels, versioned scenario CSV tables, absolute/relative error budgets, observed convergence-order export | Offline/test harness; never assigns `safety_assessed` from unit tests; no WCET claim |
 | `herbie.transient` | Shared Flow circuit backend, fixed-step backward Euler RLC networks, physical residual checks | One circuit per process; DC initialization only; small, well-scaled networks |
 | `herbie.mna` | Dense DC modified nodal analysis for resistors, oriented current sources and ideal voltage sources, KCL/KVL residual, pivoted solve | Small resistive DC circuits only; no nonlinear, transient, AC or sparse solver |
 | `herbie.ac` | Dense AC phasor MNA for R/C/L with independent V/I sources, real 2n block solve, residual and average-power helpers | Small linear AC networks at fixed ω>0; no switches, diodes, sparse or SPICE parity |
@@ -81,6 +82,8 @@ flow run tests/mna_voltage_sources.flow
 flow run examples/mna_voltage_sources_demo.flow
 flow run tests/ode_platform.flow
 flow run examples/ode_platform_demo.flow
+flow run tests/verification_matrix.flow
+flow run examples/verification_matrix_demo.flow
 flow run tests/ac_phasor_mna.flow
 flow run examples/ac_phasor_demo.flow
 flow run tests/sparse_mna.flow

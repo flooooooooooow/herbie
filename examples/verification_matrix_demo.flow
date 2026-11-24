@@ -1,0 +1,71 @@
+# Demonstrate scenario CSV load and error-budget reporting.
+
+import "stdlib/io.flow"
+import herbie.verify {
+    VerifyErrorBudget, verifyParseCsvTable, verifyErrorBudget,
+    verifyObservedOrder, verifyReadinessName, verifyReadinessExperimental
+}
+import herbie.ode { odeExactScalarDecay, OdeConfig, odeRk4Step }
+
+function main() -> i32 {
+    let file: FileRead = io_read_file("tests/scenarios/decay_rk4.csv")
+    if not file.ok {
+        println("FAIL scenario file")
+        return 1
+    }
+    let mut table: array<f64, 24> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let rows: i32 = verifyParseCsvTable(file.data, 3, true, &table[0], 8)
+    if rows != 3 {
+        return 2
+    }
+    let mut sample: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut reference: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut tol: array<f64, 3> = [0.0, 0.0, 0.0]
+    for i in 0 to rows {
+        let t: f64 = table[i * 3]
+        reference[i] = table[i * 3 + 1]
+        tol[i] = table[i * 3 + 2]
+        if t == 0.0 {
+            sample[i] = 1.0
+        } else {
+            let config: OdeConfig = OdeConfig { dimension: 1, dt: 0.001 }
+            let mut y: array<f64, 1> = [1.0]
+            let mut k1: array<f64, 1> = [0.0]
+            let mut k2: array<f64, 1> = [0.0]
+            let mut k3: array<f64, 1> = [0.0]
+            let mut k4: array<f64, 1> = [0.0]
+            let mut yt: array<f64, 1> = [0.0]
+            let steps: i32 = (t / 0.001 + 0.5) as i32
+            let mut time: f64 = 0.0
+            for s in 0 to steps {
+                if not odeRk4Step(config, time, &y[0], &k1[0], &k2[0], &k3[0], &k4[0], &yt[0], 0, 1.0) {
+                    return 3
+                }
+                time = time + 0.001
+            }
+            sample[i] = y[0]
+        }
+    }
+    let mut budget: VerifyErrorBudget = VerifyErrorBudget {
+        count: 0, maxAbsError: 0.0, maxRelError: 0.0, rmsAbsError: 0.0, withinTolerance: false
+    }
+    if not verifyErrorBudget(&sample[0], &reference[0], &tol[0], rows, 1.0e-15, &budget) {
+        return 4
+    }
+    if not budget.withinTolerance {
+        return 5
+    }
+    let exact: f64 = odeExactScalarDecay(1.0, 1.0, 1.0)
+    # Tiny Euler errors at two steps for a smoke order print path.
+    let order = verifyObservedOrder(0.002, 0.001, 0.02, 0.01)
+    if not order.valid {
+        return 6
+    }
+    println(verifyReadinessName(verifyReadinessExperimental()))
+    println("PASS verification matrix demo")
+    return 0
+}
