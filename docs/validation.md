@@ -74,3 +74,7 @@ This establishes one model/solver/kernel agreement slice but **not** broad numer
 ## Linear network transients
 
 See [the transient contract and analytical gates](circuit-transients.md). `flow run tests/circuit_transient.flow` verifies fixed-step backward Euler using the shared Flow circuit backend. General DAE initialization, external SPICE comparison and real-time qualification remain open.
+
+## AC phasor MNA validation
+
+`tests/ac_phasor_mna.flow` solves linear R/C/L networks in the frequency domain. A 12 V resistive divider at 1 krad/s reproduces the DC voltages and −6 mA source current with zero imaginary parts (1e-10 V / 1e-12 A) and 36 mW average source/load power balance. Series RC (`R=1 kΩ`, `C=1 µF`, `ω=1000`) matches `|H|=1/√2` and `∠H=−π/4` within 1e-10. Series RL (`R=100 Ω`, `L=0.1 H`) matches `|I|=1/(100√2)` and `∠I=−π/4`. Series RLC at `ω₀=1/√(LC)` yields source current `−1/R` and capacitor voltage magnitude `|I|/(ωC)` with phase `−π/2`. A nodal R‖C driven by 1 mA gives `V=0.5−j0.5` V. Floating networks and invalid stamps are rejected. See [ac-phasor-mna.md](ac-phasor-mna.md). Switches, diodes, sparse solvers and SPICE comparisons remain open under [#11](https://github.com/flooooooooooow/herbie/issues/11).
