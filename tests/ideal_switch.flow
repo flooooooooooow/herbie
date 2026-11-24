@@ -1,0 +1,188 @@
+import herbie.ideal_sw {
+    IswElement, IswNetwork, iswClear, iswAddResistor, iswAddVoltageSource,
+    iswAddSwitch, iswSolve, iswNodeVoltage, iswSwitchCurrent, iswSwitchIsClosed,
+    iswSwitchEvent, iswMaxResidual, iswSourcePower, iswResistorPower,
+    iswUnknownCount, iswVoltageSourceCurrent
+}
+
+function near(a: f64, b: f64, tol: f64) -> bool {
+    return a >= b - tol and a <= b + tol
+}
+
+function empty() -> IswElement {
+    return IswElement { kind: 0, a: 0, b: 0, aux: 0, p0: 0.0, closed: 0.0 }
+}
+
+function testDividerThroughClosedSwitch() -> i32 {
+    # Nodes: 0=in, 1=mid, 2=out. V(in)=12, R in-mid 1k, SW mid-out closed, R out-gnd 1k.
+    let mut elementCount: i32 = 0
+    let mut elements: array<IswElement, 4> = [empty(), empty(), empty(), empty()]
+    let mut matrix: array<f64, 25> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut rhs: array<f64, 5> = [0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut solution: array<f64, 5> = [0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut scratch: array<f64, 25> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut work: array<f64, 5> = [0.0, 0.0, 0.0, 0.0, 0.0]
+    let n: IswNetwork = IswNetwork {
+        nodeCount: 3, voltageSourceCount: 1, switchCount: 1,
+        elementCount: &elementCount, elementCapacity: 4,
+        elements: &elements[0], matrix: &matrix[0], rhs: &rhs[0],
+        solution: &solution[0], scratchMatrix: &scratch[0], scratchRhs: &work[0]
+    }
+    if not iswClear(n) { return 10 }
+    if iswAddVoltageSource(n, 0, 0, -1, 12.0) < 0 { return 11 }
+    if iswAddResistor(n, 0, 1, 1000.0) < 0 { return 12 }
+    let sw: i32 = iswAddSwitch(n, 0, 1, 2, true)
+    if sw < 0 or iswAddResistor(n, 2, -1, 1000.0) < 0 { return 13 }
+    if not iswSolve(n, 1.0e-12) { return 14 }
+    if not near(iswNodeVoltage(n, 0), 12.0, 1.0e-12) { return 15 }
+    if not near(iswNodeVoltage(n, 1), 6.0, 1.0e-12) { return 16 }
+    if not near(iswNodeVoltage(n, 2), 6.0, 1.0e-12) { return 17 }
+    # Switch current = load current = 6 mA (plus -> minus = mid -> out).
+    if not near(iswSwitchCurrent(n, sw), 0.006, 1.0e-12) { return 18 }
+    if iswMaxResidual(n) > 1.0e-12 { return 19 }
+    if not near(iswSourcePower(n), iswResistorPower(n), 1.0e-12) { return 20 }
+    # Voltage drop across closed switch is exactly 0.
+    if not near(iswNodeVoltage(n, 1) - iswNodeVoltage(n, 2), 0.0, 1.0e-14) { return 21 }
+    return 0
+}
+
+function testOpenSwitch() -> i32 {
+    # Same topology, switch open: out floats through no path... out only has R to gnd,
+    # mid has R to in. Open SW => out = 0, mid = 12 (no load on mid).
+    let mut elementCount: i32 = 0
+    let mut elements: array<IswElement, 4> = [empty(), empty(), empty(), empty()]
+    let mut matrix: array<f64, 25> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut rhs: array<f64, 5> = [0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut solution: array<f64, 5> = [0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut scratch: array<f64, 25> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut work: array<f64, 5> = [0.0, 0.0, 0.0, 0.0, 0.0]
+    let n: IswNetwork = IswNetwork {
+        nodeCount: 3, voltageSourceCount: 1, switchCount: 1,
+        elementCount: &elementCount, elementCapacity: 4,
+        elements: &elements[0], matrix: &matrix[0], rhs: &rhs[0],
+        solution: &solution[0], scratchMatrix: &scratch[0], scratchRhs: &work[0]
+    }
+    if not iswClear(n) { return 30 }
+    if iswAddVoltageSource(n, 0, 0, -1, 12.0) < 0 { return 31 }
+    if iswAddResistor(n, 0, 1, 1000.0) < 0 { return 32 }
+    let sw: i32 = iswAddSwitch(n, 0, 1, 2, false)
+    if sw < 0 or iswAddResistor(n, 2, -1, 1000.0) < 0 { return 33 }
+    if not iswSolve(n, 1.0e-12) { return 34 }
+    # Mid has only R to in with no DC path to gnd except through open SW — FLOATING mid!
+    # Actually path: in is driven by V to gnd, mid connected via R to in only.
+    # Node mid has no path to ground when SW open => singular for mid?
+    # Wait: KCL at mid with only R to in: G*(Vmid-Vin)=0 => Vmid=Vin=12. That's fine.
+    # Node out has R to gnd only: Vout=0. Open switch current=0.
+    if not near(iswNodeVoltage(n, 1), 12.0, 1.0e-12) { return 35 }
+    if not near(iswNodeVoltage(n, 2), 0.0, 1.0e-12) { return 36 }
+    if not near(iswSwitchCurrent(n, sw), 0.0, 1.0e-12) { return 37 }
+    if iswSwitchIsClosed(n, sw) { return 38 }
+    return 0
+}
+
+function testEventsAndReswitch() -> i32 {
+    let mut elementCount: i32 = 0
+    let mut elements: array<IswElement, 4> = [empty(), empty(), empty(), empty()]
+    let mut matrix: array<f64, 25> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut rhs: array<f64, 5> = [0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut solution: array<f64, 5> = [0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut scratch: array<f64, 25> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut work: array<f64, 5> = [0.0, 0.0, 0.0, 0.0, 0.0]
+    let n: IswNetwork = IswNetwork {
+        nodeCount: 3, voltageSourceCount: 1, switchCount: 1,
+        elementCount: &elementCount, elementCapacity: 4,
+        elements: &elements[0], matrix: &matrix[0], rhs: &rhs[0],
+        solution: &solution[0], scratchMatrix: &scratch[0], scratchRhs: &work[0]
+    }
+    if not iswClear(n) { return 40 }
+    if iswAddVoltageSource(n, 0, 0, -1, 12.0) < 0 { return 41 }
+    if iswAddResistor(n, 0, 1, 1000.0) < 0 { return 42 }
+    let sw: i32 = iswAddSwitch(n, 0, 1, 2, false)
+    if sw < 0 or iswAddResistor(n, 2, -1, 1000.0) < 0 { return 43 }
+    if not iswSolve(n, 1.0e-12) { return 44 }
+    if iswSwitchEvent(n, sw, 0.5, 1.0) { return 45 }
+    if not iswSwitchEvent(n, sw, 1.5, 1.0) or not iswSwitchIsClosed(n, sw) { return 46 }
+    if not iswSolve(n, 1.0e-12) { return 47 }
+    if not near(iswNodeVoltage(n, 2), 6.0, 1.0e-12) { return 48 }
+    if not iswSwitchEvent(n, sw, 0.0, 1.0) or iswSwitchIsClosed(n, sw) { return 49 }
+    if not iswSolve(n, 1.0e-12) { return 50 }
+    if not near(iswNodeVoltage(n, 2), 0.0, 1.0e-12) { return 51 }
+    return 0
+}
+
+function testSingularFloating() -> i32 {
+    # Two nodes linked by a resistor only — no ground reference.
+    let mut elementCount: i32 = 0
+    let mut elements: array<IswElement, 2> = [empty(), empty()]
+    let mut matrix: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut rhs: array<f64, 2> = [0.0, 0.0]
+    let mut solution: array<f64, 2> = [0.0, 0.0]
+    let mut scratch: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut work: array<f64, 2> = [0.0, 0.0]
+    let n: IswNetwork = IswNetwork {
+        nodeCount: 2, voltageSourceCount: 0, switchCount: 0,
+        elementCount: &elementCount, elementCapacity: 2,
+        elements: &elements[0], matrix: &matrix[0], rhs: &rhs[0],
+        solution: &solution[0], scratchMatrix: &scratch[0], scratchRhs: &work[0]
+    }
+    if not iswClear(n) or iswAddResistor(n, 0, 1, 1000.0) < 0 { return 60 }
+    if iswSolve(n, 1.0e-12) { return 61 }
+    return 0
+}
+
+function main() -> i32 {
+    let mut code: i32 = testDividerThroughClosedSwitch()
+    if code != 0 {
+        print("FAIL closed switch divider ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testOpenSwitch()
+    if code != 0 {
+        print("FAIL open switch ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testEventsAndReswitch()
+    if code != 0 {
+        print("FAIL events ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testSingularFloating()
+    if code != 0 {
+        print("FAIL singular ")
+        print(code)
+        println("")
+        return code
+    }
+    println("PASS zero-Ron ideal switch MNA (branch current, events, power)")
+    return 0
+}

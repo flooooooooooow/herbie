@@ -1,0 +1,47 @@
+import herbie.ideal_sw {
+    IswElement, IswNetwork, iswClear, iswAddResistor, iswAddVoltageSource,
+    iswAddSwitch, iswSolve, iswNodeVoltage, iswSwitchCurrent, iswSwitchEvent
+}
+
+function empty() -> IswElement {
+    return IswElement { kind: 0, a: 0, b: 0, aux: 0, p0: 0.0, closed: 0.0 }
+}
+
+function main() -> i32 {
+    let mut elementCount: i32 = 0
+    let mut elements: array<IswElement, 4> = [empty(), empty(), empty(), empty()]
+    let mut matrix: array<f64, 25> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut rhs: array<f64, 5> = [0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut solution: array<f64, 5> = [0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut scratch: array<f64, 25> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut work: array<f64, 5> = [0.0, 0.0, 0.0, 0.0, 0.0]
+    let n: IswNetwork = IswNetwork {
+        nodeCount: 3, voltageSourceCount: 1, switchCount: 1,
+        elementCount: &elementCount, elementCapacity: 4,
+        elements: &elements[0], matrix: &matrix[0], rhs: &rhs[0],
+        solution: &solution[0], scratchMatrix: &scratch[0], scratchRhs: &work[0]
+    }
+    if not iswClear(n) { return 1 }
+    if iswAddVoltageSource(n, 0, 0, -1, 12.0) < 0 { return 2 }
+    if iswAddResistor(n, 0, 1, 1000.0) < 0 { return 3 }
+    let sw: i32 = iswAddSwitch(n, 0, 1, 2, false)
+    if sw < 0 or iswAddResistor(n, 2, -1, 1000.0) < 0 { return 4 }
+    if not iswSolve(n, 1.0e-12) { return 5 }
+    println("Open Vout (V):")
+    println(iswNodeVoltage(n, 2))
+    if not iswSwitchEvent(n, sw, 2.0, 1.0) { return 6 }
+    if not iswSolve(n, 1.0e-12) { return 7 }
+    println("Closed Vout (V):")
+    println(iswNodeVoltage(n, 2))
+    println("Switch current (A):")
+    println(iswSwitchCurrent(n, sw))
+    return 0
+}

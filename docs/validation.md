@@ -98,3 +98,7 @@ See [the transient contract and analytical gates](circuit-transients.md). `flow 
 ## Index-1 DAE MNA transient validation
 
 `tests/dae_mna.flow` exercises `herbie.dae` companion models: RC/RL/RLC analytic steps (BE), LC oscillator energy under trapezoidal UIC, floating-network rejection, `maxSteps` enforcement, and RC points vs stored ngspice-42 `rc_tran` measurements (5e-4 V). See [dae-mna.md](dae-mna.md).
+
+## Zero-Ron ideal switch validation
+
+`tests/ideal_switch.flow` checks closed-switch series dividers (exact 6 V, 6 mA branch current, zero voltage drop), open-switch isolation, threshold events with re-solve, source/load power balance, and floating-network rejection. See [ideal-switch.md](ideal-switch.md).
