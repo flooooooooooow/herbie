@@ -1,0 +1,170 @@
+# @module herbie.meanvalue
+# Mean-value engine kernels: multi-map lookup with no-extrapolation,
+# intake manifold filling-emptying, volumetric efficiency air flow.
+# SI units. No emissions factors, turbo maps or crank-angle combustion.
+
+import herbie.maps { Table2D, table2DValid, table2DBilinearStrict, table2DInDomain }
+import herbie.engine { angularVelocityToRpm, rpmToAngularVelocity }
+
+export struct ManifoldParameters {
+    volume: f64,
+    gasConstant: f64,
+    temperature: f64
+}
+
+export struct ManifoldState {
+    pressure: f64
+}
+
+export struct MeanValueMaps {
+    # Axes: x = RPM, y = normalized load/throttle in [0,1] unless noted.
+    torque: Table2D,
+    fuelRate: Table2D,
+    volumetricEfficiency: Table2D,
+    exhaustTemperature: Table2D
+}
+
+export struct MeanValueResult {
+    ok: bool,
+    grossTorque: f64,
+    fuelMassFlow: f64,
+    airMassFlow: f64,
+    exhaustTemperature: f64,
+    manifold: ManifoldState
+}
+
+function mvFinite(x: f64) -> bool {
+    return x == x and x <= 1.7976931348623157e308 and x >= -1.7976931348623157e308
+}
+
+export function manifoldParamsOk(p: ManifoldParameters) -> bool {
+    return p.volume > 0.0 and p.gasConstant > 0.0 and p.temperature > 0.0
+        and mvFinite(p.volume) and mvFinite(p.gasConstant) and mvFinite(p.temperature)
+}
+
+export function meanValueMapsOk(maps: MeanValueMaps) -> bool {
+    return table2DValid(maps.torque)
+        and table2DValid(maps.fuelRate)
+        and table2DValid(maps.volumetricEfficiency)
+        and table2DValid(maps.exhaustTemperature)
+}
+
+# Ideal-gas filling-emptying: p' = (R T / V) * (mdot_in - mdot_out).
+export function manifoldStep(
+    s: ManifoldState,
+    p: ManifoldParameters,
+    massFlowIn: f64,
+    massFlowOut: f64,
+    dt: f64
+) -> ManifoldState {
+    if not manifoldParamsOk(p) or dt <= 0.0 or not mvFinite(massFlowIn) or not mvFinite(massFlowOut) {
+        return ManifoldState { pressure: 0.0 / 0.0 }
+    }
+    let dp: f64 = (p.gasConstant * p.temperature / p.volume) * (massFlowIn - massFlowOut) * dt
+    let next: f64 = s.pressure + dp
+    if next < 0.0 {
+        next = 0.0
+    }
+    return ManifoldState { pressure: next }
+}
+
+# Four-stroke engine air mass flow from volumetric efficiency:
+# mdot = η_v * p_m * V_d * (N_rps / 2) / (R T) with N_rps = rpm/60.
+export function engineAirMassFlow(
+    manifoldPressure: f64,
+    volumetricEfficiency: f64,
+    displacement: f64,
+    rpm: f64,
+    gasConstant: f64,
+    temperature: f64
+) -> f64 {
+    if manifoldPressure < 0.0 or volumetricEfficiency < 0.0 or displacement <= 0.0
+        or rpm < 0.0 or gasConstant <= 0.0 or temperature <= 0.0 {
+        return 0.0 / 0.0
+    }
+    let cyclesPerSec: f64 = (rpm / 60.0) / 2.0
+    return volumetricEfficiency * manifoldPressure * displacement * cyclesPerSec / (gasConstant * temperature)
+}
+
+# Steady throttle mass flow proxy (orifice-like linear for tests): mdot = Cd * (p_amb - p_m).
+export function throttleMassFlow(discharge: f64, ambientPressure: f64, manifoldPressure: f64) -> f64 {
+    if discharge < 0.0 or ambientPressure < 0.0 or manifoldPressure < 0.0 {
+        return 0.0 / 0.0
+    }
+    let dp: f64 = ambientPressure - manifoldPressure
+    if dp < 0.0 {
+        return 0.0
+    }
+    return discharge * dp
+}
+
+# One mean-value step: strict multi-map lookup + manifold integration.
+# throttle in map y-axis units; loadTorque unused here (kinematics via maps).
+export function meanValueStep(
+    maps: MeanValueMaps,
+    manifold: ManifoldState,
+    manifoldParams: ManifoldParameters,
+    rpm: f64,
+    throttle: f64,
+    displacement: f64,
+    ambientPressure: f64,
+    throttleDischarge: f64,
+    dt: f64
+) -> MeanValueResult {
+    let fail: MeanValueResult = MeanValueResult {
+        ok: false,
+        grossTorque: 0.0,
+        fuelMassFlow: 0.0,
+        airMassFlow: 0.0,
+        exhaustTemperature: 0.0,
+        manifold: manifold
+    }
+    if not meanValueMapsOk(maps) or not manifoldParamsOk(manifoldParams) or dt <= 0.0 {
+        return fail
+    }
+    if not table2DInDomain(maps.torque, rpm, throttle)
+        or not table2DInDomain(maps.fuelRate, rpm, throttle)
+        or not table2DInDomain(maps.volumetricEfficiency, rpm, throttle)
+        or not table2DInDomain(maps.exhaustTemperature, rpm, throttle) {
+        return fail
+    }
+    let mut torque: array<f64, 1> = [0.0]
+    let mut fuel: array<f64, 1> = [0.0]
+    let mut ve: array<f64, 1> = [0.0]
+    let mut texh: array<f64, 1> = [0.0]
+    if not table2DBilinearStrict(maps.torque, rpm, throttle, &torque[0])
+        or not table2DBilinearStrict(maps.fuelRate, rpm, throttle, &fuel[0])
+        or not table2DBilinearStrict(maps.volumetricEfficiency, rpm, throttle, &ve[0])
+        or not table2DBilinearStrict(maps.exhaustTemperature, rpm, throttle, &texh[0]) {
+        return fail
+    }
+    let air: f64 = engineAirMassFlow(
+        manifold.pressure, ve[0], displacement, rpm,
+        manifoldParams.gasConstant, manifoldParams.temperature
+    )
+    let tin: f64 = throttleMassFlow(throttleDischarge, ambientPressure, manifold.pressure)
+    let nextManifold: ManifoldState = manifoldStep(manifold, manifoldParams, tin, air, dt)
+    if not mvFinite(nextManifold.pressure) or not mvFinite(air) or fuel[0] < 0.0 {
+        return fail
+    }
+    return MeanValueResult {
+        ok: true,
+        grossTorque: torque[0],
+        fuelMassFlow: fuel[0],
+        airMassFlow: air,
+        exhaustTemperature: texh[0],
+        manifold: nextManifold
+    }
+}
+
+# Brake work over dt from torque and ω; for energy accounting checks.
+export function shaftWork(torque: f64, angularVelocity: f64, dt: f64) -> f64 {
+    if dt < 0.0 {
+        return 0.0 / 0.0
+    }
+    let power: f64 = torque * angularVelocity
+    if power < 0.0 {
+        return 0.0
+    }
+    return power * dt
+}

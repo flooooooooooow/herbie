@@ -1,0 +1,162 @@
+# Mean-value engine: strict maps, manifold steady state, AFR and shaft work.
+
+import herbie.maps { Table2D, table2DValid, table2DBilinearStrict, table2DInDomain }
+import herbie.meanvalue {
+    ManifoldParameters, ManifoldState, MeanValueMaps, MeanValueResult,
+    manifoldParamsOk, meanValueMapsOk, manifoldStep, engineAirMassFlow,
+    throttleMassFlow, meanValueStep, shaftWork
+}
+import herbie.engine { rpmToAngularVelocity }
+
+function near(a: f64, b: f64, eps: f64) -> bool {
+    return a >= b - eps and a <= b + eps
+}
+
+function absf(x: f64) -> f64 {
+    if x < 0.0 { return -x }
+    return x
+}
+
+function testStrictLookup() -> i32 {
+    let mut x: array<f64, 2> = [1000.0, 3000.0]
+    let mut y: array<f64, 2> = [0.0, 1.0]
+    let mut v: array<f64, 4> = [50.0, 100.0, 80.0, 160.0]
+    let t: Table2D = Table2D {
+        xAxis: &x[0], yAxis: &y[0], values: &v[0], xCount: 2, yCount: 2
+    }
+    if not table2DValid(t) or not table2DInDomain(t, 2000.0, 0.5) {
+        return 1
+    }
+    if table2DInDomain(t, 500.0, 0.5) or table2DInDomain(t, 2000.0, 1.5) {
+        return 2
+    }
+    let mut out: array<f64, 1> = [0.0]
+    if not table2DBilinearStrict(t, 2000.0, 0.5, &out[0]) {
+        return 3
+    }
+    if not near(out[0], 97.5, 1.0e-12) {
+        return 4
+    }
+    if table2DBilinearStrict(t, 4000.0, 0.5, &out[0]) {
+        println("FAIL strict must reject extrapolation")
+        return 5
+    }
+    return 0
+}
+
+function testManifoldSteadyState() -> i32 {
+    let p: ManifoldParameters = ManifoldParameters {
+        volume: 0.002, gasConstant: 287.0, temperature: 300.0
+    }
+    if not manifoldParamsOk(p) {
+        return 1
+    }
+    # Choose p_m so mdot_in = mdot_out analytically.
+    # mdot_out = ve * p * Vd * (N/120) / (R T)
+    let ve: f64 = 0.9
+    let vd: f64 = 0.002
+    let rpm: f64 = 2400.0
+    let pAmb: f64 = 101325.0
+    let cd: f64 = 0.0002
+    # Solve Cd (pAmb - p) = ve p Vd (rpm/120) / (R T)
+    let alpha: f64 = ve * vd * (rpm / 120.0) / (p.gasConstant * p.temperature)
+    let pStar: f64 = cd * pAmb / (cd + alpha)
+    let mdot: f64 = throttleMassFlow(cd, pAmb, pStar)
+    let mEng: f64 = engineAirMassFlow(pStar, ve, vd, rpm, p.gasConstant, p.temperature)
+    if not near(mdot, mEng, 1.0e-12) {
+        println("FAIL analytic throttle/engine air balance")
+        return 2
+    }
+    let mut s: ManifoldState = ManifoldState { pressure: pStar }
+    for i in 0 to 5000 {
+        s = manifoldStep(s, p, mdot, mEng, 0.001)
+    }
+    if absf(s.pressure - pStar) > 1.0e-6 {
+        println("FAIL manifold steady pressure")
+        return 3
+    }
+    # Emptying: no inflow → pressure decays.
+    let mut empty: ManifoldState = ManifoldState { pressure: pStar }
+    empty = manifoldStep(empty, p, 0.0, mEng, 0.01)
+    if empty.pressure >= pStar {
+        return 4
+    }
+    return 0
+}
+
+function testMeanValueMapsAndAfr() -> i32 {
+    let mut rpm: array<f64, 2> = [1000.0, 3000.0]
+    let mut thr: array<f64, 2> = [0.0, 1.0]
+    let mut torque: array<f64, 4> = [0.0, 120.0, 0.0, 200.0]
+    let mut fuel: array<f64, 4> = [0.0, 0.002, 0.0, 0.004]
+    let mut ve: array<f64, 4> = [0.7, 0.85, 0.75, 0.9]
+    let mut texh: array<f64, 4> = [600.0, 800.0, 700.0, 950.0]
+    let maps: MeanValueMaps = MeanValueMaps {
+        torque: Table2D { xAxis: &rpm[0], yAxis: &thr[0], values: &torque[0], xCount: 2, yCount: 2 },
+        fuelRate: Table2D { xAxis: &rpm[0], yAxis: &thr[0], values: &fuel[0], xCount: 2, yCount: 2 },
+        volumetricEfficiency: Table2D { xAxis: &rpm[0], yAxis: &thr[0], values: &ve[0], xCount: 2, yCount: 2 },
+        exhaustTemperature: Table2D { xAxis: &rpm[0], yAxis: &thr[0], values: &texh[0], xCount: 2, yCount: 2 }
+    }
+    if not meanValueMapsOk(maps) {
+        return 1
+    }
+    # Exact grid-node replay at (3000,1).
+    let manP: ManifoldParameters = ManifoldParameters {
+        volume: 0.002, gasConstant: 287.0, temperature: 300.0
+    }
+    let mut man: ManifoldState = ManifoldState { pressure: 80000.0 }
+    let r: MeanValueResult = meanValueStep(
+        maps, man, manP, 3000.0, 1.0, 0.002, 101325.0, 0.00015, 0.001
+    )
+    if not r.ok {
+        return 2
+    }
+    if not near(r.grossTorque, 200.0, 1.0e-12) or not near(r.fuelMassFlow, 0.004, 1.0e-12) {
+        println("FAIL map node replay")
+        return 3
+    }
+    if not near(r.exhaustTemperature, 950.0, 1.0e-12) {
+        return 4
+    }
+    let airExact: f64 = engineAirMassFlow(80000.0, 0.9, 0.002, 3000.0, 287.0, 300.0)
+    if not near(r.airMassFlow, airExact, 1.0e-12) {
+        return 5
+    }
+    let afr: f64 = r.airMassFlow / r.fuelMassFlow
+    if afr <= 0.0 or not near(afr, airExact / 0.004, 1.0e-12) {
+        return 6
+    }
+    # Outside domain rejected.
+    let bad: MeanValueResult = meanValueStep(
+        maps, man, manP, 5000.0, 1.0, 0.002, 101325.0, 0.00015, 0.001
+    )
+    if bad.ok {
+        return 7
+    }
+    # Shaft work at 200 Nm, 3000 rpm over 1 s.
+    let w: f64 = shaftWork(200.0, rpmToAngularVelocity(3000.0), 1.0)
+    let expected: f64 = 200.0 * rpmToAngularVelocity(3000.0)
+    if not near(w, expected, 1.0e-9) {
+        return 8
+    }
+    return 0
+}
+
+function main() -> i32 {
+    let a: i32 = testStrictLookup()
+    if a != 0 {
+        println("FAIL strict lookup")
+        return 10 + a
+    }
+    let b: i32 = testManifoldSteadyState()
+    if b != 0 {
+        return 20 + b
+    }
+    let c: i32 = testMeanValueMapsAndAfr()
+    if c != 0 {
+        println("FAIL mean-value maps/AFR")
+        return 30 + c
+    }
+    println("PASS mean-value engine: strict maps, manifold, AFR, work")
+    return 0
+}

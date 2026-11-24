@@ -115,6 +115,10 @@ jobs:
         run: flow run tests/driveline.flow
       - name: Run driveline demonstration
         run: flow run examples/driveline_demo.flow
+      - name: Verify mean-value engine maps, manifold and AFR
+        run: flow run tests/meanvalue_engine.flow
+      - name: Run mean-value engine demonstration
+        run: flow run examples/meanvalue_engine_demo.flow
       - name: Run vehicle demo
         run: flow run examples/quarter_car_demo.flow
       - name: Run manufacturing demo

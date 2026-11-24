@@ -26,6 +26,7 @@ src/
   battery.flow       Thevenin RC battery and SOC
   maps.flow          Clamped bilinear lookup for calibrated models
   engine.flow        Torque-map crank dynamics and fuel flow
+  meanvalue.flow     Multi-map mean-value engine + intake manifold
   vehicle.flow       Vertical quarter car and planar bicycle
   fullcar.flow       Seven-DOF heave/pitch/roll + four-wheel ride
   powertrain.flow    Longitudinal point-mass motion
