@@ -1,0 +1,15 @@
+* herbie ngspice ref: series RC AC phasor
+V1 in 0 DC 0 AC 1 0
+R1 in out 1k
+C1 out 0 1u
+.ac lin 1 159.15494309189535 159.15494309189535
+.control
+run
+let vre = real(v(out))
+let vim = imag(v(out))
+let mag = abs(v(out))
+print vre vim mag
+print v(in)
+quit
+.endc
+.end

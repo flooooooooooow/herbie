@@ -14,6 +14,7 @@
 | `herbie.sparse_mna` | COO→CSR DC MNA assembly for R/I/V, CSR SpMV residual, dense expand + pivoted solve with dense-reference checks | Sparse assembly only; factorisation still dense; no AC/nonlinear/fill-reducing LU |
 | `herbie.nl` | Dense DC NR MNA with Shockley diodes (pnjlim), resistive switches and explicit threshold events | DC operating points only; finite Ron/Roff; no transient diode C or BJT |
 | `herbie.netlist` | Versioned SPICE-subset import/export (R/C/L/V/I/D/S) with stamps into MNA/AC/NL | Format v1 subset; no subcircuits, `.model` library or waveform sources |
+| ngspice refs | Stored ngspice-42 divider / RC AC / diode OPs with provenance + tolerance tests | Three fixtures only; not general SPICE parity |
 | `herbie.circuits` | Sparse-API-shaped dense DC nodal assembly, resistors, current sources, Gaussian elimination with partial pivoting and KCL residual | Small linear resistive DC circuits only; no voltage-source MNA or nonlinear/transient components |
 | `herbie.electrical` | Closed-form RC/RL transients; series RLC RK4 and stored energy | Ideal lumped/passive networks only, no circuit graph, switching devices or circuit DAE |
 | `herbie.mechanics` | Single-axis rotational inertia, torsional stiffness/damping RK4 and ideal fixed-ratio gear power balance | No joints, bearing dynamics, contact, clutch or multibody assembly |
@@ -82,6 +83,7 @@ flow run tests/nl_devices.flow
 flow run examples/nl_devices_demo.flow
 flow run tests/netlist.flow
 flow run examples/netlist_demo.flow
+flow run tests/ngspice_crossval.flow
 ```
 
 The exact Flow compiler revision used by CI is pinned in [the CI workflow](.github/workflows/ci.yml). To consume a module from another Flow package, use a path dependency on this repository and import, for example, `herbie.vehicle { QuarterCarParameters, QuarterCarState, quarterCarStep }`.
@@ -111,6 +113,10 @@ The exact Flow compiler revision used by CI is pinned in [the CI workflow](.gith
 ## Versioned netlist import/export
 
 [`herbie.netlist`](src/netlist.flow) reads and writes format-version-1 SPICE-subset decks (`R/C/L/V/I/D` plus Herbie resistive `S` switches) and stamps them into `herbie.mna`, `herbie.ac` or `herbie.nl`. Round-trip and solver fixtures live in [docs/netlist.md](docs/netlist.md). Example decks are under `examples/netlists/`.
+
+## ngspice cross-validation
+
+Stored ngspice-42 references for a DC divider, series RC AC phasor (`ω=1000`) and Shockley diode OP live under `tests/ngspice_refs/` with command provenance. `flow run tests/ngspice_crossval.flow` compares Herbie solvers within documented tolerances ([docs/ngspice-crossval.md](docs/ngspice-crossval.md)). CI does not require ngspice.
 
 The standalone browser has no third-party runtime CDN requirement: official Three.js r187 is vendored under `site/vendor/` with its MIT licence. The repository-root `index.html` redirects to `site/` when Pages is configured to publish from a branch; the Actions workflow publishes `site/` at the Pages root. A Chromium regression asserts CSS loads and the WebGL canvas actually renders.
 

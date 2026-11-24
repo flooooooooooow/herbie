@@ -1,0 +1,12 @@
+* herbie ngspice ref: series diode + 1k at 5 V
+V1 in 0 DC 5
+D1 in load DMOD
+R1 load 0 1k
+.model DMOD D (IS=1e-14 N=1)
+.op
+.control
+run
+print v(in) v(load) v(in,load) i(V1)
+quit
+.endc
+.end

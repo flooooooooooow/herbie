@@ -1,0 +1,298 @@
+# Cross-validate Herbie circuit solvers against stored ngspice-42 references.
+# Reference decks, raw logs and provenance: tests/ngspice_refs/PROVENANCE.md
+# CI does not run ngspice; numbers below are pinned from that capture.
+
+import herbie.mna {
+    MnaNetwork, mnaClear, mnaStampResistor, mnaStampVoltageSource, mnaSolve,
+    mnaMaxResidual
+}
+import herbie.ac {
+    AcNetwork, acClear, acStampResistor, acStampCapacitor, acStampVoltageSource,
+    acSolve, acMaxResidual, acRealDim
+}
+import herbie.nl {
+    NlElement, NlNetwork, nlClear, nlAddResistor, nlAddVoltageSource, nlAddDiode,
+    nlSolve, nlNodeVoltage
+}
+import herbie.netlist {
+    netlistLoadFile, netlistParse, netlistNode, netlistStampMna, netlistStampAc,
+    netlistStampNl, netlistNodeCount, netlistVoltageSourceCount, netlistAcOmega
+}
+
+# ngspice-42 divider.out
+const REF_DIV_VIN: f64 = 12.0
+const REF_DIV_VMID: f64 = 6.0
+const REF_DIV_IV1: f64 = -0.006
+
+# ngspice-42 rc_ac.out at omega=1000
+const REF_RC_VRE: f64 = 0.5
+const REF_RC_VIM: f64 = -0.5
+const REF_RC_MAG: f64 = 0.7071068
+
+# ngspice-42 diode.out (TEMP=27, IS=1e-14, N=1)
+const REF_DIODE_VLOAD: f64 = 4.307109
+const REF_DIODE_VD: f64 = 0.692891
+
+function near(a: f64, b: f64, tol: f64) -> bool {
+    return a >= b - tol and a <= b + tol
+}
+
+function emptyNl() -> NlElement {
+    return NlElement { kind: 0, a: 0, b: 0, aux: 0, p0: 0.0, p1: 0.0, state: 0.0 }
+}
+
+function testDividerDirect() -> i32 {
+    let mut matrix: array<f64, 9> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut rhs: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut solution: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut scratch: array<f64, 9> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut work: array<f64, 3> = [0.0, 0.0, 0.0]
+    let n: MnaNetwork = MnaNetwork {
+        nodeCount: 2, voltageSourceCount: 1, matrix: &matrix[0], rhs: &rhs[0]
+    }
+    if not mnaClear(n)
+        or not mnaStampVoltageSource(n, 0, 0, -1, 12.0)
+        or not mnaStampResistor(n, 0, 1, 1000.0)
+        or not mnaStampResistor(n, 1, -1, 1000.0)
+        or not mnaSolve(n, &solution[0], &scratch[0], &work[0], 1.0e-12) {
+        return 1
+    }
+    # Tight match expected for linear resistive DC.
+    if not near(solution[0], REF_DIV_VIN, 1.0e-12)
+        or not near(solution[1], REF_DIV_VMID, 1.0e-12)
+        or not near(solution[2], REF_DIV_IV1, 1.0e-12) {
+        return 2
+    }
+    if mnaMaxResidual(n, &solution[0]) > 1.0e-12 {
+        return 3
+    }
+    return 0
+}
+
+function testDividerNetlist() -> i32 {
+    # Same topology as tests/ngspice_refs/divider.cir without ngspice .control.
+    if not netlistLoadFile("examples/netlists/divider.cir") or not netlistParse() {
+        return 10
+    }
+    let n_in: i32 = netlistNode("in")
+    let n_mid: i32 = netlistNode("mid")
+    let mut matrix: array<f64, 9> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut rhs: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut solution: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut scratch: array<f64, 9> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut work: array<f64, 3> = [0.0, 0.0, 0.0]
+    let n: MnaNetwork = MnaNetwork {
+        nodeCount: netlistNodeCount(),
+        voltageSourceCount: netlistVoltageSourceCount(),
+        matrix: &matrix[0], rhs: &rhs[0]
+    }
+    if not netlistStampMna(n)
+        or not mnaSolve(n, &solution[0], &scratch[0], &work[0], 1.0e-12) {
+        return 11
+    }
+    if not near(solution[n_in], REF_DIV_VIN, 1.0e-12)
+        or not near(solution[n_mid], REF_DIV_VMID, 1.0e-12) {
+        return 12
+    }
+    return 0
+}
+
+function testRcAcDirect() -> i32 {
+    let mut matrix: array<f64, 36> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut rhs: array<f64, 6> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut solution: array<f64, 6> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut scratch: array<f64, 36> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut work: array<f64, 6> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let n: AcNetwork = AcNetwork {
+        nodeCount: 2, voltageSourceCount: 1, omega: 1000.0,
+        matrix: &matrix[0], rhs: &rhs[0]
+    }
+    if acRealDim(n) != 6 {
+        return 20
+    }
+    if not acClear(n)
+        or not acStampVoltageSource(n, 0, 0, -1, 1.0, 0.0)
+        or not acStampResistor(n, 0, 1, 1000.0)
+        or not acStampCapacitor(n, 1, -1, 1.0e-6)
+        or not acSolve(n, &solution[0], &scratch[0], &work[0], 1.0e-12) {
+        return 21
+    }
+    let vre: f64 = solution[1]
+    let vim: f64 = solution[1 + 3]
+    let mag: f64 = sqrt(vre * vre + vim * vim)
+    if not near(vre, REF_RC_VRE, 1.0e-9)
+        or not near(vim, REF_RC_VIM, 1.0e-9)
+        or not near(mag, REF_RC_MAG, 1.0e-7) {
+        return 22
+    }
+    if acMaxResidual(n, &solution[0]) > 1.0e-10 {
+        return 23
+    }
+    return 0
+}
+
+function testRcAcNetlist() -> i32 {
+    # Herbie subset uses `.ac omega=`; ngspice deck keeps Hz `.ac lin` syntax.
+    if not netlistLoadFile("examples/netlists/rc_ac.cir") or not netlistParse() {
+        return 30
+    }
+    let omega: f64 = netlistAcOmega()
+    if not near(omega, 1000.0, 1.0e-12) {
+        return 31
+    }
+    let n_out: i32 = netlistNode("out")
+    let mut matrix: array<f64, 36> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut rhs: array<f64, 6> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut solution: array<f64, 6> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut scratch: array<f64, 36> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut work: array<f64, 6> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let n: AcNetwork = AcNetwork {
+        nodeCount: netlistNodeCount(),
+        voltageSourceCount: netlistVoltageSourceCount(),
+        omega: omega,
+        matrix: &matrix[0], rhs: &rhs[0]
+    }
+    if not netlistStampAc(n)
+        or not acSolve(n, &solution[0], &scratch[0], &work[0], 1.0e-12) {
+        return 32
+    }
+    let size: i32 = netlistNodeCount() + netlistVoltageSourceCount()
+    let vre: f64 = solution[n_out]
+    let vim: f64 = solution[n_out + size]
+    if not near(vre, REF_RC_VRE, 1.0e-9) or not near(vim, REF_RC_VIM, 1.0e-9) {
+        return 33
+    }
+    return 0
+}
+
+function testDiodeDirect() -> i32 {
+    let mut elementCount: i32 = 0
+    let mut iterations: i32 = 0
+    let mut elements: array<NlElement, 4> = [emptyNl(), emptyNl(), emptyNl(), emptyNl()]
+    let mut matrix: array<f64, 9> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut rhs: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut solution: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut previous: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut scratch: array<f64, 9> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut work: array<f64, 3> = [0.0, 0.0, 0.0]
+    let n: NlNetwork = NlNetwork {
+        nodeCount: 2, voltageSourceCount: 1,
+        elementCount: &elementCount, elementCapacity: 4,
+        maxIter: 80, relTol: 1.0e-9, absTol: 1.0e-12, gmin: 0.0,
+        elements: &elements[0], matrix: &matrix[0], rhs: &rhs[0],
+        solution: &solution[0], previous: &previous[0],
+        scratchMatrix: &scratch[0], scratchRhs: &work[0], iterations: &iterations
+    }
+    if not nlClear(n)
+        or nlAddVoltageSource(n, 0, 0, -1, 5.0) < 0
+        or nlAddDiode(n, 0, 1, 1.0e-14, 0.025852) < 0
+        or nlAddResistor(n, 1, -1, 1000.0) < 0
+        or not nlSolve(n) {
+        return 40
+    }
+    let vload: f64 = nlNodeVoltage(n, 1)
+    let vd: f64 = nlNodeVoltage(n, 0) - vload
+    # Diode models differ slightly (fixed nVt vs ngspice TEMP=27 physics).
+    if not near(vload, REF_DIODE_VLOAD, 1.0e-3)
+        or not near(vd, REF_DIODE_VD, 1.0e-3) {
+        return 41
+    }
+    return 0
+}
+
+function testDiodeNetlist() -> i32 {
+    # Herbie netlist uses inline IS=/N=; same topology as diode.cir without .model.
+    let deck_ok: bool = netlistLoadFile("examples/netlists/diode_load.cir")
+    if not deck_ok or not netlistParse() {
+        return 50
+    }
+    let n_load: i32 = netlistNode("load")
+    let mut elementCount: i32 = 0
+    let mut iterations: i32 = 0
+    let mut elements: array<NlElement, 4> = [emptyNl(), emptyNl(), emptyNl(), emptyNl()]
+    let mut matrix: array<f64, 9> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut rhs: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut solution: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut previous: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut scratch: array<f64, 9> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut work: array<f64, 3> = [0.0, 0.0, 0.0]
+    let n: NlNetwork = NlNetwork {
+        nodeCount: netlistNodeCount(),
+        voltageSourceCount: netlistVoltageSourceCount(),
+        elementCount: &elementCount, elementCapacity: 4,
+        maxIter: 80, relTol: 1.0e-9, absTol: 1.0e-12, gmin: 0.0,
+        elements: &elements[0], matrix: &matrix[0], rhs: &rhs[0],
+        solution: &solution[0], previous: &previous[0],
+        scratchMatrix: &scratch[0], scratchRhs: &work[0], iterations: &iterations
+    }
+    if not netlistStampNl(n) or not nlSolve(n) {
+        return 51
+    }
+    if not near(nlNodeVoltage(n, n_load), REF_DIODE_VLOAD, 1.0e-3) {
+        return 52
+    }
+    return 0
+}
+
+function main() -> i32 {
+    let mut code: i32 = testDividerDirect()
+    if code != 0 {
+        print("FAIL divider direct ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testDividerNetlist()
+    if code != 0 {
+        print("FAIL divider netlist ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testRcAcDirect()
+    if code != 0 {
+        print("FAIL RC AC direct ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testRcAcNetlist()
+    if code != 0 {
+        print("FAIL RC AC netlist ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testDiodeDirect()
+    if code != 0 {
+        print("FAIL diode direct ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testDiodeNetlist()
+    if code != 0 {
+        print("FAIL diode netlist ")
+        print(code)
+        println("")
+        return code
+    }
+    println("PASS ngspice-42 cross-validation (divider, RC AC, diode)")
+    return 0
+}
