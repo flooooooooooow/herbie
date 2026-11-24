@@ -9,6 +9,7 @@ The first implementation is intentionally small:
 ```
 src/
   ode.flow           Shared fixed-step Euler/semi-implicit/RK4, events, multirate
+  verify.flow        Scenario CSV, error budgets, readiness labels, order export
   circuits.flow      Nodal circuit assembly and dense pivoted DC solve
   mna.flow           Dense DC MNA with ideal voltage-source branch unknowns
   ac.flow            Dense AC phasor MNA for linear R/C/L networks

@@ -1,0 +1,266 @@
+# @module herbie.verify
+# Verification harness: readiness labels, scenario metadata, CSV numeric tables,
+# absolute/relative error budgets and observed convergence-order helpers.
+# CSV parsing is for offline/test use (not a real-time kernel claim).
+# Never promote a unit-test pass to safety_assessed / ISO 26262.
+
+import "stdlib/string.flow"
+
+# Readiness labels (explicit integers):
+# 0 experimental
+# 1 validated_for_domain
+# 2 realtime_qualified_for_target
+# 3 safety_assessed — only via external reviewed process, never from CI alone
+export function verifyReadinessExperimental() -> i32 { return 0 }
+export function verifyReadinessValidatedDomain() -> i32 { return 1 }
+export function verifyReadinessRealtimeTarget() -> i32 { return 2 }
+export function verifyReadinessSafetyAssessed() -> i32 { return 3 }
+
+export function verifyReadinessName(label: i32) -> string {
+    if label == 0 { return "experimental" }
+    if label == 1 { return "validated_for_domain" }
+    if label == 2 { return "realtime_qualified_for_target" }
+    if label == 3 { return "safety_assessed" }
+    return "invalid"
+}
+
+# Unit tests / CI must never assign safety_assessed.
+export function verifyReadinessAllowedFromTests(label: i32) -> bool {
+    return label >= 0 and label <= 2
+}
+
+export struct VerifyScenario {
+    formatVersion: i32,
+    id: string,
+    model: string,
+    compilerPin: string,
+    readiness: i32,
+    columnCount: i32,
+    provenance: string
+}
+
+export struct VerifyErrorBudget {
+    count: i32,
+    maxAbsError: f64,
+    maxRelError: f64,
+    rmsAbsError: f64,
+    withinTolerance: bool
+}
+
+export struct VerifyOrderEstimate {
+    valid: bool,
+    observedOrder: f64,
+    errorCoarse: f64,
+    errorFine: f64
+}
+
+function verifyFinite(x: f64) -> bool {
+    return x == x and x <= 1.7976931348623157e308 and x >= -1.7976931348623157e308
+}
+
+function verifyAbs(x: f64) -> f64 {
+    if x < 0.0 {
+        return -x
+    }
+    return x
+}
+
+export function verifyScenarioOk(s: VerifyScenario) -> bool {
+    if s.formatVersion != 1 {
+        return false
+    }
+    if s.columnCount <= 0 or s.columnCount > 32 {
+        return false
+    }
+    if s.readiness < 0 or s.readiness > 3 {
+        return false
+    }
+    # Harness rejects safety_assessed when used as a test-assigned label.
+    if not verifyReadinessAllowedFromTests(s.readiness) {
+        return false
+    }
+    return true
+}
+
+# Compare sample[i] to reference[i] with per-sample absolute tolerance absTol[i].
+# Relative error uses |ref| when |ref| > relFloor.
+export function verifyErrorBudget(
+    sample: ptr<f64>,
+    reference: ptr<f64>,
+    absTol: ptr<f64>,
+    count: i32,
+    relFloor: f64,
+    out: ptr<VerifyErrorBudget>
+) -> bool {
+    if count <= 0 or not verifyFinite(relFloor) or relFloor < 0.0 {
+        return false
+    }
+    let mut maxAbs: f64 = 0.0
+    let mut maxRel: f64 = 0.0
+    let mut sumSq: f64 = 0.0
+    let mut ok: bool = true
+    for i in 0 to count {
+        let a: f64 = sample[i]
+        let r: f64 = reference[i]
+        let tol: f64 = absTol[i]
+        if not verifyFinite(a) or not verifyFinite(r) or not verifyFinite(tol) or tol < 0.0 {
+            return false
+        }
+        let err: f64 = verifyAbs(a - r)
+        if err > maxAbs {
+            maxAbs = err
+        }
+        sumSq = sumSq + err * err
+        let denom: f64 = verifyAbs(r)
+        if denom > relFloor {
+            let rel: f64 = err / denom
+            if rel > maxRel {
+                maxRel = rel
+            }
+        }
+        if err > tol {
+            ok = false
+        }
+    }
+    out[0] = VerifyErrorBudget {
+        count: count,
+        maxAbsError: maxAbs,
+        maxRelError: maxRel,
+        rmsAbsError: sqrt(sumSq / (count as f64)),
+        withinTolerance: ok
+    }
+    return true
+}
+
+# Observed order p ~= log(E_coarse / E_fine) / log(h_coarse / h_fine).
+export function verifyObservedOrder(
+    errorCoarse: f64,
+    errorFine: f64,
+    hCoarse: f64,
+    hFine: f64
+) -> VerifyOrderEstimate {
+    let invalid: VerifyOrderEstimate = VerifyOrderEstimate {
+        valid: false, observedOrder: 0.0, errorCoarse: errorCoarse, errorFine: errorFine
+    }
+    if not verifyFinite(errorCoarse) or not verifyFinite(errorFine)
+        or not verifyFinite(hCoarse) or not verifyFinite(hFine) {
+        return invalid
+    }
+    if errorCoarse <= 0.0 or errorFine <= 0.0 or hCoarse <= hFine or hFine <= 0.0 {
+        return invalid
+    }
+    let order: f64 = log(errorCoarse / errorFine) / log(hCoarse / hFine)
+    if not verifyFinite(order) {
+        return invalid
+    }
+    return VerifyOrderEstimate {
+        valid: true,
+        observedOrder: order,
+        errorCoarse: errorCoarse,
+        errorFine: errorFine
+    }
+}
+
+# Parse a comma-separated numeric CSV body (comments start with '#').
+# Header row with non-numeric cells is skipped when skipHeader is true.
+# Writes row-major values into outValues[row * columns + col].
+# Returns data row count, or -1 on failure.
+export function verifyParseCsvTable(
+    text: string,
+    columns: i32,
+    skipHeader: bool,
+    outValues: ptr<f64>,
+    maxRows: i32
+) -> i32 {
+    if columns <= 0 or columns > 32 or maxRows <= 0 {
+        return -1
+    }
+    let n: i32 = strlen(text) as i32
+    let p: ptr<u8> = text as ptr<u8>
+    let mut pos: i32 = 0
+    let mut rows: i32 = 0
+    let mut headerPending: bool = skipHeader
+    while pos < n {
+        # Skip blank lines and '#' comments.
+        while pos < n and (p[pos] == 32 or p[pos] == 9) {
+            pos = pos + 1
+        }
+        if pos >= n {
+            break
+        }
+        if p[pos] == 35 {
+            let endC: i32 = str_line_end(text, pos)
+            let nextC: i32 = str_line_next(text, endC)
+            if nextC < 0 {
+                break
+            }
+            pos = nextC
+            continue
+        }
+        if p[pos] == 10 or p[pos] == 13 {
+            let endE: i32 = str_line_end(text, pos)
+            let nextE: i32 = str_line_next(text, endE)
+            if nextE < 0 {
+                break
+            }
+            pos = nextE
+            continue
+        }
+
+        if headerPending {
+            let endH: i32 = str_line_end(text, pos)
+            let nextH: i32 = str_line_next(text, endH)
+            headerPending = false
+            if nextH < 0 {
+                break
+            }
+            pos = nextH
+            continue
+        }
+
+        if rows >= maxRows {
+            return -1
+        }
+        for col in 0 to columns {
+            while pos < n and (p[pos] == 32 or p[pos] == 9) {
+                pos = pos + 1
+            }
+            if pos >= n or p[pos] == 10 or p[pos] == 13 {
+                return -1
+            }
+            let parsed: ParseF64 = str_parse_f64_at(text, pos)
+            if not parsed.ok {
+                return -1
+            }
+            outValues[rows * columns + col] = parsed.value
+            pos = parsed.end
+            while pos < n and (p[pos] == 32 or p[pos] == 9) {
+                pos = pos + 1
+            }
+            if col + 1 < columns {
+                if pos >= n or p[pos] != 44 {
+                    return -1
+                }
+                pos = pos + 1
+            }
+        }
+        rows = rows + 1
+        # Consume rest of line (trailing spaces / CRLF).
+        while pos < n and (p[pos] == 32 or p[pos] == 9) {
+            pos = pos + 1
+        }
+        if pos < n and p[pos] != 10 and p[pos] != 13 {
+            # Unexpected trailing junk on the row.
+            return -1
+        }
+        if pos < n {
+            let endR: i32 = str_line_end(text, pos)
+            let nextR: i32 = str_line_next(text, endR)
+            if nextR < 0 {
+                break
+            }
+            pos = nextR
+        }
+    }
+    return rows
+}

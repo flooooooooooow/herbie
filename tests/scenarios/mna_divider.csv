@@ -1,0 +1,12 @@
+# herbie.scenario formatVersion=1
+# id=mna_divider_12v
+# model=herbie.mna
+# readiness=validated_for_domain
+# compiler_pin=7687fc936365e17bc6286415585c55fcc6ea64c3
+# provenance=analytic 12V / 1k / 1k divider: V0=12, V1=6, Is=-0.006; SI volts/amps
+# columns: quantity_index,value_ref,abs_tol
+# 0=V0_V 1=V1_V 2=Isource_A
+quantity_index,value_ref,abs_tol
+0.0,12.0,1.0e-10
+1.0,6.0,1.0e-10
+2.0,-0.006,1.0e-12
