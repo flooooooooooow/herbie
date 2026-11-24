@@ -1,0 +1,36 @@
+import herbie.maps { Table2D }
+import herbie.meanvalue {
+    ManifoldParameters, ManifoldState, MeanValueMaps, meanValueStep, engineAirMassFlow
+}
+
+function main() -> i32 {
+    let mut rpm: array<f64, 2> = [1000.0, 4000.0]
+    let mut thr: array<f64, 2> = [0.2, 1.0]
+    let mut torque: array<f64, 4> = [80.0, 150.0, 100.0, 220.0]
+    let mut fuel: array<f64, 4> = [0.001, 0.003, 0.0015, 0.005]
+    let mut ve: array<f64, 4> = [0.8, 0.88, 0.82, 0.92]
+    let mut texh: array<f64, 4> = [650.0, 850.0, 700.0, 980.0]
+    let maps: MeanValueMaps = MeanValueMaps {
+        torque: Table2D { xAxis: &rpm[0], yAxis: &thr[0], values: &torque[0], xCount: 2, yCount: 2 },
+        fuelRate: Table2D { xAxis: &rpm[0], yAxis: &thr[0], values: &fuel[0], xCount: 2, yCount: 2 },
+        volumetricEfficiency: Table2D { xAxis: &rpm[0], yAxis: &thr[0], values: &ve[0], xCount: 2, yCount: 2 },
+        exhaustTemperature: Table2D { xAxis: &rpm[0], yAxis: &thr[0], values: &texh[0], xCount: 2, yCount: 2 }
+    }
+    let manP: ManifoldParameters = ManifoldParameters {
+        volume: 0.0025, gasConstant: 287.0, temperature: 310.0
+    }
+    let mut man: ManifoldState = ManifoldState { pressure: 90000.0 }
+    let r = meanValueStep(maps, man, manP, 2500.0, 0.6, 0.002, 101325.0, 0.00018, 0.01)
+    if not r.ok {
+        println("FAIL mean-value step")
+        return 1
+    }
+    println("Torque [N m]")
+    println(r.grossTorque)
+    println("AFR")
+    println(r.airMassFlow / r.fuelMassFlow)
+    println("Exhaust temperature [K]")
+    println(r.exhaustTemperature)
+    println("PASS mean-value engine demo")
+    return 0
+}

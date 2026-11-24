@@ -60,3 +60,27 @@ export function table2DBilinearClamped(t: Table2D, x: f64, y: f64) -> f64 {
     let b: f64 = f01 + (f11 - f01) * ax
     return a + (b - a) * ay
 }
+
+# True when (x,y) lies inside the closed axis rectangle (no extrapolation).
+export function table2DInDomain(t: Table2D, x: f64, y: f64) -> bool {
+    if not table2DValid(t) {
+        return false
+    }
+    if x < t.xAxis[0] or x > t.xAxis[t.xCount - 1] {
+        return false
+    }
+    if y < t.yAxis[0] or y > t.yAxis[t.yCount - 1] {
+        return false
+    }
+    return true
+}
+
+# Bilinear lookup that fails outside the grid (explicit no-extrapolation policy).
+# On failure writes nothing and returns false.
+export function table2DBilinearStrict(t: Table2D, x: f64, y: f64, out: ptr<f64>) -> bool {
+    if not table2DInDomain(t, x, y) {
+        return false
+    }
+    out[0] = table2DBilinearClamped(t, x, y)
+    return true
+}
