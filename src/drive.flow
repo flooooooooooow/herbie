@@ -1,0 +1,240 @@
+# @module herbie.drive
+# Three-phase Clarke/Park, salient PMSM in dq, averaged DC-link inverter and FOC PI.
+# Amplitude-invariant transforms (peak phase = peak αβ = peak dq). Positive iq produces
+# motoring torque for ψf > 0. Switching PWM, BLDC six-step and induction are out of scope.
+
+export struct ClarkeABC {
+    a: f64,
+    b: f64,
+    c: f64
+}
+
+export struct AlphaBeta {
+    alpha: f64,
+    beta: f64
+}
+
+export struct Dq {
+    d: f64,
+    q: f64
+}
+
+export struct PmsmParameters {
+    statorResistance: f64,
+    inductanceD: f64,
+    inductanceQ: f64,
+    fluxLinkage: f64,
+    polePairs: f64,
+    rotorInertia: f64,
+    viscousDamping: f64
+}
+
+export struct PmsmState {
+    currentD: f64,
+    currentQ: f64,
+    electricalAngle: f64,
+    mechanicalSpeed: f64
+}
+
+export struct PmsmResult {
+    state: PmsmState,
+    electromagneticTorque: f64,
+    electricalPower: f64,
+    mechanicalPower: f64
+}
+
+export struct AveragedInverter {
+    dcLinkVoltage: f64,
+    # Maximum |v_dq| ≈ Vdc / √3 for linear SVPWM (modulation index ≤ 1).
+    maxModulation: f64
+}
+
+export struct FocPiGains {
+    kp: f64,
+    ki: f64,
+    voltageLimit: f64
+}
+
+export struct FocState {
+    integralD: f64,
+    integralQ: f64
+}
+
+export struct FocResult {
+    state: FocState,
+    voltageD: f64,
+    voltageQ: f64
+}
+
+function drvFinite(x: f64) -> bool {
+    return x == x and x <= 1.7976931348623157e308 and x >= -1.7976931348623157e308
+}
+
+function drvClamp(x: f64, lo: f64, hi: f64) -> f64 {
+    if x < lo {
+        return lo
+    }
+    if x > hi {
+        return hi
+    }
+    return x
+}
+
+# Amplitude-invariant Clarke: ia+ib+ic = 0 ⇒ α = a, β = (a + 2b)/√3.
+export function clarkeAbcToAlphaBeta(abc: ClarkeABC) -> AlphaBeta {
+    return AlphaBeta {
+        alpha: abc.a,
+        beta: (abc.a + 2.0 * abc.b) / 1.7320508075688772
+    }
+}
+
+export function clarkeAlphaBetaToAbc(ab: AlphaBeta) -> ClarkeABC {
+    let a: f64 = ab.alpha
+    let b: f64 = -0.5 * ab.alpha + 0.8660254037844386 * ab.beta
+    let c: f64 = -0.5 * ab.alpha - 0.8660254037844386 * ab.beta
+    return ClarkeABC { a: a, b: b, c: c }
+}
+
+export function parkAlphaBetaToDq(ab: AlphaBeta, electricalAngle: f64) -> Dq {
+    let c: f64 = cos(electricalAngle)
+    let s: f64 = sin(electricalAngle)
+    return Dq {
+        d: ab.alpha * c + ab.beta * s,
+        q: -ab.alpha * s + ab.beta * c
+    }
+}
+
+export function parkDqToAlphaBeta(dq: Dq, electricalAngle: f64) -> AlphaBeta {
+    let c: f64 = cos(electricalAngle)
+    let s: f64 = sin(electricalAngle)
+    return AlphaBeta {
+        alpha: dq.d * c - dq.q * s,
+        beta: dq.d * s + dq.q * c
+    }
+}
+
+export function pmsmTorque(s: PmsmState, p: PmsmParameters) -> f64 {
+    let reluctance: f64 = (p.inductanceD - p.inductanceQ) * s.currentD * s.currentQ
+    return 1.5 * p.polePairs * (p.fluxLinkage * s.currentQ + reluctance)
+}
+
+# Continuous-time dq voltages for given currents and speed (steady or instantaneous drop).
+export function pmsmVoltageDrop(s: PmsmState, p: PmsmParameters) -> Dq {
+    let we: f64 = p.polePairs * s.mechanicalSpeed
+    return Dq {
+        d: p.statorResistance * s.currentD - we * p.inductanceQ * s.currentQ,
+        q: p.statorResistance * s.currentQ + we * (p.inductanceD * s.currentD + p.fluxLinkage)
+    }
+}
+
+# Semi-implicit Euler on currents; mechanical speed from torque balance; θe += ωe Δt.
+export function pmsmStep(
+    s: PmsmState,
+    p: PmsmParameters,
+    voltageD: f64,
+    voltageQ: f64,
+    loadTorque: f64,
+    dt: f64
+) -> PmsmResult {
+    if dt <= 0.0 or p.inductanceD <= 0.0 or p.inductanceQ <= 0.0 or p.rotorInertia <= 0.0 or p.polePairs <= 0.0 {
+        return PmsmResult {
+            state: s, electromagneticTorque: 0.0 / 0.0, electricalPower: 0.0 / 0.0, mechanicalPower: 0.0 / 0.0
+        }
+    }
+    let we: f64 = p.polePairs * s.mechanicalSpeed
+    let did: f64 = (voltageD - p.statorResistance * s.currentD + we * p.inductanceQ * s.currentQ) / p.inductanceD
+    let diq: f64 = (voltageQ - p.statorResistance * s.currentQ - we * (p.inductanceD * s.currentD + p.fluxLinkage)) / p.inductanceQ
+    let id1: f64 = s.currentD + dt * did
+    let iq1: f64 = s.currentQ + dt * diq
+    let mid: PmsmState = PmsmState {
+        currentD: id1, currentQ: iq1,
+        electricalAngle: s.electricalAngle, mechanicalSpeed: s.mechanicalSpeed
+    }
+    let te: f64 = pmsmTorque(mid, p)
+    let dw: f64 = (te - loadTorque - p.viscousDamping * s.mechanicalSpeed) / p.rotorInertia
+    let w1: f64 = s.mechanicalSpeed + dt * dw
+    let th1: f64 = s.electricalAngle + p.polePairs * w1 * dt
+    let next: PmsmState = PmsmState {
+        currentD: id1, currentQ: iq1, electricalAngle: th1, mechanicalSpeed: w1
+    }
+    let pe: f64 = 1.5 * (voltageD * id1 + voltageQ * iq1)
+    let pm: f64 = te * w1
+    if not drvFinite(id1) or not drvFinite(iq1) or not drvFinite(w1) {
+        return PmsmResult {
+            state: s, electromagneticTorque: 0.0 / 0.0, electricalPower: 0.0 / 0.0, mechanicalPower: 0.0 / 0.0
+        }
+    }
+    return PmsmResult {
+        state: next,
+        electromagneticTorque: te,
+        electricalPower: pe,
+        mechanicalPower: pm
+    }
+}
+
+# Clip dq voltage vector to the linear modulation hexagon radius Vdc/√3 * maxModulation.
+export function inverterApplyDq(inv: AveragedInverter, commanded: Dq) -> Dq {
+    let vmax: f64 = inv.dcLinkVoltage / 1.7320508075688772 * inv.maxModulation
+    if vmax <= 0.0 {
+        return Dq { d: 0.0, q: 0.0 }
+    }
+    let mag: f64 = sqrt(commanded.d * commanded.d + commanded.q * commanded.q)
+    if mag <= vmax or mag <= 0.0 {
+        return commanded
+    }
+    let scale: f64 = vmax / mag
+    return Dq { d: commanded.d * scale, q: commanded.q * scale }
+}
+
+# FOC current PI with optional cross-coupling feedforward (use plant L, ψf, ωe).
+export function focCurrentStep(
+    s: FocState,
+    gains: FocPiGains,
+    plant: PmsmParameters,
+    measured: Dq,
+    reference: Dq,
+    mechanicalSpeed: f64,
+    dt: f64,
+    useDecoupling: bool
+) -> FocResult {
+    if dt <= 0.0 {
+        return FocResult { state: s, voltageD: 0.0 / 0.0, voltageQ: 0.0 / 0.0 }
+    }
+    let ed: f64 = reference.d - measured.d
+    let eq: f64 = reference.q - measured.q
+    let idInt: f64 = s.integralD + ed * dt
+    let iqInt: f64 = s.integralQ + eq * dt
+    let mut vd: f64 = gains.kp * ed + gains.ki * idInt
+    let mut vq: f64 = gains.kp * eq + gains.ki * iqInt
+    if useDecoupling {
+        let we: f64 = plant.polePairs * mechanicalSpeed
+        vd = vd - we * plant.inductanceQ * measured.q
+        vq = vq + we * (plant.inductanceD * measured.d + plant.fluxLinkage)
+    }
+    let lim: f64 = gains.voltageLimit
+    let mut nextId: f64 = idInt
+    let mut nextIq: f64 = iqInt
+    if vd > lim and ed > 0.0 {
+        nextId = s.integralD
+        vd = lim
+    }
+    if vd < -lim and ed < 0.0 {
+        nextId = s.integralD
+        vd = -lim
+    }
+    if vq > lim and eq > 0.0 {
+        nextIq = s.integralQ
+        vq = lim
+    }
+    if vq < -lim and eq < 0.0 {
+        nextIq = s.integralQ
+        vq = -lim
+    }
+    vd = drvClamp(vd, -lim, lim)
+    vq = drvClamp(vq, -lim, lim)
+    return FocResult {
+        state: FocState { integralD: nextId, integralQ: nextIq },
+        voltageD: vd,
+        voltageQ: vq
+    }
+}

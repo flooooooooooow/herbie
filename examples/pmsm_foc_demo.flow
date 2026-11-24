@@ -1,0 +1,46 @@
+# Salient PMSM under FOC current regulation with averaged DC-link inverter.
+
+import herbie.drive {
+    Dq, PmsmParameters, PmsmState, AveragedInverter, FocPiGains, FocState,
+    pmsmTorque, pmsmStep, inverterApplyDq, focCurrentStep
+}
+
+function main() -> i32 {
+    let plant: PmsmParameters = PmsmParameters {
+        statorResistance: 0.08, inductanceD: 0.0009, inductanceQ: 0.0011,
+        fluxLinkage: 0.09, polePairs: 4.0, rotorInertia: 0.03, viscousDamping: 0.002
+    }
+    let inv: AveragedInverter = AveragedInverter { dcLinkVoltage: 350.0, maxModulation: 0.95 }
+    let gains: FocPiGains = FocPiGains { kp: 1.5, ki: 150.0, voltageLimit: 180.0 }
+    let mut foc: FocState = FocState { integralD: 0.0, integralQ: 0.0 }
+    let mut motor: PmsmState = PmsmState {
+        currentD: 0.0, currentQ: 0.0, electricalAngle: 0.0, mechanicalSpeed: 0.0
+    }
+    let idRef: f64 = -10.0
+    let iqRef: f64 = 40.0
+    let load: f64 = 5.0
+    for i in 0 to 8000 {
+        let measured: Dq = Dq { d: motor.currentD, q: motor.currentQ }
+        let ref: Dq = Dq { d: idRef, q: iqRef }
+        let cmd = focCurrentStep(foc, gains, plant, measured, ref, motor.mechanicalSpeed, 0.0001, true)
+        foc = cmd.state
+        let applied: Dq = inverterApplyDq(inv, Dq { d: cmd.voltageD, q: cmd.voltageQ })
+        let stepped = pmsmStep(motor, plant, applied.d, applied.q, load, 0.0001)
+        motor = stepped.state
+    }
+    let te: f64 = pmsmTorque(motor, plant)
+    println("id [A]")
+    println(motor.currentD)
+    println("iq [A]")
+    println(motor.currentQ)
+    println("Torque [N m]")
+    println(te)
+    println("Speed [rad/s]")
+    println(motor.mechanicalSpeed)
+    if motor.currentQ < 30.0 or motor.mechanicalSpeed <= 0.0 {
+        println("FAIL FOC drive demo")
+        return 1
+    }
+    println("PASS PMSM FOC demo")
+    return 0
+}
