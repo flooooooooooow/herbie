@@ -83,6 +83,8 @@ See [the transient contract and analytical gates](circuit-transients.md). `flow 
 
 `tests/sparse_mna.flow` stamps the 12 V / 1 kΩ / 1 kΩ divider into COO (7 triplets → CSR nnz 6 after merge), and recovers 12 V / 6 V / −6 mA with residual ≤ 1e-12. After a 1 mA injection the sparse solution and expanded matrix match `herbie.mna` within 1e-12 / 1e-15. Capacity overflow and floating networks are rejected. See [sparse-mna.md](sparse-mna.md). Factorisation remains dense after CSR expansion.
 
+`tests/sparse_bench.flow` builds a 40-node ladder, checks sparse≡dense within 1e-9, and prints CPU-tick timings for rebuild+solve. Recorded host sample and interpretation: [sparse-runtime.md](sparse-runtime.md). Not a WCET claim.
+
 ## Nonlinear diode and switch validation
 
 `tests/nl_devices.flow` checks Shockley currents for a voltage-pinned diode (relative ≤ 1e-9), series 1 kΩ+diode against independent bisection (≤ 1e-9 V), forward decade slope at 10 µA/100 µA within 1e-6 V of `n Vt ln 10`, open/closed resistive-switch dividers, explicit threshold events, ±5 V DC half-wave rectifier KVL/Shockley, and `maxIter=1` non-convergence. See [nl-devices.md](nl-devices.md).

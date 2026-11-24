@@ -43,6 +43,7 @@ tests/
   dae_mna.flow
   ideal_switch.flow
   ngspice_fixtures.flow
+  sparse_bench.flow
   ngspice_refs/        Stored ngspice-42 prints + provenance
 examples/
   quarter_car_demo.flow

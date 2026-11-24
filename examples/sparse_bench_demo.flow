@@ -1,0 +1,91 @@
+# Prints the same 40-node ladder timing lines as tests/sparse_bench.flow.
+import herbie.sparse_mna {
+    SparseMna, sparseMnaClear, sparseMnaStampResistor, sparseMnaStampVoltageSource,
+    sparseMnaFinalize, sparseMnaSolve
+}
+import herbie.mna { MnaNetwork, mnaClear, mnaStampResistor, mnaStampVoltageSource, mnaSolve }
+
+extern {
+    function calloc(n: i64, size: i64) -> ptr<void>
+    function clock() -> i64
+    function printf(fmt: string, v: f64) -> i32
+}
+
+const NODES: i32 = 40
+const SIZE: i32 = 41
+const MAT: i32 = 1681
+const COO_CAP: i32 = 512
+const REPEATS: i32 = 40
+
+function main() -> i32 {
+    let mut cooCount: i32 = 0
+    let mut csrNnz: i32 = 0
+    let mut ready: i32 = 0
+    let cooRow: ptr<i32> = calloc(COO_CAP as i64, 4) as ptr<i32>
+    let cooCol: ptr<i32> = calloc(COO_CAP as i64, 4) as ptr<i32>
+    let cooVal: ptr<f64> = calloc(COO_CAP as i64, 8) as ptr<f64>
+    let rowPtr: ptr<i32> = calloc((SIZE + 1) as i64, 4) as ptr<i32>
+    let colIdx: ptr<i32> = calloc(COO_CAP as i64, 4) as ptr<i32>
+    let values: ptr<f64> = calloc(COO_CAP as i64, 8) as ptr<f64>
+    let sRhs: ptr<f64> = calloc(SIZE as i64, 8) as ptr<f64>
+    let sSol: ptr<f64> = calloc(SIZE as i64, 8) as ptr<f64>
+    let denseScratch: ptr<f64> = calloc(MAT as i64, 8) as ptr<f64>
+    let factorScratch: ptr<f64> = calloc(MAT as i64, 8) as ptr<f64>
+    let rhsScratch: ptr<f64> = calloc(SIZE as i64, 8) as ptr<f64>
+    let dMat: ptr<f64> = calloc(MAT as i64, 8) as ptr<f64>
+    let dRhs: ptr<f64> = calloc(SIZE as i64, 8) as ptr<f64>
+    let dSol: ptr<f64> = calloc(SIZE as i64, 8) as ptr<f64>
+    let dScratch: ptr<f64> = calloc(MAT as i64, 8) as ptr<f64>
+    let dWork: ptr<f64> = calloc(SIZE as i64, 8) as ptr<f64>
+    let sparse: SparseMna = SparseMna {
+        nodeCount: NODES, voltageSourceCount: 1, capacity: COO_CAP,
+        cooCount: &cooCount, csrNnz: &csrNnz, ready: &ready,
+        cooRow: cooRow, cooCol: cooCol, cooVal: cooVal,
+        rowPtr: rowPtr, colIdx: colIdx, values: values, rhs: sRhs
+    }
+    let dense: MnaNetwork = MnaNetwork {
+        nodeCount: NODES, voltageSourceCount: 1, matrix: dMat, rhs: dRhs
+    }
+
+    let t0: i64 = clock()
+    for r in 0 to REPEATS {
+        if not sparseMnaClear(sparse) { return 1 }
+        if not sparseMnaStampVoltageSource(sparse, 0, 0, -1, 12.0) { return 2 }
+        for i in 0 to NODES - 1 {
+            if not sparseMnaStampResistor(sparse, i, -1, 1000.0) { return 3 }
+        }
+        for i in 0 to NODES - 1 {
+            if i + 1 < NODES {
+                if not sparseMnaStampResistor(sparse, i, i + 1, 100.0) { return 4 }
+            }
+        }
+        if not sparseMnaFinalize(sparse) { return 5 }
+        if not sparseMnaSolve(sparse, sSol, denseScratch, factorScratch, rhsScratch, 1.0e-12) {
+            return 6
+        }
+    }
+    let t1: i64 = clock()
+
+    let t2: i64 = clock()
+    for r in 0 to REPEATS {
+        if not mnaClear(dense) { return 7 }
+        if not mnaStampVoltageSource(dense, 0, 0, -1, 12.0) { return 8 }
+        for i in 0 to NODES - 1 {
+            if not mnaStampResistor(dense, i, -1, 1000.0) { return 9 }
+        }
+        for i in 0 to NODES - 1 {
+            if i + 1 < NODES {
+                if not mnaStampResistor(dense, i, i + 1, 100.0) { return 10 }
+            }
+        }
+        if not mnaSolve(dense, dSol, dScratch, dWork, 1.0e-12) { return 11 }
+    }
+    let t3: i64 = clock()
+
+    printf("V0=%.6f\n", sSol[0])
+    printf("V_end=%.6f\n", sSol[NODES - 1])
+    printf("csr_nnz=%.0f\n", csrNnz as f64)
+    printf("sparse_us_per_rebuild_solve=%.3f\n", ((t1 - t0) as f64) / (REPEATS as f64))
+    printf("dense_us_per_rebuild_solve=%.3f\n", ((t3 - t2) as f64) / (REPEATS as f64))
+    return 0
+}
