@@ -13,3 +13,13 @@ diode	i_v1	-0.00430711	A
 rc_tran	v_out_1ms	0.6321206	V
 rc_tran	v_out_2ms	0.8646647	V
 rc_tran	v_out_5ms	0.9932621	V
+bridge	v_a	6.315789	V
+bridge	v_b	3.684211	V
+bridge	v_ab	2.631579	V
+bridge	i_v1	-0.00684211	A
+bridge_rect	v_p	4.311584	V
+bridge_rect	v_n	0.6884163	V
+bridge_rect	v_load	3.623167	V
+rlc_tran	v_c_1ms	1.604566	V
+rlc_tran	v_c_2ms	0.6346373	V
+rlc_tran	v_c_5ms	1.080459	V

@@ -1,0 +1,4 @@
+# ngspice batch meas results
+vc1ms = 1.604566e+00
+vc2ms = 6.346373e-01
+vc5ms = 1.080459e+00

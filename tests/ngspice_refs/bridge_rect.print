@@ -1,0 +1,5 @@
+# ngspice batch print results
+v(p) = 4.311584e+00
+v(n) = 6.884163e-01
+v(p,n) = 3.623167e+00
+i(v1) = -3.62317e-03

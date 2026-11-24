@@ -86,6 +86,7 @@ flow run examples/nl_devices_demo.flow
 flow run tests/netlist.flow
 flow run examples/netlist_demo.flow
 flow run tests/ngspice_crossval.flow
+flow run tests/ngspice_fixtures.flow
 flow run tests/dae_mna.flow
 flow run examples/dae_mna_demo.flow
 flow run tests/ideal_switch.flow
@@ -122,7 +123,7 @@ The exact Flow compiler revision used by CI is pinned in [the CI workflow](.gith
 
 ## ngspice cross-validation
 
-Stored ngspice-42 references for a DC divider, series RC AC phasor (`ω=1000`) and Shockley diode OP live under `tests/ngspice_refs/` with command provenance. `flow run tests/ngspice_crossval.flow` compares Herbie solvers within documented tolerances ([docs/ngspice-crossval.md](docs/ngspice-crossval.md)). CI does not require ngspice.
+Stored ngspice-42 references for a DC divider, series RC AC phasor (`ω=1000`) and Shockley diode OP live under `tests/ngspice_refs/` with command provenance. `flow run tests/ngspice_crossval.flow` compares Herbie solvers within documented tolerances ([docs/ngspice-crossval.md](docs/ngspice-crossval.md)). Additional bridge, multi-diode rectifier and RLC transient fixtures: `flow run tests/ngspice_fixtures.flow` ([docs/ngspice-fixtures.md](docs/ngspice-fixtures.md)). CI does not require ngspice.
 
 ## Index-1 DAE MNA transient
 

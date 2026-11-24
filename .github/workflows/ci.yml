@@ -65,6 +65,8 @@ jobs:
         run: flow run tests/netlist.flow
       - name: Cross-validate circuits against stored ngspice-42 references
         run: flow run tests/ngspice_crossval.flow
+      - name: Cross-validate bridge, rectifier and RLC ngspice fixtures
+        run: flow run tests/ngspice_fixtures.flow
       - name: Verify index-1 DAE MNA transient companions
         run: flow run tests/dae_mna.flow
       - name: Verify zero-Ron ideal switch MNA

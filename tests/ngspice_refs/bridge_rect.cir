@@ -1,0 +1,15 @@
+* herbie ngspice ref: bridge rectifier DC (+5 V)
+V1 vac 0 DC 5
+D1 vac p DMOD
+D2 n vac DMOD
+D3 0 p DMOD
+D4 n 0 DMOD
+RL p n 1k
+.model DMOD D (IS=1e-14 N=1)
+.op
+.control
+run
+print v(p) v(n) v(p,n) i(V1)
+quit
+.endc
+.end
