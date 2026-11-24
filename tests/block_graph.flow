@@ -1,0 +1,147 @@
+# Block-graph validation, topo schedule, algebraic loop, rates, serialize round-trip.
+
+import herbie.graph {
+    GraphNode, GraphEdge, GraphView, GraphSchedule,
+    graphValidate, graphRatesCompatible, graphSchedule, graphSerialize, graphDeserialize
+}
+
+function main() -> i32 {
+    let mut nodes: array<GraphNode, 4> = [
+        GraphNode { id: 10, samplePeriodUs: 0, kind: 0 },
+        GraphNode { id: 20, samplePeriodUs: 1000, kind: 1 },
+        GraphNode { id: 30, samplePeriodUs: 2000, kind: 1 },
+        GraphNode { id: 40, samplePeriodUs: 1000, kind: 1 }
+    ]
+    let mut edges: array<GraphEdge, 3> = [
+        GraphEdge { fromId: 10, toId: 20, unitTag: 1 },
+        GraphEdge { fromId: 20, toId: 30, unitTag: 1 },
+        GraphEdge { fromId: 20, toId: 40, unitTag: 2 }
+    ]
+    let g: GraphView = GraphView {
+        nodes: &nodes[0], nodeCount: 4, edges: &edges[0], edgeCount: 3
+    }
+    if graphValidate(g) != 0 {
+        println("FAIL validate DAG")
+        return 1
+    }
+    if not graphRatesCompatible(nodes[1], nodes[2]) {
+        return 2
+    }
+    # 1 ms must not feed 0.5 ms.
+    let fast: GraphNode = GraphNode { id: 99, samplePeriodUs: 500, kind: 1 }
+    if graphRatesCompatible(nodes[1], fast) {
+        println("FAIL rate mismatch should reject")
+        return 3
+    }
+    let mut order: array<i32, 4> = [0, 0, 0, 0]
+    let mut scratch: array<i32, 12> = [
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    ]
+    let sched: GraphSchedule = graphSchedule(g, &order[0], &scratch[0])
+    if not sched.ok or sched.count != 4 or sched.fault != 0 {
+        println("FAIL schedule")
+        return 4
+    }
+    if order[0] != 10 {
+        println("FAIL continuous source should be first")
+        return 5
+    }
+    # 20 before 30 and 40.
+    let mut seen20: bool = false
+    for i in 0 to 4 {
+        if order[i] == 20 {
+            seen20 = true
+        }
+        if (order[i] == 30 or order[i] == 40) and not seen20 {
+            return 6
+        }
+    }
+
+    # Algebraic loop: 20 ↔ 40.
+    let mut loopEdges: array<GraphEdge, 2> = [
+        GraphEdge { fromId: 20, toId: 40, unitTag: 1 },
+        GraphEdge { fromId: 40, toId: 20, unitTag: 1 }
+    ]
+    let mut loopNodes: array<GraphNode, 2> = [
+        GraphNode { id: 20, samplePeriodUs: 1000, kind: 1 },
+        GraphNode { id: 40, samplePeriodUs: 1000, kind: 1 }
+    ]
+    let loopG: GraphView = GraphView {
+        nodes: &loopNodes[0], nodeCount: 2, edges: &loopEdges[0], edgeCount: 2
+    }
+    let mut order2: array<i32, 2> = [0, 0]
+    let mut scratch2: array<i32, 6> = [0, 0, 0, 0, 0, 0]
+    let bad: GraphSchedule = graphSchedule(loopG, &order2[0], &scratch2[0])
+    if bad.ok or bad.fault != 2 {
+        println("FAIL algebraic loop detection")
+        return 7
+    }
+
+    # Rate mismatch edge.
+    let mut badRateEdges: array<GraphEdge, 1> = [
+        GraphEdge { fromId: 20, toId: 99, unitTag: 1 }
+    ]
+    let mut badRateNodes: array<GraphNode, 2> = [
+        GraphNode { id: 20, samplePeriodUs: 1000, kind: 1 },
+        GraphNode { id: 99, samplePeriodUs: 500, kind: 1 }
+    ]
+    let badRateG: GraphView = GraphView {
+        nodes: &badRateNodes[0], nodeCount: 2, edges: &badRateEdges[0], edgeCount: 1
+    }
+    if graphValidate(badRateG) != 3 {
+        println("FAIL expected rate fault")
+        return 8
+    }
+
+    # Serialize / deserialize round-trip.
+    let mut buf: array<i32, 64> = [
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    ]
+    let nser: i32 = graphSerialize(g, &buf[0], 64)
+    if nser != 2 + 3 * 4 + 3 * 3 {
+        return 9
+    }
+    let mut nodes2: array<GraphNode, 4> = [
+        GraphNode { id: 0, samplePeriodUs: 0, kind: 0 },
+        GraphNode { id: 0, samplePeriodUs: 0, kind: 0 },
+        GraphNode { id: 0, samplePeriodUs: 0, kind: 0 },
+        GraphNode { id: 0, samplePeriodUs: 0, kind: 0 }
+    ]
+    let mut edges2: array<GraphEdge, 3> = [
+        GraphEdge { fromId: 0, toId: 0, unitTag: 0 },
+        GraphEdge { fromId: 0, toId: 0, unitTag: 0 },
+        GraphEdge { fromId: 0, toId: 0, unitTag: 0 }
+    ]
+    let mut viewArr: array<GraphView, 1> = [
+        GraphView { nodes: &nodes2[0], nodeCount: 0, edges: &edges2[0], edgeCount: 0 }
+    ]
+    if not graphDeserialize(&buf[0], nser, &nodes2[0], 4, &edges2[0], 3, &viewArr[0]) {
+        println("FAIL deserialize")
+        return 10
+    }
+    if viewArr[0].nodeCount != 4 or viewArr[0].edgeCount != 3 {
+        return 11
+    }
+    if nodes2[0].id != 10 or edges2[2].unitTag != 2 {
+        return 12
+    }
+    let mut order3: array<i32, 4> = [0, 0, 0, 0]
+    let mut scratch3: array<i32, 12> = [
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    ]
+    let sched2: GraphSchedule = graphSchedule(viewArr[0], &order3[0], &scratch3[0])
+    if not sched2.ok {
+        return 13
+    }
+    for i in 0 to 4 {
+        if order3[i] != order[i] {
+            println("FAIL schedule round-trip")
+            return 14
+        }
+    }
+    println("PASS block graph: validate, schedule, loop, rates, round-trip")
+    return 0
+}

@@ -1,0 +1,228 @@
+# @module herbie.graph
+# Typed block-graph scaffold: nodes with sample rates, directed signal edges with
+# unit tags, topological execution order, algebraic-loop (cycle) detection and
+# rate/unit compatibility checks. Canonical flat i32 buffer round-trip.
+# Not a visual editor, WASM runtime or Flow codegen emitter.
+
+export struct GraphNode {
+    id: i32,
+    # Sample period in microseconds (integer). Continuous nodes use 0.
+    samplePeriodUs: i32,
+    # 0 = continuous, 1 = discrete.
+    kind: i32
+}
+
+export struct GraphEdge {
+    fromId: i32,
+    toId: i32,
+    # Caller-defined SI quantity tag; both ends of an edge must match.
+    unitTag: i32
+}
+
+export struct GraphView {
+    nodes: ptr<GraphNode>,
+    nodeCount: i32,
+    edges: ptr<GraphEdge>,
+    edgeCount: i32
+}
+
+export struct GraphSchedule {
+    # Node ids in execution order; length = nodeCount on success.
+    order: ptr<i32>,
+    count: i32,
+    ok: bool,
+    # 0 ok, 1 bad input, 2 algebraic loop, 3 rate mismatch, 4 unit mismatch, 5 unknown id
+    fault: i32
+}
+
+export function graphNodeOk(n: GraphNode) -> bool {
+    if n.id < 0 {
+        return false
+    }
+    if n.kind != 0 and n.kind != 1 {
+        return false
+    }
+    if n.kind == 1 and n.samplePeriodUs <= 0 {
+        return false
+    }
+    if n.kind == 0 and n.samplePeriodUs != 0 {
+        return false
+    }
+    return true
+}
+
+export function graphFindNode(nodes: ptr<GraphNode>, nodeCount: i32, id: i32) -> i32 {
+    for i in 0 to nodeCount {
+        if nodes[i].id == id {
+            return i
+        }
+    }
+    return -1
+}
+
+# Rate rule: discrete→discrete ok if sink period is an integer multiple of source.
+# Continuous (period 0) may feed anything; discrete must not feed a faster discrete.
+export function graphRatesCompatible(source: GraphNode, sink: GraphNode) -> bool {
+    if source.kind == 0 {
+        return true
+    }
+    if sink.kind == 0 {
+        return true
+    }
+    if source.samplePeriodUs <= 0 or sink.samplePeriodUs <= 0 {
+        return false
+    }
+    if sink.samplePeriodUs % source.samplePeriodUs != 0 {
+        return false
+    }
+    return true
+}
+
+export function graphValidate(g: GraphView) -> i32 {
+    if g.nodeCount <= 0 or g.nodeCount > 64 or g.edgeCount < 0 or g.edgeCount > 256 {
+        return 1
+    }
+    for i in 0 to g.nodeCount {
+        if not graphNodeOk(g.nodes[i]) {
+            return 1
+        }
+        for j in i + 1 to g.nodeCount {
+            if g.nodes[i].id == g.nodes[j].id {
+                return 1
+            }
+        }
+    }
+    for e in 0 to g.edgeCount {
+        let edge: GraphEdge = g.edges[e]
+        let fi: i32 = graphFindNode(g.nodes, g.nodeCount, edge.fromId)
+        let ti: i32 = graphFindNode(g.nodes, g.nodeCount, edge.toId)
+        if fi < 0 or ti < 0 {
+            return 5
+        }
+        if edge.unitTag < 0 {
+            return 4
+        }
+        if not graphRatesCompatible(g.nodes[fi], g.nodes[ti]) {
+            return 3
+        }
+        # Unit tag is on the edge; multi-edge unit conflicts checked pairwise.
+        for e2 in e + 1 to g.edgeCount {
+            let other: GraphEdge = g.edges[e2]
+            if other.fromId == edge.fromId and other.toId == edge.toId and other.unitTag != edge.unitTag {
+                return 4
+            }
+        }
+    }
+    return 0
+}
+
+# Kahn topological sort. Writes node ids into order[0..count).
+# Uses indegree and a small queue in caller-owned scratch (3 * nodeCount i32s).
+export function graphSchedule(
+    g: GraphView,
+    order: ptr<i32>,
+    scratch: ptr<i32>
+) -> GraphSchedule {
+    let fail: GraphSchedule = GraphSchedule { order: order, count: 0, ok: false, fault: 1 }
+    let vfault: i32 = graphValidate(g)
+    if vfault != 0 {
+        return GraphSchedule { order: order, count: 0, ok: false, fault: vfault }
+    }
+    let n: i32 = g.nodeCount
+    # scratch[0..n) = indegree, scratch[n..2n) = queue, scratch[2n..3n) = index map id→slot unused
+    for i in 0 to n {
+        scratch[i] = 0
+    }
+    for e in 0 to g.edgeCount {
+        let ti: i32 = graphFindNode(g.nodes, n, g.edges[e].toId)
+        scratch[ti] = scratch[ti] + 1
+    }
+    let qBase: i32 = n
+    let mut qHead: i32 = 0
+    let mut qTail: i32 = 0
+    for i in 0 to n {
+        if scratch[i] == 0 {
+            scratch[qBase + qTail] = i
+            qTail = qTail + 1
+        }
+    }
+    let mut produced: i32 = 0
+    while qHead < qTail {
+        let ui: i32 = scratch[qBase + qHead]
+        qHead = qHead + 1
+        order[produced] = g.nodes[ui].id
+        produced = produced + 1
+        for e in 0 to g.edgeCount {
+            if g.edges[e].fromId == g.nodes[ui].id {
+                let ti: i32 = graphFindNode(g.nodes, n, g.edges[e].toId)
+                scratch[ti] = scratch[ti] - 1
+                if scratch[ti] == 0 {
+                    scratch[qBase + qTail] = ti
+                    qTail = qTail + 1
+                }
+            }
+        }
+    }
+    if produced != n {
+        return GraphSchedule { order: order, count: produced, ok: false, fault: 2 }
+    }
+    return GraphSchedule { order: order, count: produced, ok: true, fault: 0 }
+}
+
+# Canonical serialization: [nodeCount, edgeCount, then for each node: id, period, kind,
+# then for each edge: from, to, unit]. Max fits in 2 + 3*64 + 3*256 = 962 ints.
+export function graphSerialize(g: GraphView, out: ptr<i32>, maxOut: i32) -> i32 {
+    let need: i32 = 2 + 3 * g.nodeCount + 3 * g.edgeCount
+    if need > maxOut or graphValidate(g) != 0 {
+        return -1
+    }
+    out[0] = g.nodeCount
+    out[1] = g.edgeCount
+    let mut p: i32 = 2
+    for i in 0 to g.nodeCount {
+        out[p] = g.nodes[i].id
+        out[p + 1] = g.nodes[i].samplePeriodUs
+        out[p + 2] = g.nodes[i].kind
+        p = p + 3
+    }
+    for e in 0 to g.edgeCount {
+        out[p] = g.edges[e].fromId
+        out[p + 1] = g.edges[e].toId
+        out[p + 2] = g.edges[e].unitTag
+        p = p + 3
+    }
+    return p
+}
+
+export function graphDeserialize(
+    buf: ptr<i32>,
+    len: i32,
+    nodes: ptr<GraphNode>,
+    maxNodes: i32,
+    edges: ptr<GraphEdge>,
+    maxEdges: i32,
+    outView: ptr<GraphView>
+) -> bool {
+    if len < 2 {
+        return false
+    }
+    let nc: i32 = buf[0]
+    let ec: i32 = buf[1]
+    if nc <= 0 or nc > maxNodes or ec < 0 or ec > maxEdges {
+        return false
+    }
+    if len < 2 + 3 * nc + 3 * ec {
+        return false
+    }
+    let mut p: i32 = 2
+    for i in 0 to nc {
+        nodes[i] = GraphNode { id: buf[p], samplePeriodUs: buf[p + 1], kind: buf[p + 2] }
+        p = p + 3
+    }
+    for e in 0 to ec {
+        edges[e] = GraphEdge { fromId: buf[p], toId: buf[p + 1], unitTag: buf[p + 2] }
+        p = p + 3
+    }
+    outView[0] = GraphView { nodes: nodes, nodeCount: nc, edges: edges, edgeCount: ec }
+    return graphValidate(outView[0]) == 0
+}
