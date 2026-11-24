@@ -8,6 +8,7 @@ The first implementation is intentionally small:
 
 ```
 src/
+  ode.flow           Shared fixed-step Euler/semi-implicit/RK4, events, multirate
   circuits.flow      Nodal circuit assembly and dense pivoted DC solve
   mna.flow           Dense DC MNA with ideal voltage-source branch unknowns
   ac.flow            Dense AC phasor MNA for linear R/C/L networks
@@ -35,6 +36,7 @@ src/
 tests/
   engineering_smoke.flow
   vehicle_energy.flow
+  ode_platform.flow
   ac_phasor_mna.flow
   sparse_mna.flow
   nl_devices.flow
@@ -48,6 +50,7 @@ tests/
 examples/
   quarter_car_demo.flow
   manufacturing_demo.flow
+  ode_platform_demo.flow
   ac_phasor_demo.flow
   sparse_mna_demo.flow
   nl_devices_demo.flow
@@ -65,7 +68,7 @@ The caller must reject non-physical parameter sets and singular denominators. Th
 
 ## Solver roadmap
 
-The vertical model uses classical fixed-step RK4 on continuous-time ODEs. The bicycle, thermal and longitudinal models currently use explicit Euler/trapezoidal position integration. The roadmap is to separate `Model`, `Integrator`, `Schedule`, and `Observer` interfaces and support RK4, semi-implicit Euler, adaptive RK, implicit stiff ODE/DAE, event systems, sampled controllers and multirate co-simulation without duplicating plants.
+`herbie.ode` provides the shared fixed-step contract: validated `OdeConfig`, forward Euler, semi-implicit Euler for second-order mechanical state, classical RK4, zero-crossing event interpolation, multirate fast/slow counters and caller-owned step traces. Built-in analytic plants (scalar exponential decay and undamped harmonic oscillator) gate convergence order and energy. The vertical vehicle model still embeds its own RK4; the bicycle, thermal and longitudinal models currently use explicit Euler/trapezoidal position integration. Implicit stiff ODE/DAE, adaptive stepping and general plant callbacks remain open.
 
 A later spatial geometry and manufacturing layer can support meshes, element assembly, sparse iterative and direct solvers, nonlinear material laws, contact and thermal-mechanical coupling. Those are substantial projects, not features implied by the current elementary formulas.
 

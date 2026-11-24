@@ -4,7 +4,7 @@
 
 **Level 1, implemented:** analytically checkable elementary stress, elastic extension, thermal expansion, fit clearances, RSS, Cpk, PID output bounds, linear-powertrain kinematics, and zero-input equilibrium. The undamped quarter car is integrated with fixed-step RK4 and checked for bounded energy drift over 10,000 steps. A 2D linear-elastic horizontal truss reference and two-/three-variable correlated variances are also tested. Tests live in `tests/` and CI runs them with a pinned Flow compiler revision.
 
-**Level 2, not yet implemented:** convergence order tests with dt refinement, stiff-system rejection, independent high-precision reference integrations, randomized/property tests, sensitivity/Jacobian comparisons, and sustained million-step profiling.
+**Level 2, partial:** `tests/ode_platform.flow` measures observed convergence order for forward Euler (~1) and RK4 (~4) on `y'=-y` via dt refinement, checks undamped harmonic energy and analytic phase, semi-implicit Euler bounded energy drift, zero-crossing event time against `π/(2ω)`, and multirate/trace bookkeeping. Still open: stiff-system rejection, independent high-precision reference integrations, randomized/property tests, sensitivity/Jacobian comparisons, and sustained million-step profiling.
 
 **Level 3, not yet implemented:** validated vehicle/rig datasets, test-bench/HIL comparison, measurement uncertainty, traceable material data, fault injection, production-target WCET measurement and release qualification.
 
@@ -75,9 +75,23 @@ This establishes one model/solver/kernel agreement slice but **not** broad numer
 
 See [the transient contract and analytical gates](circuit-transients.md). `flow run tests/circuit_transient.flow` verifies fixed-step backward Euler using the shared Flow circuit backend. General DAE initialization, external SPICE comparison and real-time qualification remain open.
 
+## Shared ODE platform (issue #3)
+
+`herbie.ode` is an explicit fixed-step integrator surface with validated configuration, caller-owned buffers and no hot-path allocation. `tests/ode_platform.flow` checks:
+
+- Rejected nonpositive `dt` and zero dimension
+- Forward Euler and RK4 accuracy on `y'=-y` against `e^{-t}`
+- Observed orders ≈1 (Euler) and ≈4 (RK4) under dt halving
+- Undamped harmonic oscillator RK4 vs closed form and relative energy drift < 10⁻⁸ over 5 s
+- Semi-implicit Euler bounded energy oscillation for the same plant
+- Linear zero-crossing time for `cos(ωt)` within one millisecond of `π/(2ω)`
+- Multirate 4:1 slow ticks and reproducible step traces
+
+This does **not** deliver implicit stiff DAE, adaptive steppers, general function-pointer plants, WCET measurement or unit-typed state vectors inside the integrator. See [numerical platform issue #3](https://github.com/flooooooooooow/herbie/issues/3).
+
 ## AC phasor MNA validation
 
-`tests/ac_phasor_mna.flow` solves linear R/C/L networks in the frequency domain. A 12 V resistive divider at 1 krad/s reproduces the DC voltages and −6 mA source current with zero imaginary parts (1e-10 V / 1e-12 A) and 36 mW average source/load power balance. Series RC (`R=1 kΩ`, `C=1 µF`, `ω=1000`) matches `|H|=1/√2` and `∠H=−π/4` within 1e-10. Series RL (`R=100 Ω`, `L=0.1 H`) matches `|I|=1/(100√2)` and `∠I=−π/4`. Series RLC at `ω₀=1/√(LC)` yields source current `−1/R` and capacitor voltage magnitude `|I|/(ωC)` with phase `−π/2`. A nodal R‖C driven by 1 mA gives `V=0.5−j0.5` V. Floating networks and invalid stamps are rejected. See [ac-phasor-mna.md](ac-phasor-mna.md). Switches, diodes and SPICE comparisons remain open under [#11](https://github.com/flooooooooooow/herbie/issues/11).
+`tests/ac_phasor_mna.flow` solves linear R/C/L networks in the frequency domain. A 12 V resistive divider at 1 krad/s reproduces the DC voltages and −6 mA source current with zero imaginary parts (1e-10 V / 1e-12 A) and 36 mW average source/load power balance. Series RC (`R=1 kΩ`, `C=1 µF`, `ω=1000`) matches `|H|=1/√2` and `∠H=−π/4` within 1e-10. Series RL (`R=100 Ω`, `L=0.1 H`) matches `|I|=1/(100√2)` and `∠I=−π/4`. Series RLC at `ω₀=1/√(LC)` yields source current `−1/R` and capacitor voltage magnitude `|I|/(ωC)` with phase `−π/2`. A nodal R‖C driven by 1 mA gives `V=0.5−j0.5` V. Floating networks and invalid stamps are rejected. See [ac-phasor-mna.md](ac-phasor-mna.md). Switches, diodes and SPICE comparisons were completed under [#11](https://github.com/flooooooooooow/herbie/issues/11).
 
 ## Sparse DC MNA assembly validation
 
@@ -106,3 +120,4 @@ See [the transient contract and analytical gates](circuit-transients.md). `flow 
 ## Zero-Ron ideal switch validation
 
 `tests/ideal_switch.flow` checks closed-switch series dividers (exact 6 V, 6 mA branch current, zero voltage drop), open-switch isolation, threshold events with re-solve, source/load power balance, and floating-network rejection. See [ideal-switch.md](ideal-switch.md).
+

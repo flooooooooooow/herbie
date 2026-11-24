@@ -91,6 +91,10 @@ jobs:
         run: flow run examples/ideal_switch_demo.flow
       - name: Verify first-class Flow physical units
         run: flow run examples/suspension_units.flow
+      - name: Verify shared ODE integrators, events and multirate schedule
+        run: flow run tests/ode_platform.flow
+      - name: Run ODE platform demonstration
+        run: flow run examples/ode_platform_demo.flow
       - name: Run vehicle demo
         run: flow run examples/quarter_car_demo.flow
       - name: Run manufacturing demo
