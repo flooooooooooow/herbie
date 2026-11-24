@@ -1,0 +1,272 @@
+# Global 2D truss FEM: analytic bar, two-bar V, dense vs CG, reactions.
+
+import herbie.fem {
+    FemTruss2D, femMeshOk, femDofCount, femClearSystem, femAssembleDense,
+    femBuildFreeMap, femReduceSystem, femDenseSolve, femScatterFree,
+    femMaxFreeResidual, femReaction, femReduceToCsr, femCgSolve,
+    femElementAxialForce
+}
+
+function near(a: f64, b: f64, eps: f64) -> bool {
+    return a >= b - eps and a <= b + eps
+}
+
+function absf(x: f64) -> f64 {
+    if x < 0.0 { return -x }
+    return x
+}
+
+function testSingleBarAnalytic() -> i32 {
+    # Nodes 0--1 along x, L=2 m, A=1e-4 m², E=2e11 Pa → AE/L = 1e7 N/m
+    # Fix node 0; Fx=1000 N at node 1 → u1x = F L / AE = 1e-4 m
+    let mut x: array<f64, 2> = [0.0, 2.0]
+    let mut y: array<f64, 2> = [0.0, 0.0]
+    let mut n1: array<i32, 1> = [0]
+    let mut n2: array<i32, 1> = [1]
+    let mut area: array<f64, 1> = [0.0001]
+    let mut young: array<f64, 1> = [200000000000.0]
+    let mesh: FemTruss2D = FemTruss2D {
+        nodeCount: 2, elementCount: 1,
+        nodeX: &x[0], nodeY: &y[0],
+        elemN1: &n1[0], elemN2: &n2[0],
+        elemArea: &area[0], elemE: &young[0]
+    }
+    if not femMeshOk(mesh) {
+        return 1
+    }
+    let ndof: i32 = femDofCount(mesh)
+    let mut k: array<f64, 16> = [0.0; 16]
+    let mut f: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut ke: array<f64, 16> = [0.0; 16]
+    if not femClearSystem(ndof, &k[0], &f[0]) or not femAssembleDense(mesh, &k[0], &ke[0]) {
+        return 2
+    }
+    f[2] = 1000.0
+    let mut freeFlag: array<i32, 4> = [0, 0, 1, 1]
+    let mut freeDofs: array<i32, 4> = [0, 0, 0, 0]
+    let mut freeCount: array<i32, 1> = [0]
+    if not femBuildFreeMap(ndof, &freeFlag[0], &freeDofs[0], &freeCount[0]) {
+        return 3
+    }
+    # Free: ux1, uy1 → but uy is singular (no lateral stiffness). Fix uy1 too.
+    freeFlag[3] = 0
+    if not femBuildFreeMap(ndof, &freeFlag[0], &freeDofs[0], &freeCount[0]) {
+        return 4
+    }
+    if freeCount[0] != 1 or freeDofs[0] != 2 {
+        return 5
+    }
+    let mut kff: array<f64, 1> = [0.0]
+    let mut ff: array<f64, 1> = [0.0]
+    let mut uFree: array<f64, 1> = [0.0]
+    let mut scratchK: array<f64, 1> = [0.0]
+    let mut scratchR: array<f64, 1> = [0.0]
+    if not femReduceSystem(ndof, 1, &freeDofs[0], &k[0], &f[0], &kff[0], &ff[0]) {
+        return 6
+    }
+    if not femDenseSolve(1, &kff[0], &ff[0], &uFree[0], &scratchK[0], &scratchR[0], 1.0e-18) {
+        return 7
+    }
+    let mut u: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    if not femScatterFree(ndof, 1, &freeDofs[0], &uFree[0], &u[0]) {
+        return 8
+    }
+    if not near(u[2], 0.0001, 1.0e-12) {
+        println("FAIL single-bar tip displacement")
+        return 9
+    }
+    if not near(femElementAxialForce(mesh, 0, &u[0]), 1000.0, 1.0e-8) {
+        return 10
+    }
+    if femMaxFreeResidual(ndof, 1, &freeDofs[0], &k[0], &u[0], &f[0]) > 1.0e-8 {
+        return 11
+    }
+    # Support reaction at fixed ux0 should balance the applied load.
+    if not near(femReaction(ndof, 0, &k[0], &u[0], &f[0]), -1000.0, 1.0e-8) {
+        println("FAIL single-bar reaction")
+        return 12
+    }
+    return 0
+}
+
+function testTwoBarSeries() -> i32 {
+    # 0--1--2 colinear, each L=1, AE=1e7 → tip u = 2 F / (AE/L) wait AE/L=1e7, u=2F/1e7
+    let mut x: array<f64, 3> = [0.0, 1.0, 2.0]
+    let mut y: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut n1: array<i32, 2> = [0, 1]
+    let mut n2: array<i32, 2> = [1, 2]
+    let mut area: array<f64, 2> = [0.0001, 0.0001]
+    let mut young: array<f64, 2> = [100000000000.0, 100000000000.0]
+    let mesh: FemTruss2D = FemTruss2D {
+        nodeCount: 3, elementCount: 2,
+        nodeX: &x[0], nodeY: &y[0],
+        elemN1: &n1[0], elemN2: &n2[0],
+        elemArea: &area[0], elemE: &young[0]
+    }
+    let ndof: i32 = 6
+    let mut k: array<f64, 36> = [0.0; 36]
+    let mut f: array<f64, 6> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut ke: array<f64, 16> = [0.0; 16]
+    if not femClearSystem(ndof, &k[0], &f[0]) or not femAssembleDense(mesh, &k[0], &ke[0]) {
+        return 1
+    }
+    f[4] = 2000.0
+    # Free only axial DOFs at nodes 1 and 2 (indices 2 and 4)
+    let mut freeFlag: array<i32, 6> = [0, 0, 1, 0, 1, 0]
+    let mut freeDofs: array<i32, 6> = [0, 0, 0, 0, 0, 0]
+    let mut freeCount: array<i32, 1> = [0]
+    if not femBuildFreeMap(ndof, &freeFlag[0], &freeDofs[0], &freeCount[0]) {
+        return 2
+    }
+    let fc: i32 = freeCount[0]
+    let mut kff: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut ff: array<f64, 2> = [0.0, 0.0]
+    let mut uFree: array<f64, 2> = [0.0, 0.0]
+    let mut scratchK: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut scratchR: array<f64, 2> = [0.0, 0.0]
+    if not femReduceSystem(ndof, fc, &freeDofs[0], &k[0], &f[0], &kff[0], &ff[0]) {
+        return 3
+    }
+    if not femDenseSolve(fc, &kff[0], &ff[0], &uFree[0], &scratchK[0], &scratchR[0], 1.0e-18) {
+        return 4
+    }
+    let mut u: array<f64, 6> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    femScatterFree(ndof, fc, &freeDofs[0], &uFree[0], &u[0])
+    # AE/L = 1e10*1e-4/1 = 1e6 ... wait E=1e11, A=1e-4 → AE/L=1e7
+    # u_tip = 2 * F / (AE/L) = 4000/1e7 = 4e-4
+    if not near(u[4], 0.0004, 1.0e-12) {
+        println("FAIL two-bar series tip")
+        return 5
+    }
+    if not near(u[2], 0.0002, 1.0e-12) {
+        return 6
+    }
+    return 0
+}
+
+function testVTrussAndCg() -> i32 {
+    # A(0,0), B(1,0) fixed; C(0.5,0.5); EA=1e6; Fy=-1000 at C
+    # L=1/√2; uy = F * L / EA = 1000/(1e6*√2) downward → -7.0710678e-4
+    let mut x: array<f64, 3> = [0.0, 1.0, 0.5]
+    let mut y: array<f64, 3> = [0.0, 0.0, 0.5]
+    let mut n1: array<i32, 2> = [0, 1]
+    let mut n2: array<i32, 2> = [2, 2]
+    let mut area: array<f64, 2> = [0.001, 0.001]
+    let mut young: array<f64, 2> = [1000000000.0, 1000000000.0]
+    let mesh: FemTruss2D = FemTruss2D {
+        nodeCount: 3, elementCount: 2,
+        nodeX: &x[0], nodeY: &y[0],
+        elemN1: &n1[0], elemN2: &n2[0],
+        elemArea: &area[0], elemE: &young[0]
+    }
+    # EA = 1e6
+    let ndof: i32 = 6
+    let mut k: array<f64, 36> = [0.0; 36]
+    let mut f: array<f64, 6> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut ke: array<f64, 16> = [0.0; 16]
+    if not femClearSystem(ndof, &k[0], &f[0]) or not femAssembleDense(mesh, &k[0], &ke[0]) {
+        return 1
+    }
+    f[5] = -1000.0
+    let mut freeFlag: array<i32, 6> = [0, 0, 0, 0, 1, 1]
+    let mut freeDofs: array<i32, 6> = [0, 0, 0, 0, 0, 0]
+    let mut freeCountCell: array<i32, 1> = [0]
+    if not femBuildFreeMap(ndof, &freeFlag[0], &freeDofs[0], &freeCountCell[0]) {
+        return 2
+    }
+    let fc: i32 = freeCountCell[0]
+    let mut kff: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut ff: array<f64, 2> = [0.0, 0.0]
+    let mut uDense: array<f64, 2> = [0.0, 0.0]
+    let mut scratchK: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut scratchR: array<f64, 2> = [0.0, 0.0]
+    if not femReduceSystem(ndof, fc, &freeDofs[0], &k[0], &f[0], &kff[0], &ff[0]) {
+        return 3
+    }
+    if not femDenseSolve(fc, &kff[0], &ff[0], &uDense[0], &scratchK[0], &scratchR[0], 1.0e-18) {
+        return 4
+    }
+    let expectedUy: f64 = -1000.0 / (1000000.0 * sqrt(2.0))
+    if not near(uDense[0], 0.0, 1.0e-10) {
+        println("FAIL V-truss symmetry ux")
+        return 5
+    }
+    if not near(uDense[1], expectedUy, 1.0e-10) {
+        println("FAIL V-truss analytic uy")
+        return 6
+    }
+
+    let mut rowPtr: array<i32, 3> = [0, 0, 0]
+    let mut colIdx: array<i32, 4> = [0, 0, 0, 0]
+    let mut vals: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let nnz: i32 = femReduceToCsr(fc, &kff[0], &rowPtr[0], &colIdx[0], &vals[0], 4)
+    if nnz <= 0 {
+        return 7
+    }
+    let mut uCg: array<f64, 2> = [0.0, 0.0]
+    let mut r: array<f64, 2> = [0.0, 0.0]
+    let mut p: array<f64, 2> = [0.0, 0.0]
+    let mut ap: array<f64, 2> = [0.0, 0.0]
+    if not femCgSolve(fc, &rowPtr[0], &colIdx[0], &vals[0], &ff[0], &uCg[0], &r[0], &p[0], &ap[0], 50, 1.0e-14) {
+        println("FAIL CG")
+        return 8
+    }
+    if absf(uCg[0] - uDense[0]) > 1.0e-10 or absf(uCg[1] - uDense[1]) > 1.0e-10 {
+        println("FAIL dense vs CG")
+        return 9
+    }
+
+    let mut u: array<f64, 6> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    femScatterFree(ndof, fc, &freeDofs[0], &uDense[0], &u[0])
+    if femMaxFreeResidual(ndof, fc, &freeDofs[0], &k[0], &u[0], &f[0]) > 1.0e-8 {
+        return 10
+    }
+    # Vertical reactions at A and B should each be +500 N (upward).
+    let ra: f64 = femReaction(ndof, 1, &k[0], &u[0], &f[0])
+    let rb: f64 = femReaction(ndof, 3, &k[0], &u[0], &f[0])
+    if not near(ra, 500.0, 1.0e-6) or not near(rb, 500.0, 1.0e-6) {
+        println("FAIL V-truss reactions")
+        return 11
+    }
+    return 0
+}
+
+function testRejectsBadMesh() -> i32 {
+    let mut x: array<f64, 2> = [0.0, 0.0]
+    let mut y: array<f64, 2> = [0.0, 0.0]
+    let mut n1: array<i32, 1> = [0]
+    let mut n2: array<i32, 1> = [0]
+    let mut area: array<f64, 1> = [0.001]
+    let mut young: array<f64, 1> = [1.0e9]
+    let mesh: FemTruss2D = FemTruss2D {
+        nodeCount: 2, elementCount: 1,
+        nodeX: &x[0], nodeY: &y[0],
+        elemN1: &n1[0], elemN2: &n2[0],
+        elemArea: &area[0], elemE: &young[0]
+    }
+    if femMeshOk(mesh) {
+        return 1
+    }
+    return 0
+}
+
+function main() -> i32 {
+    let a: i32 = testRejectsBadMesh()
+    if a != 0 {
+        return 10 + a
+    }
+    let b: i32 = testSingleBarAnalytic()
+    if b != 0 {
+        return 20 + b
+    }
+    let c: i32 = testTwoBarSeries()
+    if c != 0 {
+        return 30 + c
+    }
+    let d: i32 = testVTrussAndCg()
+    if d != 0 {
+        return 40 + d
+    }
+    println("PASS fem truss assembly: analytic bars, CSR CG, reactions")
+    return 0
+}

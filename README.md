@@ -31,6 +31,7 @@
 | `herbie.powertrain` | Point-mass longitudinal force balance with rolling resistance, drag, road gradient | No driveline dynamics, tire slip, regeneration, or reverse |
 | `herbie.structures` | Axial, bending, torsional, plane-stress von Mises, Euler buckling, fully constrained thermal stress, Goodman and Miner rules | Linear elastic and elementary analytical assumptions; no general FEM |
 | `herbie.truss` | Linear 2D truss axial element, 4x4 stiffness matrix, displacement-to-axial-force and strain energy | Small displacement, pin-jointed bar; no global FEM assembly or contact |
+| `herbie.fem` | 2D truss mesh, DOF map, dense assembly, free-DOF reduction, dense GE and CSR CG, reactions/residuals | Small linear truss only; no beams/plates/solids, nonlinear material or contact |
 | `herbie.uncertainty` | First-order correlated covariance propagation and Gaussian intervals | Input covariance must be physically valid; not non-Gaussian metrology |
 | `herbie.tolerances` | Worst-case interval stacks, clearances, independent RSS standard deviations, Cp/Cpk, thermal length | Statistical normal/independent approximation for RSS; no full GD&T solver |
 | `herbie.stackups` | N-dimensional affine worst-case stacks and covariance-aware variance with PSD checks and sensitivity rank | First-order linear dimensional chains; all SI lengths, no 3D GD&T geometry, SPC, or measured-process qualification |
@@ -87,6 +88,8 @@ flow run tests/verification_matrix.flow
 flow run examples/verification_matrix_demo.flow
 flow run tests/montecarlo_stack.flow
 flow run examples/montecarlo_stack_demo.flow
+flow run tests/fem_truss.flow
+flow run examples/fem_truss_demo.flow
 flow run tests/ac_phasor_mna.flow
 flow run examples/ac_phasor_demo.flow
 flow run tests/sparse_mna.flow

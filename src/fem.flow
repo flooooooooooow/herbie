@@ -1,0 +1,404 @@
+# @module herbie.fem
+# Global 2D truss FEM: nodes, connectivity, DOF map, dense assembly,
+# free-DOF reduction, dense direct solve, CSR SpMV and CG.
+# Small-displacement linear elastic pin-jointed bars only.
+# Caller-owned buffers; no heap allocation in kernels.
+# Not a general continuum FEM, beam, plate or contact solver.
+
+import herbie.truss { TrussElement2D, truss2DStiffness, truss2DAxialForce }
+
+export struct FemTruss2D {
+    nodeCount: i32,
+    elementCount: i32,
+    # nodeX/nodeY length nodeCount; elemN1/elemN2/elemArea/elemE length elementCount
+    nodeX: ptr<f64>,
+    nodeY: ptr<f64>,
+    elemN1: ptr<i32>,
+    elemN2: ptr<i32>,
+    elemArea: ptr<f64>,
+    elemE: ptr<f64>
+}
+
+function femAbs(x: f64) -> f64 {
+    if x < 0.0 {
+        return -x
+    }
+    return x
+}
+
+function femFinite(x: f64) -> bool {
+    return x == x and x <= 1.7976931348623157e308 and x >= -1.7976931348623157e308
+}
+
+export function femDofCount(mesh: FemTruss2D) -> i32 {
+    return mesh.nodeCount * 2
+}
+
+export function femMeshOk(mesh: FemTruss2D) -> bool {
+    if mesh.nodeCount <= 0 or mesh.nodeCount > 64 {
+        return false
+    }
+    if mesh.elementCount <= 0 or mesh.elementCount > 256 {
+        return false
+    }
+    for e in 0 to mesh.elementCount {
+        let a: i32 = mesh.elemN1[e]
+        let b: i32 = mesh.elemN2[e]
+        if a < 0 or b < 0 or a >= mesh.nodeCount or b >= mesh.nodeCount or a == b {
+            return false
+        }
+        if mesh.elemArea[e] <= 0.0 or mesh.elemE[e] <= 0.0 {
+            return false
+        }
+        if not femFinite(mesh.elemArea[e]) or not femFinite(mesh.elemE[e]) {
+            return false
+        }
+    }
+    for i in 0 to mesh.nodeCount {
+        if not femFinite(mesh.nodeX[i]) or not femFinite(mesh.nodeY[i]) {
+            return false
+        }
+    }
+    return true
+}
+
+# Clear dense ndof×ndof matrix and ndof load vector.
+export function femClearSystem(ndof: i32, k: ptr<f64>, f: ptr<f64>) -> bool {
+    if ndof <= 0 or ndof > 128 {
+        return false
+    }
+    for i in 0 to ndof * ndof {
+        k[i] = 0.0
+    }
+    for i in 0 to ndof {
+        f[i] = 0.0
+    }
+    return true
+}
+
+# Assemble global dense stiffness from truss elements. keScratch length 16.
+export function femAssembleDense(mesh: FemTruss2D, k: ptr<f64>, keScratch: ptr<f64>) -> bool {
+    if not femMeshOk(mesh) {
+        return false
+    }
+    let ndof: i32 = femDofCount(mesh)
+    for e in 0 to mesh.elementCount {
+        let n1: i32 = mesh.elemN1[e]
+        let n2: i32 = mesh.elemN2[e]
+        let elem: TrussElement2D = TrussElement2D {
+            x1: mesh.nodeX[n1], y1: mesh.nodeY[n1],
+            x2: mesh.nodeX[n2], y2: mesh.nodeY[n2],
+            crossSectionArea: mesh.elemArea[e],
+            youngModulus: mesh.elemE[e]
+        }
+        if truss2DStiffness(elem, keScratch) != 1 {
+            return false
+        }
+        let mut map: array<i32, 4> = [n1 * 2, n1 * 2 + 1, n2 * 2, n2 * 2 + 1]
+        for a in 0 to 4 {
+            for b in 0 to 4 {
+                k[map[a] * ndof + map[b]] = k[map[a] * ndof + map[b]] + keScratch[a * 4 + b]
+            }
+        }
+    }
+    return true
+}
+
+# Build free-DOF map: freeFlag[i]=1 if free. Writes freeDofs[0..freeCount).
+export function femBuildFreeMap(
+    ndof: i32,
+    freeFlag: ptr<i32>,
+    freeDofs: ptr<i32>,
+    freeCountOut: ptr<i32>
+) -> bool {
+    if ndof <= 0 or ndof > 128 {
+        return false
+    }
+    let mut count: i32 = 0
+    for i in 0 to ndof {
+        if freeFlag[i] != 0 {
+            freeDofs[count] = i
+            count = count + 1
+        }
+    }
+    if count <= 0 {
+        return false
+    }
+    freeCountOut[0] = count
+    return true
+}
+
+# Extract reduced Kff and Ff from global K, F using freeDofs.
+export function femReduceSystem(
+    ndof: i32,
+    freeCount: i32,
+    freeDofs: ptr<i32>,
+    k: ptr<f64>,
+    f: ptr<f64>,
+    kff: ptr<f64>,
+    ff: ptr<f64>
+) -> bool {
+    if freeCount <= 0 or freeCount > ndof {
+        return false
+    }
+    for i in 0 to freeCount {
+        let gi: i32 = freeDofs[i]
+        ff[i] = f[gi]
+        for j in 0 to freeCount {
+            let gj: i32 = freeDofs[j]
+            kff[i * freeCount + j] = k[gi * ndof + gj]
+        }
+    }
+    return true
+}
+
+# Dense GE with partial pivoting on an n×n system (copies into scratch).
+export function femDenseSolve(
+    n: i32,
+    matrix: ptr<f64>,
+    rhs: ptr<f64>,
+    solution: ptr<f64>,
+    scratchMatrix: ptr<f64>,
+    scratchRhs: ptr<f64>,
+    pivotTol: f64
+) -> bool {
+    if n <= 0 or n > 128 or pivotTol <= 0.0 {
+        return false
+    }
+    for i in 0 to n * n {
+        scratchMatrix[i] = matrix[i]
+    }
+    for i in 0 to n {
+        scratchRhs[i] = rhs[i]
+        solution[i] = 0.0
+    }
+    for k in 0 to n {
+        let mut pivotRow: i32 = k
+        let mut pivotMag: f64 = femAbs(scratchMatrix[k * n + k])
+        for r in k + 1 to n {
+            let mag: f64 = femAbs(scratchMatrix[r * n + k])
+            if mag > pivotMag {
+                pivotMag = mag
+                pivotRow = r
+            }
+        }
+        if pivotMag < pivotTol {
+            return false
+        }
+        if pivotRow != k {
+            for j in k to n {
+                let a: i32 = k * n + j
+                let b: i32 = pivotRow * n + j
+                let tmp: f64 = scratchMatrix[a]
+                scratchMatrix[a] = scratchMatrix[b]
+                scratchMatrix[b] = tmp
+            }
+            let tr: f64 = scratchRhs[k]
+            scratchRhs[k] = scratchRhs[pivotRow]
+            scratchRhs[pivotRow] = tr
+        }
+        for i in k + 1 to n {
+            let factor: f64 = scratchMatrix[i * n + k] / scratchMatrix[k * n + k]
+            scratchMatrix[i * n + k] = 0.0
+            for j in k + 1 to n {
+                scratchMatrix[i * n + j] = scratchMatrix[i * n + j] - factor * scratchMatrix[k * n + j]
+            }
+            scratchRhs[i] = scratchRhs[i] - factor * scratchRhs[k]
+        }
+    }
+    let mut i: i32 = n - 1
+    while i >= 0 {
+        let mut value: f64 = scratchRhs[i]
+        for j in i + 1 to n {
+            value = value - scratchMatrix[i * n + j] * solution[j]
+        }
+        solution[i] = value / scratchMatrix[i * n + i]
+        if not femFinite(solution[i]) {
+            return false
+        }
+        i = i - 1
+    }
+    return true
+}
+
+# Scatter reduced free solution into global u (zeros on fixed DOFs).
+export function femScatterFree(
+    ndof: i32,
+    freeCount: i32,
+    freeDofs: ptr<i32>,
+    uFree: ptr<f64>,
+    u: ptr<f64>
+) -> bool {
+    for i in 0 to ndof {
+        u[i] = 0.0
+    }
+    for i in 0 to freeCount {
+        u[freeDofs[i]] = uFree[i]
+    }
+    return true
+}
+
+# Global residual r = K u - f (all DOFs). Returns max |r_i| on free DOFs.
+export function femMaxFreeResidual(
+    ndof: i32,
+    freeCount: i32,
+    freeDofs: ptr<i32>,
+    k: ptr<f64>,
+    u: ptr<f64>,
+    f: ptr<f64>
+) -> f64 {
+    let mut maxR: f64 = 0.0
+    for i in 0 to freeCount {
+        let g: i32 = freeDofs[i]
+        let mut r: f64 = -f[g]
+        for j in 0 to ndof {
+            r = r + k[g * ndof + j] * u[j]
+        }
+        let mag: f64 = femAbs(r)
+        if mag > maxR {
+            maxR = mag
+        }
+    }
+    return maxR
+}
+
+# Reaction on a fixed DOF: R = (K u)_dof - f_dof (positive resists applied load convention).
+export function femReaction(ndof: i32, dof: i32, k: ptr<f64>, u: ptr<f64>, f: ptr<f64>) -> f64 {
+    let mut r: f64 = -f[dof]
+    for j in 0 to ndof {
+        r = r + k[dof * ndof + j] * u[j]
+    }
+    return r
+}
+
+# Build CSR of reduced Kff (lower+upper; stores all entries including zeros skipped).
+# Capacity must hold freeCount*freeCount worst case; returns nnz or -1.
+export function femReduceToCsr(
+    freeCount: i32,
+    kff: ptr<f64>,
+    rowPtr: ptr<i32>,
+    colIdx: ptr<i32>,
+    values: ptr<f64>,
+    capacity: i32
+) -> i32 {
+    if freeCount <= 0 or capacity < freeCount {
+        return -1
+    }
+    let mut nnz: i32 = 0
+    rowPtr[0] = 0
+    for i in 0 to freeCount {
+        for j in 0 to freeCount {
+            let v: f64 = kff[i * freeCount + j]
+            if v != 0.0 {
+                if nnz >= capacity {
+                    return -1
+                }
+                colIdx[nnz] = j
+                values[nnz] = v
+                nnz = nnz + 1
+            }
+        }
+        rowPtr[i + 1] = nnz
+    }
+    return nnz
+}
+
+export function femCsrSpmv(
+    n: i32,
+    rowPtr: ptr<i32>,
+    colIdx: ptr<i32>,
+    values: ptr<f64>,
+    x: ptr<f64>,
+    y: ptr<f64>
+) -> bool {
+    if n <= 0 {
+        return false
+    }
+    for i in 0 to n {
+        let mut sum: f64 = 0.0
+        for k in rowPtr[i] to rowPtr[i + 1] {
+            sum = sum + values[k] * x[colIdx[k]]
+        }
+        y[i] = sum
+    }
+    return true
+}
+
+# Conjugate gradient for SPD Kff u = ff. Scratch: r,p,ap length n.
+export function femCgSolve(
+    n: i32,
+    rowPtr: ptr<i32>,
+    colIdx: ptr<i32>,
+    values: ptr<f64>,
+    b: ptr<f64>,
+    x: ptr<f64>,
+    r: ptr<f64>,
+    p: ptr<f64>,
+    ap: ptr<f64>,
+    maxIter: i32,
+    tol: f64
+) -> bool {
+    if n <= 0 or maxIter <= 0 or tol <= 0.0 {
+        return false
+    }
+    for i in 0 to n {
+        x[i] = 0.0
+    }
+    if not femCsrSpmv(n, rowPtr, colIdx, values, x, ap) {
+        return false
+    }
+    let mut rsold: f64 = 0.0
+    for i in 0 to n {
+        r[i] = b[i] - ap[i]
+        p[i] = r[i]
+        rsold = rsold + r[i] * r[i]
+    }
+    if rsold <= tol * tol {
+        return true
+    }
+    for it in 0 to maxIter {
+        if not femCsrSpmv(n, rowPtr, colIdx, values, p, ap) {
+            return false
+        }
+        let mut pap: f64 = 0.0
+        for i in 0 to n {
+            pap = pap + p[i] * ap[i]
+        }
+        if pap <= 0.0 or not femFinite(pap) {
+            return false
+        }
+        let alpha: f64 = rsold / pap
+        let mut rsnew: f64 = 0.0
+        for i in 0 to n {
+            x[i] = x[i] + alpha * p[i]
+            r[i] = r[i] - alpha * ap[i]
+            rsnew = rsnew + r[i] * r[i]
+        }
+        if rsnew <= tol * tol {
+            return true
+        }
+        let beta: f64 = rsnew / rsold
+        for i in 0 to n {
+            p[i] = r[i] + beta * p[i]
+        }
+        rsold = rsnew
+    }
+    return false
+}
+
+# Axial force in element e from global displacement u (ndof = 2*nodes).
+export function femElementAxialForce(mesh: FemTruss2D, e: i32, u: ptr<f64>) -> f64 {
+    let n1: i32 = mesh.elemN1[e]
+    let n2: i32 = mesh.elemN2[e]
+    let elem: TrussElement2D = TrussElement2D {
+        x1: mesh.nodeX[n1], y1: mesh.nodeY[n1],
+        x2: mesh.nodeX[n2], y2: mesh.nodeY[n2],
+        crossSectionArea: mesh.elemArea[e],
+        youngModulus: mesh.elemE[e]
+    }
+    return truss2DAxialForce(
+        elem,
+        u[n1 * 2], u[n1 * 2 + 1],
+        u[n2 * 2], u[n2 * 2 + 1]
+    )
+}

@@ -67,6 +67,17 @@ This establishes one model/solver/kernel agreement slice but **not** broad numer
 
 `tests/linear_stackups.flow` verifies a 20.00 mm bore minus 19.90 mm shaft nominal and interval 0.030–0.170 mm. With σ = 30/20 μm, perfect positive correlation gives clearance σ = 10 μm, independence yields variance 1.3×10⁻⁹ m², and perfect negative correlation gives 50 μm. Asymmetric covariance, a non-positive-semidefinite matrix, and negative half-widths are rejected; a zero covariance matrix is admitted. The method uses a caller-owned Cholesky-like factor with semidefinite pivot treatment and a relative matrix tolerance; its treatment of nearly singular matrices depends on the supplied tolerance. All dimensions are in metres; a 3D datum hierarchy remains unimplemented.
 
+## Global 2D truss FEM (issue #5)
+
+`tests/fem_truss.flow` assembles pin-jointed meshes from `herbie.truss` elements:
+
+- Single bar: tip `u = FL/AE = 10^{-4}` m, axial force 1000 N, support reaction −1000 N, free residual ≤ 1e-8
+- Two equal bars in series: mid/tip displacements 0.2 mm / 0.4 mm
+- Symmetric V-truss under vertical load: `uy = −F/(EA√2)`, `ux=0`; dense GE vs CSR CG agree to 1e-10; each support carries 500 N
+- Degenerate self-loop elements rejected
+
+Beams, plates, solids, plasticity and mesh-convergence suites remain open under [#5](https://github.com/flooooooooooow/herbie/issues/5).
+
 ## Seeded Monte Carlo and process indices (issue #6)
 
 `tests/montecarlo_stack.flow` advances manufacturing tolerance acceptance with:
