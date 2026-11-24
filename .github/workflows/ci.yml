@@ -61,6 +61,8 @@ jobs:
         run: flow run tests/sparse_mna.flow
       - name: Verify nonlinear diode NR and switch events
         run: flow run tests/nl_devices.flow
+      - name: Verify versioned netlist parse, export and solver stamps
+        run: flow run tests/netlist.flow
       - name: Run ideal voltage source circuit demonstration
         run: flow run examples/mna_voltage_sources_demo.flow
       - name: Run AC phasor circuit demonstration
@@ -69,6 +71,8 @@ jobs:
         run: flow run examples/sparse_mna_demo.flow
       - name: Run nonlinear devices demonstration
         run: flow run examples/nl_devices_demo.flow
+      - name: Run netlist import demonstration
+        run: flow run examples/netlist_demo.flow
       - name: Verify first-class Flow physical units
         run: flow run examples/suspension_units.flow
       - name: Run vehicle demo

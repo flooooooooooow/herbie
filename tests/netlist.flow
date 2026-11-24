@@ -1,0 +1,311 @@
+import herbie.netlist {
+    NETLIST_FORMAT_VERSION, NetlistElement, NL_KIND_R, NL_KIND_C, NL_KIND_L,
+    NL_KIND_V, NL_KIND_I, NL_KIND_D, NL_KIND_S,
+    netlistLoadString, netlistLoadText, netlistParse, netlistExport,
+    netlistExportText, netlistFormatVersion, netlistErrorLine, netlistSkipped,
+    netlistElementCount, netlistNodeCount, netlistVoltageSourceCount,
+    netlistNode, netlistElement, netlistStampMna, netlistStampAc, netlistStampNl,
+    netlistHasOnlyResistiveDc, netlistHasNonlinear, netlistHasDynamics,
+    netlistHasAc, netlistAcOmega, netlistHasOp
+}
+import herbie.mna { MnaNetwork, mnaSolve, mnaMaxResidual }
+import herbie.ac { AcNetwork, acSolve, acMaxResidual, acRealDim }
+import herbie.nl {
+    NlElement, NlNetwork, nlSolve, nlNodeVoltage, nlDiodeVoltage, nlDiodeCurrent
+}
+
+function near(a: f64, b: f64, tol: f64) -> bool {
+    return a >= b - tol and a <= b + tol
+}
+
+function emptyNl() -> NlElement {
+    return NlElement { kind: 0, a: 0, b: 0, aux: 0, p0: 0.0, p1: 0.0, state: 0.0 }
+}
+
+function testDividerRoundTrip() -> i32 {
+    let deck: string = "* herbie-netlist 1\nV1 in 0 DC 12\nR1 in mid 1k\nR2 mid 0 1k\n.op\n.end\n"
+    if not netlistLoadString(deck) or not netlistParse() {
+        return 1
+    }
+    if netlistFormatVersion() != NETLIST_FORMAT_VERSION
+        or netlistNodeCount() != 2
+        or netlistElementCount() != 3
+        or netlistVoltageSourceCount() != 1
+        or not netlistHasOp()
+        or not netlistHasOnlyResistiveDc() {
+        return 2
+    }
+    let n_in: i32 = netlistNode("in")
+    let n_mid: i32 = netlistNode("mid")
+    if n_in < 0 or n_mid < 0 or n_in == n_mid {
+        return 3
+    }
+    let mut matrix: array<f64, 9> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut rhs: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut solution: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut scratch: array<f64, 9> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut work: array<f64, 3> = [0.0, 0.0, 0.0]
+    let network: MnaNetwork = MnaNetwork {
+        nodeCount: 2, voltageSourceCount: 1, matrix: &matrix[0], rhs: &rhs[0]
+    }
+    if not netlistStampMna(network) {
+        return 4
+    }
+    if not mnaSolve(network, &solution[0], &scratch[0], &work[0], 1.0e-12) {
+        return 5
+    }
+    if not near(solution[n_in], 12.0, 1.0e-10)
+        or not near(solution[n_mid], 6.0, 1.0e-10)
+        or not near(solution[2], -0.006, 1.0e-12) {
+        return 6
+    }
+    if mnaMaxResidual(network, &solution[0]) > 1.0e-12 {
+        return 7
+    }
+    let nexp: i32 = netlistExport()
+    if nexp <= 0 {
+        return 8
+    }
+    if not netlistLoadText(netlistExportText(), nexp) or not netlistParse() {
+        return 9
+    }
+    if netlistElementCount() != 3 or netlistNodeCount() != 2
+        or netlistVoltageSourceCount() != 1
+        or netlistNode("in") != n_in or netlistNode("mid") != n_mid {
+        return 10
+    }
+    let e0: NetlistElement = netlistElement(0)
+    let e1: NetlistElement = netlistElement(1)
+    let e2: NetlistElement = netlistElement(2)
+    if e0.kind != NL_KIND_V or not near(e0.p0, 12.0, 1.0e-12) {
+        return 11
+    }
+    if e1.kind != NL_KIND_R or not near(e1.p0, 1000.0, 1.0e-12) {
+        return 12
+    }
+    if e2.kind != NL_KIND_R or not near(e2.p0, 1000.0, 1.0e-12) {
+        return 13
+    }
+    # Second stamp/solve after round-trip must match.
+    if not netlistStampMna(network)
+        or not mnaSolve(network, &solution[0], &scratch[0], &work[0], 1.0e-12) {
+        return 14
+    }
+    if not near(solution[n_mid], 6.0, 1.0e-10) {
+        return 15
+    }
+    return 0
+}
+
+function testAcRcNetlist() -> i32 {
+    let deck: string = "* herbie-netlist 1\nV1 in 0 DC 1\nR1 in out 1k\nC1 out 0 1u\n.ac omega=1000\n.end\n"
+    if not netlistLoadString(deck) or not netlistParse() {
+        return 20
+    }
+    if not netlistHasDynamics() or not netlistHasAc() or not near(netlistAcOmega(), 1000.0, 1.0e-12) {
+        return 21
+    }
+    let n_out: i32 = netlistNode("out")
+    let n_in: i32 = netlistNode("in")
+    let dim: i32 = 2 * (2 + 1)
+    let mut matrix: array<f64, 36> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut rhs: array<f64, 6> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut solution: array<f64, 6> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut scratch: array<f64, 36> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut work: array<f64, 6> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let network: AcNetwork = AcNetwork {
+        nodeCount: 2, voltageSourceCount: 1, omega: 1000.0,
+        matrix: &matrix[0], rhs: &rhs[0]
+    }
+    if acRealDim(network) != dim {
+        return 22
+    }
+    if not netlistStampAc(network)
+        or not acSolve(network, &solution[0], &scratch[0], &work[0], 1.0e-12) {
+        return 23
+    }
+    # Series RC: H = 1/(1+j), |H|=1/sqrt(2), angle=-pi/4
+    let vre: f64 = solution[n_out]
+    let vim: f64 = solution[n_out + 3]
+    let mag: f64 = sqrt(vre * vre + vim * vim)
+    if not near(mag, 0.7071067811865476, 1.0e-10) {
+        return 24
+    }
+    if not near(vre, 0.5, 1.0e-10) or not near(vim, -0.5, 1.0e-10) {
+        return 25
+    }
+    if not near(solution[n_in], 1.0, 1.0e-10) {
+        return 26
+    }
+    if acMaxResidual(network, &solution[0]) > 1.0e-10 {
+        return 27
+    }
+    return 0
+}
+
+function testDiodeSwitchNetlist() -> i32 {
+    let deck: string = "* herbie-netlist 1\nV1 in 0 DC 5\nD1 in load IS=1e-14 N=1\nR1 load 0 1k\nS1 mid 0 1 1meg OPEN\nR2 in mid 1k\n.op\n.end\n"
+    if not netlistLoadString(deck) or not netlistParse() {
+        return 30
+    }
+    if not netlistHasNonlinear() or netlistElementCount() != 5 {
+        return 31
+    }
+    let n_load: i32 = netlistNode("load")
+    let n_in: i32 = netlistNode("in")
+    let mut elementCount: i32 = 0
+    let mut iterations: i32 = 0
+    let mut elements: array<NlElement, 8> = [
+        emptyNl(), emptyNl(), emptyNl(), emptyNl(),
+        emptyNl(), emptyNl(), emptyNl(), emptyNl()
+    ]
+    let mut matrix: array<f64, 16> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut rhs: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut solution: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut previous: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut scratch: array<f64, 16> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut work: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let network: NlNetwork = NlNetwork {
+        nodeCount: 3, voltageSourceCount: 1,
+        elementCount: &elementCount, elementCapacity: 8,
+        maxIter: 80, relTol: 1.0e-9, absTol: 1.0e-12, gmin: 0.0,
+        elements: &elements[0], matrix: &matrix[0], rhs: &rhs[0],
+        solution: &solution[0], previous: &previous[0],
+        scratchMatrix: &scratch[0], scratchRhs: &work[0], iterations: &iterations
+    }
+    if not netlistStampNl(network) or not nlSolve(network) {
+        return 32
+    }
+    let vload: f64 = nlNodeVoltage(network, n_load)
+    let vin: f64 = nlNodeVoltage(network, n_in)
+    if not near(vin, 5.0, 1.0e-9) {
+        return 33
+    }
+    # Series 1k + diode at 5 V: load is a few hundred mV below 5 V.
+    if vload < 0.4 or vload > 4.9 {
+        return 34
+    }
+    let vd: f64 = vin - vload
+    let id: f64 = vload / 1000.0
+    let isat: f64 = 1.0e-14
+    let nvt: f64 = 0.025852
+    let shockley: f64 = isat * (exp(vd / nvt) - 1.0)
+    if not near(id, shockley, 1.0e-9) {
+        return 35
+    }
+    # Round-trip diode+switch deck
+    let nexp: i32 = netlistExport()
+    if nexp <= 0 or not netlistLoadText(netlistExportText(), nexp) or not netlistParse() {
+        return 36
+    }
+    if netlistElementCount() != 5 or not netlistHasNonlinear() {
+        return 37
+    }
+    let foundS: bool = false
+    for i in 0 to netlistElementCount() {
+        if netlistElement(i).kind == NL_KIND_S {
+            foundS = true
+            if netlistElement(i).state != 0 {
+                return 38
+            }
+        }
+    }
+    if not foundS {
+        return 39
+    }
+    return 0
+}
+
+function testSuffixesAndSkip() -> i32 {
+    let deck: string = "* herbie-netlist 1\nI1 0 out DC 10m\nR1 out mid 2.2k\nR2 mid 0 4.7k\n.model DMOD D\n.op\n.end\n"
+    if not netlistLoadString(deck) or not netlistParse() {
+        return 40
+    }
+    if netlistSkipped() < 1 {
+        return 41
+    }
+    let n_out: i32 = netlistNode("out")
+    let n_mid: i32 = netlistNode("mid")
+    let mut matrix: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut rhs: array<f64, 2> = [0.0, 0.0]
+    let mut solution: array<f64, 2> = [0.0, 0.0]
+    let mut scratch: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut work: array<f64, 2> = [0.0, 0.0]
+    let network: MnaNetwork = MnaNetwork {
+        nodeCount: 2, voltageSourceCount: 0, matrix: &matrix[0], rhs: &rhs[0]
+    }
+    if not netlistStampMna(network)
+        or not mnaSolve(network, &solution[0], &scratch[0], &work[0], 1.0e-12) {
+        return 42
+    }
+    # Series 2.2k+4.7k with 10 mA: Vout = 0.01*6900 = 69 V, Vmid = 0.01*4700 = 47 V
+    if not near(solution[n_out], 69.0, 1.0e-9) or not near(solution[n_mid], 47.0, 1.0e-9) {
+        return 43
+    }
+    return 0
+}
+
+function testBadVersion() -> i32 {
+    let deck: string = "* herbie-netlist 99\nR1 a 0 1k\n.end\n"
+    if not netlistLoadString(deck) {
+        return 50
+    }
+    if netlistParse() {
+        return 51
+    }
+    return 0
+}
+
+function main() -> i32 {
+    let mut code: i32 = testDividerRoundTrip()
+    if code != 0 {
+        print("FAIL divider/round-trip ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testAcRcNetlist()
+    if code != 0 {
+        print("FAIL AC RC netlist ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testDiodeSwitchNetlist()
+    if code != 0 {
+        print("FAIL diode/switch netlist ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testSuffixesAndSkip()
+    if code != 0 {
+        print("FAIL suffixes/skip ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testBadVersion()
+    if code != 0 {
+        print("FAIL bad version ")
+        print(code)
+        println("")
+        return code
+    }
+    println("PASS versioned netlist parse, export round-trip and solver stamps")
+    return 0
+}

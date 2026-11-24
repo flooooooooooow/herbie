@@ -1,0 +1,7 @@
+* herbie-netlist 1
+* 12 V resistive divider — analytic mid = 6 V
+V1 in 0 DC 12
+R1 in mid 1k
+R2 mid 0 1k
+.op
+.end

@@ -86,3 +86,7 @@ See [the transient contract and analytical gates](circuit-transients.md). `flow 
 ## Nonlinear diode and switch validation
 
 `tests/nl_devices.flow` checks Shockley currents for a voltage-pinned diode (relative ≤ 1e-9), series 1 kΩ+diode against independent bisection (≤ 1e-9 V), forward decade slope at 10 µA/100 µA within 1e-6 V of `n Vt ln 10`, open/closed resistive-switch dividers, explicit threshold events, ±5 V DC half-wave rectifier KVL/Shockley, and `maxIter=1` non-convergence. See [nl-devices.md](nl-devices.md).
+
+## Versioned netlist validation
+
+`tests/netlist.flow` parses format-version-1 decks, stamps them into `herbie.mna` / `herbie.ac` / `herbie.nl`, and round-trips through `netlistExport`. The 12 V divider recovers 6 V / −6 mA; series RC at `ω=1000` matches `0.5−j0.5` V; a diode+switch deck satisfies Shockley+KVL within 1e-9 A; engineering suffixes and skipped `.model` cards are checked; unsupported format versions are rejected. See [netlist.md](netlist.md). External ngspice waveform comparisons remain a separate increment under [#11](https://github.com/flooooooooooow/herbie/issues/11).

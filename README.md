@@ -13,6 +13,7 @@
 | `herbie.ac` | Dense AC phasor MNA for R/C/L with independent V/I sources, real 2n block solve, residual and average-power helpers | Small linear AC networks at fixed ω>0; no switches, diodes, sparse or SPICE parity |
 | `herbie.sparse_mna` | COO→CSR DC MNA assembly for R/I/V, CSR SpMV residual, dense expand + pivoted solve with dense-reference checks | Sparse assembly only; factorisation still dense; no AC/nonlinear/fill-reducing LU |
 | `herbie.nl` | Dense DC NR MNA with Shockley diodes (pnjlim), resistive switches and explicit threshold events | DC operating points only; finite Ron/Roff; no transient diode C or BJT |
+| `herbie.netlist` | Versioned SPICE-subset import/export (R/C/L/V/I/D/S) with stamps into MNA/AC/NL | Format v1 subset; no subcircuits, `.model` library or waveform sources |
 | `herbie.circuits` | Sparse-API-shaped dense DC nodal assembly, resistors, current sources, Gaussian elimination with partial pivoting and KCL residual | Small linear resistive DC circuits only; no voltage-source MNA or nonlinear/transient components |
 | `herbie.electrical` | Closed-form RC/RL transients; series RLC RK4 and stored energy | Ideal lumped/passive networks only, no circuit graph, switching devices or circuit DAE |
 | `herbie.mechanics` | Single-axis rotational inertia, torsional stiffness/damping RK4 and ideal fixed-ratio gear power balance | No joints, bearing dynamics, contact, clutch or multibody assembly |
@@ -79,6 +80,8 @@ flow run tests/sparse_mna.flow
 flow run examples/sparse_mna_demo.flow
 flow run tests/nl_devices.flow
 flow run examples/nl_devices_demo.flow
+flow run tests/netlist.flow
+flow run examples/netlist_demo.flow
 ```
 
 The exact Flow compiler revision used by CI is pinned in [the CI workflow](.github/workflows/ci.yml). To consume a module from another Flow package, use a path dependency on this repository and import, for example, `herbie.vehicle { QuarterCarParameters, QuarterCarState, quarterCarStep }`.
@@ -95,7 +98,7 @@ The exact Flow compiler revision used by CI is pinned in [the CI workflow](.gith
 
 ## AC phasor circuit solve
 
-[`herbie.ac`](src/ac.flow) stamps R/C/L and independent sources into a real block expansion of complex MNA at a caller-chosen `omega > 0`. Analytical fixtures cover a resistive divider, series RC/RL responses, series RLC resonance and a nodal R‖C current drive, with stated tolerances in [docs/ac-phasor-mna.md](docs/ac-phasor-mna.md). Switches, nonlinear devices and SPICE cross-validation remain open under #11.
+[`herbie.ac`](src/ac.flow) stamps R/C/L and independent sources into a real block expansion of complex MNA at a caller-chosen `omega > 0`. Analytical fixtures cover a resistive divider, series RC/RL responses, series RLC resonance and a nodal R‖C current drive, with stated tolerances in [docs/ac-phasor-mna.md](docs/ac-phasor-mna.md). Netlist import is in `herbie.netlist`; external SPICE waveform cross-validation remains under #11.
 
 ## Sparse DC MNA assembly
 
@@ -104,6 +107,10 @@ The exact Flow compiler revision used by CI is pinned in [the CI workflow](.gith
 ## Nonlinear diodes and switches
 
 [`herbie.nl`](src/nl.flow) runs Newton–Raphson DC MNA with Shockley diodes (pnjlim damping) and resistive Ron/Roff switches. Switch open/close is an explicit threshold event. Analytical fixtures and a DC half-wave check are in [docs/nl-devices.md](docs/nl-devices.md).
+
+## Versioned netlist import/export
+
+[`herbie.netlist`](src/netlist.flow) reads and writes format-version-1 SPICE-subset decks (`R/C/L/V/I/D` plus Herbie resistive `S` switches) and stamps them into `herbie.mna`, `herbie.ac` or `herbie.nl`. Round-trip and solver fixtures live in [docs/netlist.md](docs/netlist.md). Example decks are under `examples/netlists/`.
 
 The standalone browser has no third-party runtime CDN requirement: official Three.js r187 is vendored under `site/vendor/` with its MIT licence. The repository-root `index.html` redirects to `site/` when Pages is configured to publish from a branch; the Actions workflow publishes `site/` at the Pages root. A Chromium regression asserts CSS loads and the WebGL canvas actually renders.
 
