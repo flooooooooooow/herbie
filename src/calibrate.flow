@@ -1,0 +1,332 @@
+# @module herbie.calibrate
+# Calibration helpers: train/validation split, MAD outlier gate, affine surface
+# fit (z = a + b x + c y), holdout RMSE, finite-difference sensitivity and a
+# seeded 1-D golden-section fit. CSV loading uses herbie.verify parsers.
+# No invented chemistry/ageing; fitted coefficients must cite source split.
+
+import herbie.verify { verifyParseCsvTable }
+
+export struct CalibSplit {
+    # Inclusive train [0, trainCount); validation [trainCount, trainCount+valCount).
+    trainCount: i32,
+    valCount: i32
+}
+
+export struct CalibAffine {
+    a: f64,
+    b: f64,
+    c: f64
+}
+
+export struct CalibFitReport {
+    coefficients: CalibAffine,
+    trainRmse: f64,
+    valRmse: f64,
+    trainCount: i32,
+    valCount: i32,
+    outliersRejected: i32,
+    ok: bool
+}
+
+export struct CalibSensitivity {
+    dZdA: f64,
+    dZdB: f64,
+    dZdC: f64
+}
+
+function calFinite(x: f64) -> bool {
+    return x == x and x <= 1.7976931348623157e308 and x >= -1.7976931348623157e308
+}
+
+function calAbs(x: f64) -> f64 {
+    if x < 0.0 {
+        return -x
+    }
+    return x
+}
+
+export function calibSplitOk(split: CalibSplit, totalRows: i32) -> bool {
+    if split.trainCount <= 0 or split.valCount <= 0 {
+        return false
+    }
+    if split.trainCount + split.valCount > totalRows {
+        return false
+    }
+    return true
+}
+
+# Evaluate affine surface at (x, y).
+export function calibAffineEval(m: CalibAffine, x: f64, y: f64) -> f64 {
+    return m.a + m.b * x + m.c * y
+}
+
+# RMSE of affine model on rows [row0, row0+count) of row-major [x,y,z] triples.
+export function calibAffineRmse(
+    values: ptr<f64>,
+    row0: i32,
+    count: i32,
+    model: CalibAffine
+) -> f64 {
+    if count <= 0 {
+        return 0.0 / 0.0
+    }
+    let mut sumSq: f64 = 0.0
+    for i in 0 to count {
+        let base: i32 = (row0 + i) * 3
+        let x: f64 = values[base]
+        let y: f64 = values[base + 1]
+        let z: f64 = values[base + 2]
+        let e: f64 = calibAffineEval(model, x, y) - z
+        sumSq = sumSq + e * e
+    }
+    return sqrt(sumSq / (count as f64))
+}
+
+# Median of a small caller-owned buffer (insertion sort). count ≤ 64.
+function calMedian(buf: ptr<f64>, count: i32) -> f64 {
+    for i in 1 to count {
+        let key: f64 = buf[i]
+        let mut j: i32 = i
+        while j > 0 and buf[j - 1] > key {
+            buf[j] = buf[j - 1]
+            j = j - 1
+        }
+        buf[j] = key
+    }
+    if count % 2 == 1 {
+        return buf[count / 2]
+    }
+    return 0.5 * (buf[count / 2 - 1] + buf[count / 2])
+}
+
+# Modified z-score outlier gate on z column of [x,y,z] rows. Writes kept rows
+# packed to the front of values; returns kept count. threshold typical 3.5.
+export function calibRejectOutliersMad(
+    values: ptr<f64>,
+    count: i32,
+    threshold: f64,
+    scratch: ptr<f64>
+) -> i32 {
+    if count <= 0 or count > 64 or threshold <= 0.0 {
+        return -1
+    }
+    for i in 0 to count {
+        scratch[i] = values[i * 3 + 2]
+    }
+    let med: f64 = calMedian(scratch, count)
+    for i in 0 to count {
+        scratch[i] = calAbs(values[i * 3 + 2] - med)
+    }
+    let mad: f64 = calMedian(scratch, count)
+    if mad <= 0.0 {
+        return count
+    }
+    let mut kept: i32 = 0
+    for i in 0 to count {
+        let z: f64 = values[i * 3 + 2]
+        let score: f64 = 0.6745 * calAbs(z - med) / mad
+        if score <= threshold {
+            values[kept * 3] = values[i * 3]
+            values[kept * 3 + 1] = values[i * 3 + 1]
+            values[kept * 3 + 2] = values[i * 3 + 2]
+            kept = kept + 1
+        }
+    }
+    return kept
+}
+
+# Solve 3×3 normal equations for least-squares affine fit on train rows only.
+export function calibFitAffineTrain(
+    values: ptr<f64>,
+    split: CalibSplit,
+    out: ptr<CalibAffine>
+) -> bool {
+    if not calibSplitOk(split, split.trainCount + split.valCount) {
+        return false
+    }
+    if split.trainCount < 3 {
+        return false
+    }
+    # Accumulate ATA and ATb for columns [1, x, y].
+    let mut s00: f64 = 0.0
+    let mut s01: f64 = 0.0
+    let mut s02: f64 = 0.0
+    let mut s11: f64 = 0.0
+    let mut s12: f64 = 0.0
+    let mut s22: f64 = 0.0
+    let mut t0: f64 = 0.0
+    let mut t1: f64 = 0.0
+    let mut t2: f64 = 0.0
+    for i in 0 to split.trainCount {
+        let base: i32 = i * 3
+        let x: f64 = values[base]
+        let y: f64 = values[base + 1]
+        let z: f64 = values[base + 2]
+        if not calFinite(x) or not calFinite(y) or not calFinite(z) {
+            return false
+        }
+        s00 = s00 + 1.0
+        s01 = s01 + x
+        s02 = s02 + y
+        s11 = s11 + x * x
+        s12 = s12 + x * y
+        s22 = s22 + y * y
+        t0 = t0 + z
+        t1 = t1 + x * z
+        t2 = t2 + y * z
+    }
+    return calibSolveAffine(s00, s01, s02, s11, s12, s22, t0, t1, t2, out)
+}
+
+function calibSolveAffine(
+    s00: f64, s01: f64, s02: f64,
+    s11: f64, s12: f64, s22: f64,
+    t0: f64, t1: f64, t2: f64,
+    out: ptr<CalibAffine>
+) -> bool {
+    # Symmetric GE with partial pivoting on 3 unknowns [a,b,c].
+    let mut m00: f64 = s00
+    let mut m01: f64 = s01
+    let mut m02: f64 = s02
+    let mut m10: f64 = s01
+    let mut m11: f64 = s11
+    let mut m12: f64 = s12
+    let mut m20: f64 = s02
+    let mut m21: f64 = s12
+    let mut m22: f64 = s22
+    let mut r0: f64 = t0
+    let mut r1: f64 = t1
+    let mut r2: f64 = t2
+    # Eliminate column 0.
+    if calAbs(m00) < 1.0e-18 {
+        return false
+    }
+    let f10: f64 = m10 / m00
+    m11 = m11 - f10 * m01
+    m12 = m12 - f10 * m02
+    r1 = r1 - f10 * r0
+    let f20: f64 = m20 / m00
+    m21 = m21 - f20 * m01
+    m22 = m22 - f20 * m02
+    r2 = r2 - f20 * r0
+    if calAbs(m11) < 1.0e-18 {
+        return false
+    }
+    let f21: f64 = m21 / m11
+    m22 = m22 - f21 * m12
+    r2 = r2 - f21 * r1
+    if calAbs(m22) < 1.0e-18 {
+        return false
+    }
+    let c: f64 = r2 / m22
+    let b: f64 = (r1 - m12 * c) / m11
+    let a: f64 = (r0 - m01 * b - m02 * c) / m00
+    if not calFinite(a) or not calFinite(b) or not calFinite(c) {
+        return false
+    }
+    out[0] = CalibAffine { a: a, b: b, c: c }
+    return true
+}
+
+# Full report: fit on train only, score train and validation (no leakage).
+export function calibFitReport(
+    values: ptr<f64>,
+    split: CalibSplit
+) -> CalibFitReport {
+    let fail: CalibFitReport = CalibFitReport {
+        coefficients: CalibAffine { a: 0.0, b: 0.0, c: 0.0 },
+        trainRmse: 0.0, valRmse: 0.0,
+        trainCount: 0, valCount: 0, outliersRejected: 0, ok: false
+    }
+    if not calibSplitOk(split, split.trainCount + split.valCount) {
+        return fail
+    }
+    let mut modelArr: array<CalibAffine, 1> = [CalibAffine { a: 0.0, b: 0.0, c: 0.0 }]
+    if not calibFitAffineTrain(values, split, &modelArr[0]) {
+        return fail
+    }
+    let model: CalibAffine = modelArr[0]
+    let tr: f64 = calibAffineRmse(values, 0, split.trainCount, model)
+    let vr: f64 = calibAffineRmse(values, split.trainCount, split.valCount, model)
+    if not calFinite(tr) or not calFinite(vr) {
+        return fail
+    }
+    return CalibFitReport {
+        coefficients: model,
+        trainRmse: tr,
+        valRmse: vr,
+        trainCount: split.trainCount,
+        valCount: split.valCount,
+        outliersRejected: 0,
+        ok: true
+    }
+}
+
+# Finite-difference sensitivities of z(x,y) = a+bx+cy at a point.
+export function calibAffineSensitivity(x: f64, y: f64) -> CalibSensitivity {
+    return CalibSensitivity { dZdA: 1.0, dZdB: x, dZdC: y }
+}
+
+# Seeded 1-D golden-section search minimizing Σ(a + b x_i - z_i)^2 over b in [lo,hi]
+# with fixed a (mean residual offset). seed is unused beyond reproducibility contract
+# (bounds fully determine the search); kept for API stability with Monte Carlo seeds.
+export function calibFitSlopeGolden(
+    x: ptr<f64>,
+    z: ptr<f64>,
+    count: i32,
+    intercept: f64,
+    lo: f64,
+    hi: f64,
+    seed: u32,
+    outSlope: ptr<f64>
+) -> bool {
+    if count < 2 or lo >= hi or not calFinite(intercept) {
+        return false
+    }
+    # Touch seed so callers can pass Monte Carlo seeds without unused-arg issues.
+    if seed == (0 as u32) and lo == hi {
+        return false
+    }
+    let phi: f64 = 0.6180339887498949
+    let mut a: f64 = lo
+    let mut b: f64 = hi
+    let mut c: f64 = b - phi * (b - a)
+    let mut d: f64 = a + phi * (b - a)
+    for iter in 0 to 48 {
+        let fc: f64 = calibSlopeCost(x, z, count, intercept, c)
+        let fd: f64 = calibSlopeCost(x, z, count, intercept, d)
+        if fc < fd {
+            b = d
+            d = c
+            c = b - phi * (b - a)
+        } else {
+            a = c
+            c = d
+            d = a + phi * (b - a)
+        }
+    }
+    let mid: f64 = 0.5 * (a + b)
+    if not calFinite(mid) {
+        return false
+    }
+    outSlope[0] = mid
+    return true
+}
+
+function calibSlopeCost(x: ptr<f64>, z: ptr<f64>, count: i32, intercept: f64, slope: f64) -> f64 {
+    let mut s: f64 = 0.0
+    for i in 0 to count {
+        let e: f64 = intercept + slope * x[i] - z[i]
+        s = s + e * e
+    }
+    return s
+}
+
+# Load a 3-column CSV (x,y,z) via verify parser. Returns row count or -1.
+export function calibLoadXyzCsv(
+    text: string,
+    outValues: ptr<f64>,
+    maxRows: i32
+) -> i32 {
+    return verifyParseCsvTable(text, 3, true, outValues, maxRows)
+}

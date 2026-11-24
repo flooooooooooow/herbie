@@ -1,0 +1,45 @@
+# Affine torque-surface fit with explicit train/validation split.
+
+import herbie.calibrate {
+    CalibSplit, CalibFitReport, calibFitReport, calibAffineEval
+}
+
+function main() -> i32 {
+    # Synthetic plane T = 20 + 30 x + 80 y (kRPM, throttle → N·m).
+    let mut values: array<f64, 30> = [
+        1.0, 0.2, 66.0,
+        1.5, 0.2, 81.0,
+        2.0, 0.2, 96.0,
+        2.5, 0.2, 111.0,
+        1.0, 0.6, 98.0,
+        1.5, 0.6, 113.0,
+        2.0, 0.6, 128.0,
+        2.5, 0.6, 143.0,
+        1.0, 0.4, 82.0,
+        2.0, 0.4, 112.0
+    ]
+    let split: CalibSplit = CalibSplit { trainCount: 8, valCount: 2 }
+    let report: CalibFitReport = calibFitReport(&values[0], split)
+    if not report.ok {
+        println("FAIL calibration fit")
+        return 1
+    }
+    println("a [N m]")
+    println(report.coefficients.a)
+    println("b [N m / kRPM]")
+    println(report.coefficients.b)
+    println("c [N m / throttle]")
+    println(report.coefficients.c)
+    println("train RMSE")
+    println(report.trainRmse)
+    println("val RMSE")
+    println(report.valRmse)
+    let pred: f64 = calibAffineEval(report.coefficients, 2.0, 0.5)
+    println("T(2 kRPM, 0.5) [N m]")
+    println(pred)
+    if report.trainRmse > 1.0e-6 or report.valRmse > 1.0e-6 {
+        return 2
+    }
+    println("PASS calibration demo")
+    return 0
+}

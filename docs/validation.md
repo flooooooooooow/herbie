@@ -67,6 +67,17 @@ This establishes one model/solver/kernel agreement slice but **not** broad numer
 
 `tests/linear_stackups.flow` verifies a 20.00 mm bore minus 19.90 mm shaft nominal and interval 0.030–0.170 mm. With σ = 30/20 μm, perfect positive correlation gives clearance σ = 10 μm, independence yields variance 1.3×10⁻⁹ m², and perfect negative correlation gives 50 μm. Asymmetric covariance, a non-positive-semidefinite matrix, and negative half-widths are rejected; a zero covariance matrix is admitted. The method uses a caller-owned Cholesky-like factor with semidefinite pivot treatment and a relative matrix tolerance; its treatment of nearly singular matrices depends on the supplied tolerance. All dimensions are in metres; a 3D datum hierarchy remains unimplemented.
 
+## Calibration pipeline (issue #17)
+
+`tests/calibration_pipeline.flow` checks:
+
+- Explicit train/val split rejection when sizes exceed data; affine LS recovers exact plane
+- Changing validation targets does not change coefficients (no leakage)
+- MAD outlier gate removes planted spike; golden-section recovers slope=2
+- CSV fixture `tests/scenarios/torque_surface.csv` recovers T=20+30x+80y after outlier reject
+
+DOE planners, multi-map fitting with regularization catalogs, and full uncertainty-of-fit reporting remain open under [#17](https://github.com/flooooooooooow/herbie/issues/17).
+
 ## Thermo-fluid / cooling loop (issue #16)
 
 `tests/thermo_fluid.flow` checks:
