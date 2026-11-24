@@ -1,0 +1,20 @@
+Using SPARSE 1.3 as Direct Linear Solver
+
+Note: No compatibility mode selected!
+
+
+Circuit: * herbie ngspice ref: series rlc step
+
+Doing analysis at TEMP = 27.000000 and TNOM = 27.000000
+
+Using transient initial conditions
+
+No. of Data Rows : 5012
+vc1ms               =  1.604566e+00
+vc2ms               =  6.346373e-01
+vc5ms               =  1.080459e+00
+meas_done
+vc1ms = 1.604566e+00
+vc2ms = 6.346373e-01
+vc5ms = 1.080459e+00
+ngspice-42 done

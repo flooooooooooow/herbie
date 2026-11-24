@@ -1,0 +1,14 @@
+* herbie ngspice ref: resistive bridge
+V1 in 0 DC 10
+R1 in a 1k
+R2 a 0 2k
+R3 in b 2k
+R4 b 0 1k
+R5 a b 5k
+.op
+.control
+run
+print v(a) v(b) v(a,b) i(V1)
+quit
+.endc
+.end

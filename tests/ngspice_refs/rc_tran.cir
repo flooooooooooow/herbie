@@ -1,0 +1,15 @@
+* herbie ngspice ref: RC step transient (R=1k C=1u)
+V1 in 0 DC 1
+R1 in out 1k
+C1 out 0 1u
+.ic v(out)=0
+.tran 1u 5m uic
+.control
+run
+meas tran v1ms FIND v(out) AT=1m
+meas tran v2ms FIND v(out) AT=2m
+meas tran v5ms FIND v(out) AT=5m
+print v1ms v2ms v5ms
+quit
+.endc
+.end

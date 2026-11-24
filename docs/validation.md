@@ -88,3 +88,36 @@ See [the transient contract and analytical gates](circuit-transients.md). `flow 
 - Multirate 4:1 slow ticks and reproducible step traces
 
 This does **not** deliver implicit stiff DAE, adaptive steppers, general function-pointer plants, WCET measurement or unit-typed state vectors inside the integrator. See [numerical platform issue #3](https://github.com/flooooooooooow/herbie/issues/3).
+
+## AC phasor MNA validation
+
+`tests/ac_phasor_mna.flow` solves linear R/C/L networks in the frequency domain. A 12 V resistive divider at 1 krad/s reproduces the DC voltages and −6 mA source current with zero imaginary parts (1e-10 V / 1e-12 A) and 36 mW average source/load power balance. Series RC (`R=1 kΩ`, `C=1 µF`, `ω=1000`) matches `|H|=1/√2` and `∠H=−π/4` within 1e-10. Series RL (`R=100 Ω`, `L=0.1 H`) matches `|I|=1/(100√2)` and `∠I=−π/4`. Series RLC at `ω₀=1/√(LC)` yields source current `−1/R` and capacitor voltage magnitude `|I|/(ωC)` with phase `−π/2`. A nodal R‖C driven by 1 mA gives `V=0.5−j0.5` V. Floating networks and invalid stamps are rejected. See [ac-phasor-mna.md](ac-phasor-mna.md). Switches, diodes and SPICE comparisons were completed under [#11](https://github.com/flooooooooooow/herbie/issues/11).
+
+## Sparse DC MNA assembly validation
+
+`tests/sparse_mna.flow` stamps the 12 V / 1 kΩ / 1 kΩ divider into COO (7 triplets → CSR nnz 6 after merge), and recovers 12 V / 6 V / −6 mA with residual ≤ 1e-12. After a 1 mA injection the sparse solution and expanded matrix match `herbie.mna` within 1e-12 / 1e-15. Capacity overflow and floating networks are rejected. See [sparse-mna.md](sparse-mna.md). Factorisation remains dense after CSR expansion.
+
+`tests/sparse_bench.flow` builds a 40-node ladder, checks sparse≡dense within 1e-9, and prints CPU-tick timings for rebuild+solve. Recorded host sample and interpretation: [sparse-runtime.md](sparse-runtime.md). Not a WCET claim.
+
+## Nonlinear diode and switch validation
+
+`tests/nl_devices.flow` checks Shockley currents for a voltage-pinned diode (relative ≤ 1e-9), series 1 kΩ+diode against independent bisection (≤ 1e-9 V), forward decade slope at 10 µA/100 µA within 1e-6 V of `n Vt ln 10`, open/closed resistive-switch dividers, explicit threshold events, ±5 V DC half-wave rectifier KVL/Shockley, and `maxIter=1` non-convergence. See [nl-devices.md](nl-devices.md).
+
+## Versioned netlist validation
+
+`tests/netlist.flow` parses format-version-1 decks, stamps them into `herbie.mna` / `herbie.ac` / `herbie.nl`, and round-trips through `netlistExport`. The 12 V divider recovers 6 V / −6 mA; series RC at `ω=1000` matches `0.5−j0.5` V; a diode+switch deck satisfies Shockley+KVL within 1e-9 A; engineering suffixes and skipped `.model` cards are checked; unsupported format versions are rejected. See [netlist.md](netlist.md).
+
+## ngspice cross-validation
+
+`tests/ngspice_crossval.flow` compares Herbie MNA/AC/NL (and netlist stamps) against stored ngspice-42 prints for a DC divider (1e-12), series RC AC at `ω=1000` (1e-9 V), and a 5 V diode OP (1e-3 V, fixed-`nVt` vs `TEMP=27`). Provenance and decks: `tests/ngspice_refs/`. See [ngspice-crossval.md](ngspice-crossval.md).
+
+`tests/ngspice_fixtures.flow` adds an unbalanced resistive bridge (1e-6 V), a four-diode bridge rectifier (5e-3 V), and series RLC transient points at 1/2/5 ms (2e-2 V) against stored ngspice-42 refs. See [ngspice-fixtures.md](ngspice-fixtures.md).
+
+## Index-1 DAE MNA transient validation
+
+`tests/dae_mna.flow` exercises `herbie.dae` companion models: RC/RL/RLC analytic steps (BE), LC oscillator energy under trapezoidal UIC, floating-network rejection, `maxSteps` enforcement, and RC points vs stored ngspice-42 `rc_tran` measurements (5e-4 V). See [dae-mna.md](dae-mna.md).
+
+## Zero-Ron ideal switch validation
+
+`tests/ideal_switch.flow` checks closed-switch series dividers (exact 6 V, 6 mA branch current, zero voltage drop), open-switch isolation, threshold events with re-solve, source/load power balance, and floating-network rejection. See [ideal-switch.md](ideal-switch.md).
+

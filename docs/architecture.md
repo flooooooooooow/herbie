@@ -11,6 +11,13 @@ src/
   ode.flow           Shared fixed-step Euler/semi-implicit/RK4, events, multirate
   circuits.flow      Nodal circuit assembly and dense pivoted DC solve
   mna.flow           Dense DC MNA with ideal voltage-source branch unknowns
+  ac.flow            Dense AC phasor MNA for linear R/C/L networks
+  sparse_mna.flow    COO→CSR DC MNA assembly with dense expand solve
+  nl.flow            Dense DC NR MNA with diodes and resistive switches
+  netlist.flow       Versioned SPICE-subset import/export (optional I/O)
+  dae.flow           Dense index-1 DAE MNA transient (BE/TRAP companions)
+  ideal_sw.flow      Dense DC MNA with zero-Ron ideal switches
+  transient.flow     Shared Flow-backend linear RLC transient facade
   electrical.flow    Lumped passive RC/RL/RLC
   mechanics.flow     Single-axis rotation and ideal gear
   motors.flow        Coupled armature/rotor DC motor
@@ -30,10 +37,25 @@ tests/
   engineering_smoke.flow
   vehicle_energy.flow
   ode_platform.flow
+  ac_phasor_mna.flow
+  sparse_mna.flow
+  nl_devices.flow
+  netlist.flow
+  ngspice_crossval.flow
+  dae_mna.flow
+  ideal_switch.flow
+  ngspice_fixtures.flow
+  sparse_bench.flow
+  ngspice_refs/        Stored ngspice-42 prints + provenance
 examples/
   quarter_car_demo.flow
   manufacturing_demo.flow
   ode_platform_demo.flow
+  ac_phasor_demo.flow
+  sparse_mna_demo.flow
+  nl_devices_demo.flow
+  netlist_demo.flow
+  netlists/*.cir
 ```
 
 Every step function takes an explicit current state, immutable model parameters, the environmental inputs, and `dt`, and returns the next state. Call sites decide scheduling, checkpointing, telemetry, fault detection and synchronization. All values currently use SI units and `f64`.

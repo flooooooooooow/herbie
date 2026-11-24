@@ -1,0 +1,11 @@
+* herbie ngspice ref: DC resistive divider
+V1 in 0 DC 12
+R1 in mid 1k
+R2 mid 0 1k
+.op
+.control
+run
+print v(in) v(mid) i(V1)
+quit
+.endc
+.end

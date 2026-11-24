@@ -1,0 +1,42 @@
+import herbie.nl {
+    NlElement, NlNetwork, nlClear, nlAddResistor, nlAddVoltageSource, nlAddDiode,
+    nlSolve, nlDiodeVoltage, nlDiodeCurrent, nlNodeVoltage
+}
+
+function emptyElem() -> NlElement {
+    return NlElement { kind: 0, a: 0, b: 0, aux: 0, p0: 0.0, p1: 0.0, state: 0.0 }
+}
+
+function main() -> i32 {
+    let mut elementCount: i32 = 0
+    let mut iterations: i32 = 0
+    let mut elements: array<NlElement, 4> = [emptyElem(), emptyElem(), emptyElem(), emptyElem()]
+    let mut matrix: array<f64, 9> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut rhs: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut solution: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut previous: array<f64, 3> = [0.0, 0.0, 0.0]
+    let mut scratch: array<f64, 9> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut work: array<f64, 3> = [0.0, 0.0, 0.0]
+    let n: NlNetwork = NlNetwork {
+        nodeCount: 2, voltageSourceCount: 1,
+        elementCount: &elementCount, elementCapacity: 4,
+        maxIter: 80, relTol: 1.0e-9, absTol: 1.0e-12, gmin: 0.0,
+        elements: &elements[0], matrix: &matrix[0], rhs: &rhs[0],
+        solution: &solution[0], previous: &previous[0],
+        scratchMatrix: &scratch[0], scratchRhs: &work[0], iterations: &iterations
+    }
+    if not nlClear(n) { return 1 }
+    if nlAddVoltageSource(n, 0, 0, -1, 5.0) < 0 { return 2 }
+    let d: i32 = nlAddDiode(n, 0, 1, 1.0e-14, 0.025852)
+    if d < 0 or nlAddResistor(n, 1, -1, 1000.0) < 0 { return 3 }
+    if not nlSolve(n) { return 4 }
+    println("Load voltage (V):")
+    println(nlNodeVoltage(n, 1))
+    println("Diode voltage (V):")
+    println(nlDiodeVoltage(n, d))
+    println("Diode current (A):")
+    println(nlDiodeCurrent(n, d))
+    println("Newton iterations:")
+    println(iterations as f64)
+    return 0
+}

@@ -1,0 +1,381 @@
+# @module herbie.nl
+# Dense DC nonlinear MNA: resistors, independent sources, Shockley diodes and
+# resistive switches. Newton-Raphson with SPICE-style pnjlim damping, gmin,
+# caller-owned buffers and a deterministic iteration cap.
+# Switch events are explicit: nlSwitchEvent flips closed/open when a control
+# voltage crosses a threshold and reports whether the state changed.
+# Mutable elementCount lives in a caller-owned i32 cell (structs are by value).
+# No transient DAE, AC, BJT, sparse fill-reducing LU or SPICE parity claims.
+
+export struct NlElement {
+    kind: i32,
+    a: i32,
+    b: i32,
+    aux: i32,
+    p0: f64,
+    p1: f64,
+    state: f64
+}
+
+export struct NlNetwork {
+    nodeCount: i32,
+    voltageSourceCount: i32,
+    elementCount: ptr<i32>,
+    elementCapacity: i32,
+    maxIter: i32,
+    relTol: f64,
+    absTol: f64,
+    gmin: f64,
+    elements: ptr<NlElement>,
+    matrix: ptr<f64>,
+    rhs: ptr<f64>,
+    solution: ptr<f64>,
+    previous: ptr<f64>,
+    scratchMatrix: ptr<f64>,
+    scratchRhs: ptr<f64>,
+    iterations: ptr<i32>
+}
+
+const NL_R: i32 = 0
+const NL_I: i32 = 1
+const NL_V: i32 = 2
+const NL_D: i32 = 3
+const NL_SW: i32 = 4
+
+export function nlUnknownCount(n: NlNetwork) -> i32 {
+    return n.nodeCount + n.voltageSourceCount
+}
+
+function nlAbs(value: f64) -> f64 {
+    if value < 0.0 {
+        return -value
+    }
+    return value
+}
+
+function nlFinite(value: f64) -> bool {
+    return value == value and value <= 1.7976931348623157e308 and value >= -1.7976931348623157e308
+}
+
+function nlNodeValid(n: NlNetwork, node: i32) -> bool {
+    return node >= -1 and node < n.nodeCount
+}
+
+function nlVoltage(n: NlNetwork, node: i32) -> f64 {
+    if node < 0 {
+        return 0.0
+    }
+    return n.solution[node]
+}
+
+export function nlClear(n: NlNetwork) -> bool {
+    if n.nodeCount <= 0 or n.voltageSourceCount < 0 or n.elementCapacity <= 0
+        or n.maxIter <= 0 or n.relTol <= 0.0 or n.absTol <= 0.0 or n.gmin < 0.0 {
+        return false
+    }
+    n.elementCount[0] = 0
+    n.iterations[0] = 0
+    let size: i32 = nlUnknownCount(n)
+    for i in 0 to size * size {
+        n.matrix[i] = 0.0
+    }
+    for i in 0 to size {
+        n.rhs[i] = 0.0
+        n.solution[i] = 0.0
+        n.previous[i] = 0.0
+    }
+    return true
+}
+
+function nlAdd(n: NlNetwork, kind: i32, a: i32, b: i32, aux: i32, p0: f64, p1: f64, state: f64) -> i32 {
+    let count: i32 = n.elementCount[0]
+    if count >= n.elementCapacity or not nlNodeValid(n, a) or not nlNodeValid(n, b)
+        or a == b or not nlFinite(p0) or not nlFinite(p1) or not nlFinite(state) {
+        return -1
+    }
+    n.elements[count] = NlElement { kind: kind, a: a, b: b, aux: aux, p0: p0, p1: p1, state: state }
+    n.elementCount[0] = count + 1
+    return count
+}
+
+export function nlAddResistor(n: NlNetwork, a: i32, b: i32, ohms: f64) -> i32 {
+    if ohms <= 0.0 {
+        return -1
+    }
+    return nlAdd(n, NL_R, a, b, 0, ohms, 0.0, 0.0)
+}
+
+export function nlAddCurrentSource(n: NlNetwork, fromNode: i32, toNode: i32, amperes: f64) -> i32 {
+    return nlAdd(n, NL_I, fromNode, toNode, 0, amperes, 0.0, 0.0)
+}
+
+export function nlAddVoltageSource(n: NlNetwork, sourceIndex: i32, plusNode: i32, minusNode: i32, volts: f64) -> i32 {
+    if sourceIndex < 0 or sourceIndex >= n.voltageSourceCount {
+        return -1
+    }
+    return nlAdd(n, NL_V, plusNode, minusNode, sourceIndex, volts, 0.0, 0.0)
+}
+
+# Shockley diode: Id = Is (exp(Vd/(n Vt)) - 1). p0=Is, p1=nVt.
+export function nlAddDiode(n: NlNetwork, anode: i32, cathode: i32, isSat: f64, nVt: f64) -> i32 {
+    if isSat <= 0.0 or nVt <= 0.0 {
+        return -1
+    }
+    return nlAdd(n, NL_D, anode, cathode, 0, isSat, nVt, 0.0)
+}
+
+# Resistive switch approximation of an ideal switch. closed => Ron else Roff.
+export function nlAddSwitch(n: NlNetwork, a: i32, b: i32, ron: f64, roff: f64, closed: bool) -> i32 {
+    if ron <= 0.0 or roff <= 0.0 or ron >= roff {
+        return -1
+    }
+    let mut state: f64 = 0.0
+    if closed {
+        state = 1.0
+    }
+    return nlAdd(n, NL_SW, a, b, 0, ron, roff, state)
+}
+
+export function nlSwitchIsClosed(n: NlNetwork, id: i32) -> bool {
+    if id < 0 or id >= n.elementCount[0] or n.elements[id].kind != NL_SW {
+        return false
+    }
+    return n.elements[id].state >= 0.5
+}
+
+# Explicit event: if open and vControl >= threshold => close; if closed and
+# vControl < threshold => open. Returns true when the discrete state flips.
+export function nlSwitchEvent(n: NlNetwork, id: i32, vControl: f64, threshold: f64) -> bool {
+    if id < 0 or id >= n.elementCount[0] or n.elements[id].kind != NL_SW or not nlFinite(vControl)
+        or not nlFinite(threshold) {
+        return false
+    }
+    let closed: bool = n.elements[id].state >= 0.5
+    if not closed and vControl >= threshold {
+        n.elements[id].state = 1.0
+        return true
+    }
+    if closed and vControl < threshold {
+        n.elements[id].state = 0.0
+        return true
+    }
+    return false
+}
+
+function nlJcrit(isSat: f64, nVt: f64) -> f64 {
+    return nVt * log(nVt / (1.4142135623730951 * isSat))
+}
+
+# SPICE pnjlim: damps Newton steps across the exponential knee.
+function nlJlimit(vnew: f64, vold: f64, nVt: f64, vcrit: f64) -> f64 {
+    if vnew > vcrit and nlAbs(vnew - vold) > (nVt + nVt) {
+        if vold > 0.0 {
+            let arg: f64 = 1.0 + (vnew - vold) / nVt
+            if arg > 0.0 {
+                return vold + nVt * log(arg)
+            }
+            return vcrit
+        }
+        return nVt * log(vnew / nVt)
+    }
+    if vnew < (0.0 - 40.0) * nVt {
+        return (0.0 - 40.0) * nVt
+    }
+    return vnew
+}
+
+function nlStampG(n: NlNetwork, a: i32, b: i32, g: f64) -> void {
+    let size: i32 = nlUnknownCount(n)
+    if a >= 0 {
+        n.matrix[a * size + a] += g
+    }
+    if b >= 0 {
+        n.matrix[b * size + b] += g
+    }
+    if a >= 0 and b >= 0 {
+        n.matrix[a * size + b] -= g
+        n.matrix[b * size + a] -= g
+    }
+}
+
+function nlStampI(n: NlNetwork, fromNode: i32, toNode: i32, amperes: f64) -> void {
+    if fromNode >= 0 {
+        n.rhs[fromNode] -= amperes
+    }
+    if toNode >= 0 {
+        n.rhs[toNode] += amperes
+    }
+}
+
+function nlZeroSystem(n: NlNetwork) -> void {
+    let size: i32 = nlUnknownCount(n)
+    for i in 0 to size * size {
+        n.matrix[i] = 0.0
+    }
+    for i in 0 to size {
+        n.rhs[i] = 0.0
+    }
+}
+
+function nlAssemble(n: NlNetwork) -> bool {
+    nlZeroSystem(n)
+    let size: i32 = nlUnknownCount(n)
+    let count: i32 = n.elementCount[0]
+    for e in 0 to count {
+        let el: NlElement = n.elements[e]
+        if el.kind == NL_R {
+            nlStampG(n, el.a, el.b, 1.0 / el.p0)
+        }
+        if el.kind == NL_I {
+            nlStampI(n, el.a, el.b, el.p0)
+        }
+        if el.kind == NL_V {
+            let branch: i32 = n.nodeCount + el.aux
+            if el.a >= 0 {
+                n.matrix[el.a * size + branch] += 1.0
+                n.matrix[branch * size + el.a] += 1.0
+            }
+            if el.b >= 0 {
+                n.matrix[el.b * size + branch] -= 1.0
+                n.matrix[branch * size + el.b] -= 1.0
+            }
+            n.rhs[branch] += el.p0
+        }
+        if el.kind == NL_D {
+            let vraw: f64 = nlVoltage(n, el.a) - nlVoltage(n, el.b)
+            let nVt: f64 = el.p1
+            let isSat: f64 = el.p0
+            let vd: f64 = nlJlimit(vraw, el.state, nVt, nlJcrit(isSat, nVt))
+            n.elements[e].state = vd
+            let ex: f64 = exp(vd / nVt)
+            let id: f64 = isSat * (ex - 1.0)
+            let gd: f64 = isSat * ex / nVt + n.gmin
+            nlStampG(n, el.a, el.b, gd)
+            nlStampI(n, el.a, el.b, id - gd * vd)
+        }
+        if el.kind == NL_SW {
+            let mut r: f64 = el.p1
+            if el.state >= 0.5 {
+                r = el.p0
+            }
+            nlStampG(n, el.a, el.b, 1.0 / r)
+        }
+    }
+    for node in 0 to n.nodeCount {
+        n.matrix[node * size + node] += n.gmin
+    }
+    return true
+}
+
+function nlLinearSolve(n: NlNetwork) -> bool {
+    let size: i32 = nlUnknownCount(n)
+    for i in 0 to size * size {
+        n.scratchMatrix[i] = n.matrix[i]
+    }
+    for i in 0 to size {
+        n.scratchRhs[i] = n.rhs[i]
+    }
+    for col in 0 to size {
+        let mut pivotRow: i32 = col
+        let mut best: f64 = nlAbs(n.scratchMatrix[col * size + col])
+        for row in col + 1 to size {
+            let candidate: f64 = nlAbs(n.scratchMatrix[row * size + col])
+            if candidate > best {
+                best = candidate
+                pivotRow = row
+            }
+        }
+        if best <= 1.0e-18 or best != best {
+            return false
+        }
+        if pivotRow != col {
+            for k in col to size {
+                let a: i32 = col * size + k
+                let b: i32 = pivotRow * size + k
+                let temp: f64 = n.scratchMatrix[a]
+                n.scratchMatrix[a] = n.scratchMatrix[b]
+                n.scratchMatrix[b] = temp
+            }
+            let rhsTemp: f64 = n.scratchRhs[col]
+            n.scratchRhs[col] = n.scratchRhs[pivotRow]
+            n.scratchRhs[pivotRow] = rhsTemp
+        }
+        for row in col + 1 to size {
+            let factor: f64 = n.scratchMatrix[row * size + col] / n.scratchMatrix[col * size + col]
+            n.scratchMatrix[row * size + col] = 0.0
+            for k in col + 1 to size {
+                n.scratchMatrix[row * size + k] -= factor * n.scratchMatrix[col * size + k]
+            }
+            n.scratchRhs[row] -= factor * n.scratchRhs[col]
+        }
+    }
+    let mut i: i32 = size - 1
+    while i >= 0 {
+        let mut v: f64 = n.scratchRhs[i]
+        for j in i + 1 to size {
+            v -= n.scratchMatrix[i * size + j] * n.solution[j]
+        }
+        n.solution[i] = v / n.scratchMatrix[i * size + i]
+        if n.solution[i] != n.solution[i] {
+            return false
+        }
+        i = i - 1
+    }
+    return true
+}
+
+export function nlSolve(n: NlNetwork) -> bool {
+    if n.nodeCount <= 0 or n.elementCount[0] <= 0 or n.maxIter <= 0 {
+        return false
+    }
+    let size: i32 = nlUnknownCount(n)
+    let mut it: i32 = 0
+    let mut converged: bool = false
+    while it < n.maxIter {
+        for i in 0 to size {
+            n.previous[i] = n.solution[i]
+        }
+        if not nlAssemble(n) or not nlLinearSolve(n) {
+            n.iterations[0] = it
+            return false
+        }
+        it = it + 1
+        let mut ok: bool = true
+        for i in 0 to size {
+            let d: f64 = nlAbs(n.solution[i] - n.previous[i])
+            if d > n.relTol * nlAbs(n.solution[i]) + n.absTol {
+                ok = false
+            }
+        }
+        if ok and it >= 2 {
+            converged = true
+            break
+        }
+    }
+    n.iterations[0] = it
+    return converged
+}
+
+export function nlDiodeVoltage(n: NlNetwork, id: i32) -> f64 {
+    if id < 0 or id >= n.elementCount[0] or n.elements[id].kind != NL_D {
+        return 0.0
+    }
+    return nlVoltage(n, n.elements[id].a) - nlVoltage(n, n.elements[id].b)
+}
+
+export function nlDiodeCurrent(n: NlNetwork, id: i32) -> f64 {
+    if id < 0 or id >= n.elementCount[0] or n.elements[id].kind != NL_D {
+        return 0.0
+    }
+    let el: NlElement = n.elements[id]
+    let vd: f64 = nlDiodeVoltage(n, id)
+    return el.p0 * (exp(vd / el.p1) - 1.0)
+}
+
+export function nlNodeVoltage(n: NlNetwork, node: i32) -> f64 {
+    return nlVoltage(n, node)
+}
+
+export function nlShockley(isSat: f64, nVt: f64, vd: f64) -> f64 {
+    return isSat * (exp(vd / nVt) - 1.0)
+}

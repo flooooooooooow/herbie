@@ -55,8 +55,40 @@ jobs:
         run: flow run tests/mna_voltage_sources.flow
       - name: Verify linear circuit transients
         run: flow run tests/circuit_transient.flow
+      - name: Verify AC phasor MNA analytical fixtures
+        run: flow run tests/ac_phasor_mna.flow
+      - name: Verify sparse DC MNA assembly against dense reference
+        run: flow run tests/sparse_mna.flow
+      - name: Benchmark sparse 40-node ladder vs dense MNA
+        run: flow run tests/sparse_bench.flow
+      - name: Verify nonlinear diode NR and switch events
+        run: flow run tests/nl_devices.flow
+      - name: Verify versioned netlist parse, export and solver stamps
+        run: flow run tests/netlist.flow
+      - name: Cross-validate circuits against stored ngspice-42 references
+        run: flow run tests/ngspice_crossval.flow
+      - name: Cross-validate bridge, rectifier and RLC ngspice fixtures
+        run: flow run tests/ngspice_fixtures.flow
+      - name: Verify index-1 DAE MNA transient companions
+        run: flow run tests/dae_mna.flow
+      - name: Verify zero-Ron ideal switch MNA
+        run: flow run tests/ideal_switch.flow
       - name: Run ideal voltage source circuit demonstration
         run: flow run examples/mna_voltage_sources_demo.flow
+      - name: Run AC phasor circuit demonstration
+        run: flow run examples/ac_phasor_demo.flow
+      - name: Run sparse MNA demonstration
+        run: flow run examples/sparse_mna_demo.flow
+      - name: Run sparse ladder timing demonstration
+        run: flow run examples/sparse_bench_demo.flow
+      - name: Run nonlinear devices demonstration
+        run: flow run examples/nl_devices_demo.flow
+      - name: Run netlist import demonstration
+        run: flow run examples/netlist_demo.flow
+      - name: Run DAE MNA transient demonstration
+        run: flow run examples/dae_mna_demo.flow
+      - name: Run ideal switch demonstration
+        run: flow run examples/ideal_switch_demo.flow
       - name: Verify first-class Flow physical units
         run: flow run examples/suspension_units.flow
       - name: Verify shared ODE integrators, events and multirate schedule

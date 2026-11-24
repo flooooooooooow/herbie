@@ -1,0 +1,199 @@
+# Broader ngspice-42 cross-validation: bridge, multi-diode rectifier, RLC transient.
+# Stored refs: tests/ngspice_refs/{bridge,bridge_rect,rlc_tran}.*
+
+import herbie.mna {
+    MnaNetwork, mnaClear, mnaStampResistor, mnaStampVoltageSource, mnaSolve, mnaMaxResidual
+}
+import herbie.nl {
+    NlElement, NlNetwork, nlClear, nlAddResistor, nlAddVoltageSource, nlAddDiode,
+    nlSolve, nlNodeVoltage
+}
+import herbie.dae {
+    DAE_TRAP, DaeElement, DaeNetwork, daeClear, daeAddResistor, daeAddCapacitor,
+    daeAddInductor, daeAddVoltageSource, daeSetCapVoltage, daeSetInductorCurrent,
+    daeInitUic, daeRun, daeNodeVoltage
+}
+
+const REF_BRIDGE_VA: f64 = 6.315789
+const REF_BRIDGE_VB: f64 = 3.684211
+const REF_BRIDGE_VAB: f64 = 2.631579
+const REF_BRIDGE_IV: f64 = -0.00684211
+
+const REF_RECT_VP: f64 = 4.311584
+const REF_RECT_VN: f64 = 0.6884163
+const REF_RECT_VLOAD: f64 = 3.623167
+
+const REF_RLC_1MS: f64 = 1.604566
+const REF_RLC_2MS: f64 = 0.6346373
+const REF_RLC_5MS: f64 = 1.080459
+
+const IS_SAT: f64 = 1.0e-14
+const NVT: f64 = 0.025852
+
+function near(a: f64, b: f64, tol: f64) -> bool {
+    return a >= b - tol and a <= b + tol
+}
+
+function emptyNl() -> NlElement {
+    return NlElement { kind: 0, a: 0, b: 0, aux: 0, p0: 0.0, p1: 0.0, state: 0.0 }
+}
+
+function emptyDae() -> DaeElement {
+    return DaeElement { kind: 0, a: 0, b: 0, aux: 0, value: 0.0, prevV: 0.0, prevI: 0.0 }
+}
+
+function testBridge() -> i32 {
+    let mut matrix: array<f64, 16> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut rhs: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut sol: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut scr: array<f64, 16> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut work: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let n: MnaNetwork = MnaNetwork {
+        nodeCount: 3, voltageSourceCount: 1, matrix: &matrix[0], rhs: &rhs[0]
+    }
+    if not mnaClear(n)
+        or not mnaStampVoltageSource(n, 0, 0, -1, 10.0)
+        or not mnaStampResistor(n, 0, 1, 1000.0)
+        or not mnaStampResistor(n, 1, -1, 2000.0)
+        or not mnaStampResistor(n, 0, 2, 2000.0)
+        or not mnaStampResistor(n, 2, -1, 1000.0)
+        or not mnaStampResistor(n, 1, 2, 5000.0)
+        or not mnaSolve(n, &sol[0], &scr[0], &work[0], 1.0e-12) {
+        return 1
+    }
+    if not near(sol[1], REF_BRIDGE_VA, 1.0e-6)
+        or not near(sol[2], REF_BRIDGE_VB, 1.0e-6)
+        or not near(sol[1] - sol[2], REF_BRIDGE_VAB, 1.0e-6)
+        or not near(sol[3], REF_BRIDGE_IV, 1.0e-8) {
+        return 2
+    }
+    if mnaMaxResidual(n, &sol[0]) > 1.0e-12 {
+        return 3
+    }
+    return 0
+}
+
+function testBridgeRectifier() -> i32 {
+    # Nodes: 0=vac, 1=p, 2=n. Four diodes + RL.
+    let mut elementCount: i32 = 0
+    let mut iterations: i32 = 0
+    let mut elements: array<NlElement, 8> = [
+        emptyNl(), emptyNl(), emptyNl(), emptyNl(),
+        emptyNl(), emptyNl(), emptyNl(), emptyNl()
+    ]
+    let mut matrix: array<f64, 16> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut rhs: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut sol: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut prev: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut scr: array<f64, 16> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut work: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let n: NlNetwork = NlNetwork {
+        nodeCount: 3, voltageSourceCount: 1,
+        elementCount: &elementCount, elementCapacity: 8,
+        maxIter: 80, relTol: 1.0e-9, absTol: 1.0e-12, gmin: 0.0,
+        elements: &elements[0], matrix: &matrix[0], rhs: &rhs[0],
+        solution: &sol[0], previous: &prev[0],
+        scratchMatrix: &scr[0], scratchRhs: &work[0], iterations: &iterations
+    }
+    if not nlClear(n) { return 10 }
+    if nlAddVoltageSource(n, 0, 0, -1, 5.0) < 0 { return 11 }
+    if nlAddDiode(n, 0, 1, IS_SAT, NVT) < 0 { return 12 }
+    if nlAddDiode(n, 2, 0, IS_SAT, NVT) < 0 { return 13 }
+    if nlAddDiode(n, -1, 1, IS_SAT, NVT) < 0 { return 14 }
+    if nlAddDiode(n, 2, -1, IS_SAT, NVT) < 0 { return 15 }
+    if nlAddResistor(n, 1, 2, 1000.0) < 0 { return 16 }
+    if not nlSolve(n) { return 17 }
+    let vp: f64 = nlNodeVoltage(n, 1)
+    let vn: f64 = nlNodeVoltage(n, 2)
+    if not near(vp, REF_RECT_VP, 5.0e-3)
+        or not near(vn, REF_RECT_VN, 5.0e-3)
+        or not near(vp - vn, REF_RECT_VLOAD, 5.0e-3) {
+        return 18
+    }
+    return 0
+}
+
+function testRlcTransient() -> i32 {
+    let mut elementCount: i32 = 0
+    let mut time: f64 = 0.0
+    let mut steps: i32 = 0
+    let mut ready: i32 = 0
+    let mut elements: array<DaeElement, 4> = [emptyDae(), emptyDae(), emptyDae(), emptyDae()]
+    let mut matrix: array<f64, 25> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut rhs: array<f64, 5> = [0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut sol: array<f64, 5> = [0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut prev: array<f64, 5> = [0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut scr: array<f64, 25> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut work: array<f64, 5> = [0.0, 0.0, 0.0, 0.0, 0.0]
+    let h: f64 = 1.0e-6
+    let n: DaeNetwork = DaeNetwork {
+        nodeCount: 3, voltageSourceCount: 1, inductorCount: 1,
+        elementCount: &elementCount, elementCapacity: 4,
+        method: DAE_TRAP, maxSteps: 20000, dt: h,
+        elements: &elements[0], matrix: &matrix[0], rhs: &rhs[0],
+        solution: &sol[0], previous: &prev[0],
+        scratchMatrix: &scr[0], scratchRhs: &work[0],
+        time: &time, steps: &steps, ready: &ready
+    }
+    if not daeClear(n) { return 20 }
+    if daeAddVoltageSource(n, 0, 0, -1, 1.0) < 0 { return 21 }
+    if daeAddResistor(n, 0, 1, 100.0) < 0 { return 22 }
+    let L: i32 = daeAddInductor(n, 1, 2, 0.1)
+    let C: i32 = daeAddCapacitor(n, 2, -1, 1.0e-6)
+    if L < 0 or C < 0 { return 23 }
+    if not daeSetCapVoltage(n, C, 0.0) or not daeSetInductorCurrent(n, L, 0.0) { return 24 }
+    if not daeInitUic(n, 1.0e-12) { return 25 }
+    if not daeRun(n, 1000, 1.0e-12) { return 26 }
+    if not near(daeNodeVoltage(n, 2), REF_RLC_1MS, 2.0e-2) { return 27 }
+    if not daeRun(n, 1000, 1.0e-12) { return 28 }
+    if not near(daeNodeVoltage(n, 2), REF_RLC_2MS, 2.0e-2) { return 29 }
+    if not daeRun(n, 3000, 1.0e-12) { return 30 }
+    if not near(daeNodeVoltage(n, 2), REF_RLC_5MS, 2.0e-2) { return 31 }
+    return 0
+}
+
+function main() -> i32 {
+    let mut code: i32 = testBridge()
+    if code != 0 {
+        print("FAIL bridge ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testBridgeRectifier()
+    if code != 0 {
+        print("FAIL bridge rectifier ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testRlcTransient()
+    if code != 0 {
+        print("FAIL RLC transient ")
+        print(code)
+        println("")
+        return code
+    }
+    println("PASS ngspice fixtures (bridge, multi-diode rectifier, RLC transient)")
+    return 0
+}

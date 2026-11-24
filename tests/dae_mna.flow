@@ -1,0 +1,351 @@
+import herbie.dae {
+    DAE_BE, DAE_TRAP, DaeElement, DaeNetwork,
+    daeClear, daeAddResistor, daeAddCapacitor, daeAddInductor,
+    daeAddVoltageSource, daeAddCurrentSource,
+    daeSetCapVoltage, daeSetInductorCurrent, daeSetSourceValue,
+    daeInitDc, daeInitUic, daeStep, daeRun, daeNodeVoltage, daeBranchCurrent,
+    daeMaxResidual, daeSourcePower, daeResistorPower, daeStoredEnergy,
+    daeUnknownCount
+}
+
+function near(a: f64, b: f64, tol: f64) -> bool {
+    return a >= b - tol and a <= b + tol
+}
+
+function empty() -> DaeElement {
+    return DaeElement { kind: 0, a: 0, b: 0, aux: 0, value: 0.0, prevV: 0.0, prevI: 0.0 }
+}
+
+# ngspice-42 RC step at R=1k C=1u (tests/ngspice_refs/rc_tran.*)
+const REF_RC_1MS: f64 = 0.6321206
+const REF_RC_2MS: f64 = 0.8646647
+const REF_RC_5MS: f64 = 0.9932621
+
+function makeNet(
+    nodes: i32, nv: i32, nl: i32, method: i32, dt: f64, maxSteps: i32,
+    elementCount: ptr<i32>, capacity: i32, elements: ptr<DaeElement>,
+    matrix: ptr<f64>, rhs: ptr<f64>, solution: ptr<f64>, previous: ptr<f64>,
+    scratch: ptr<f64>, work: ptr<f64>, time: ptr<f64>, steps: ptr<i32>, ready: ptr<i32>
+) -> DaeNetwork {
+    return DaeNetwork {
+        nodeCount: nodes, voltageSourceCount: nv, inductorCount: nl,
+        elementCount: elementCount, elementCapacity: capacity,
+        method: method, maxSteps: maxSteps, dt: dt,
+        elements: elements, matrix: matrix, rhs: rhs,
+        solution: solution, previous: previous,
+        scratchMatrix: scratch, scratchRhs: work,
+        time: time, steps: steps, ready: ready
+    }
+}
+
+function testRcBeAnalytic() -> i32 {
+    let mut elementCount: i32 = 0
+    let mut time: f64 = 0.0
+    let mut steps: i32 = 0
+    let mut ready: i32 = 0
+    let mut elements: array<DaeElement, 4> = [empty(), empty(), empty(), empty()]
+    let mut matrix: array<f64, 16> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut rhs: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut solution: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut previous: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut scratch: array<f64, 16> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut work: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let h: f64 = 1.0e-5
+    let n: DaeNetwork = makeNet(
+        2, 1, 0, DAE_BE, h, 100000,
+        &elementCount, 4, &elements[0], &matrix[0], &rhs[0], &solution[0], &previous[0],
+        &scratch[0], &work[0], &time, &steps, &ready
+    )
+    if not daeClear(n) { return 1 }
+    if daeAddVoltageSource(n, 0, 0, -1, 0.0) < 0 { return 2 }
+    if daeAddResistor(n, 0, 1, 1000.0) < 0 { return 3 }
+    if daeAddCapacitor(n, 1, -1, 1.0e-6) < 0 { return 4 }
+    if not daeInitDc(n, 1.0e-12) { return 5 }
+    if not near(daeNodeVoltage(n, 1), 0.0, 1.0e-12) { return 6 }
+    if not daeSetSourceValue(n, 0, 1.0) { return 7 }
+    let mut worst: f64 = 0.0
+    let tau: f64 = 0.001
+    for k in 0 to 500 {
+        if not daeStep(n, 1.0e-12) { return 8 }
+        let t: f64 = time
+        let exact: f64 = 1.0 - exp(0.0 - t / tau)
+        let err: f64 = abs(daeNodeVoltage(n, 1) - exact)
+        if err > worst { worst = err }
+    }
+    if worst > 5.0e-3 { return 9 }
+    # Power: source delivers, resistor dissipates, capacitor stores.
+    let pSrc: f64 = daeSourcePower(n)
+    let pR: f64 = daeResistorPower(n)
+    if pSrc < 0.0 or pR < 0.0 { return 10 }
+    if daeMaxResidual(n) > 1.0e-9 { return 11 }
+    return 0
+}
+
+function testRlBeAnalytic() -> i32 {
+    let mut elementCount: i32 = 0
+    let mut time: f64 = 0.0
+    let mut steps: i32 = 0
+    let mut ready: i32 = 0
+    let mut elements: array<DaeElement, 4> = [empty(), empty(), empty(), empty()]
+    let mut matrix: array<f64, 25> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut rhs: array<f64, 5> = [0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut solution: array<f64, 5> = [0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut previous: array<f64, 5> = [0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut scratch: array<f64, 25> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut work: array<f64, 5> = [0.0, 0.0, 0.0, 0.0, 0.0]
+    let h: f64 = 1.0e-5
+    let n: DaeNetwork = makeNet(
+        2, 1, 1, DAE_BE, h, 100000,
+        &elementCount, 4, &elements[0], &matrix[0], &rhs[0], &solution[0], &previous[0],
+        &scratch[0], &work[0], &time, &steps, &ready
+    )
+    if not daeClear(n) { return 20 }
+    if daeAddVoltageSource(n, 0, 0, -1, 0.0) < 0 { return 21 }
+    if daeAddResistor(n, 0, 1, 100.0) < 0 { return 22 }
+    let L: i32 = daeAddInductor(n, 1, -1, 0.1)
+    if L < 0 { return 23 }
+    if not daeInitDc(n, 1.0e-12) { return 24 }
+    if not daeSetSourceValue(n, 0, 1.0) { return 25 }
+    let tau: f64 = 0.001
+    let mut worst: f64 = 0.0
+    for k in 0 to 500 {
+        if not daeStep(n, 1.0e-12) { return 26 }
+        let exactI: f64 = (1.0 / 100.0) * (1.0 - exp(0.0 - time / tau))
+        let err: f64 = abs(daeBranchCurrent(n, L) - exactI)
+        if err > worst { worst = err }
+    }
+    if worst > 5.0e-5 { return 27 }
+    return 0
+}
+
+function testRlcStep() -> i32 {
+    let mut elementCount: i32 = 0
+    let mut time: f64 = 0.0
+    let mut steps: i32 = 0
+    let mut ready: i32 = 0
+    let mut elements: array<DaeElement, 4> = [empty(), empty(), empty(), empty()]
+    let size: i32 = 3 + 1 + 1
+    let mut matrix: array<f64, 25> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut rhs: array<f64, 5> = [0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut solution: array<f64, 5> = [0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut previous: array<f64, 5> = [0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut scratch: array<f64, 25> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut work: array<f64, 5> = [0.0, 0.0, 0.0, 0.0, 0.0]
+    let h: f64 = 1.0e-6
+    let n: DaeNetwork = makeNet(
+        3, 1, 1, DAE_BE, h, 20000,
+        &elementCount, 4, &elements[0], &matrix[0], &rhs[0], &solution[0], &previous[0],
+        &scratch[0], &work[0], &time, &steps, &ready
+    )
+    if daeUnknownCount(n) != size { return 30 }
+    if not daeClear(n) { return 31 }
+    if daeAddVoltageSource(n, 0, 0, -1, 0.0) < 0 { return 32 }
+    if daeAddResistor(n, 0, 1, 100.0) < 0 { return 33 }
+    let ind: i32 = daeAddInductor(n, 1, 2, 0.1)
+    if ind < 0 or daeAddCapacitor(n, 2, -1, 1.0e-6) < 0 { return 34 }
+    if not daeInitDc(n, 1.0e-12) or not daeSetSourceValue(n, 0, 1.0) { return 35 }
+    let a: f64 = 500.0
+    let wd: f64 = sqrt(1.0 / (0.1 * 1.0e-6) - a * a)
+    let mut worst: f64 = 0.0
+    for k in 0 to 5000 {
+        if not daeStep(n, 1.0e-12) { return 36 }
+        let t: f64 = time
+        let exact: f64 = 1.0 - exp(0.0 - a * t) * (cos(wd * t) + (a / wd) * sin(wd * t))
+        let err: f64 = abs(daeNodeVoltage(n, 2) - exact)
+        if err > worst { worst = err }
+    }
+    if worst > 2.0e-2 { return 37 }
+    return 0
+}
+
+function testLcOscillator() -> i32 {
+    # Undamped LC with UIC: Vc(0)=1, iL(0)=0. Trapezoidal should hold energy.
+    let mut elementCount: i32 = 0
+    let mut time: f64 = 0.0
+    let mut steps: i32 = 0
+    let mut ready: i32 = 0
+    let mut elements: array<DaeElement, 2> = [empty(), empty()]
+    let mut matrix: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut rhs: array<f64, 2> = [0.0, 0.0]
+    let mut solution: array<f64, 2> = [0.0, 0.0]
+    let mut previous: array<f64, 2> = [0.0, 0.0]
+    let mut scratch: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut work: array<f64, 2> = [0.0, 0.0]
+    let L: f64 = 1.0e-3
+    let C: f64 = 1.0e-6
+    let omega: f64 = 1.0 / sqrt(L * C)
+    let T: f64 = 2.0 * 3.141592653589793 / omega
+    let h: f64 = T / 200.0
+    let n: DaeNetwork = makeNet(
+        1, 0, 1, DAE_TRAP, h, 5000,
+        &elementCount, 2, &elements[0], &matrix[0], &rhs[0], &solution[0], &previous[0],
+        &scratch[0], &work[0], &time, &steps, &ready
+    )
+    if not daeClear(n) { return 40 }
+    let cId: i32 = daeAddCapacitor(n, 0, -1, C)
+    let lId: i32 = daeAddInductor(n, 0, -1, L)
+    if cId < 0 or lId < 0 { return 41 }
+    if not daeSetCapVoltage(n, cId, 1.0) or not daeSetInductorCurrent(n, lId, 0.0) { return 42 }
+    if not daeInitUic(n, 1.0e-12) { return 43 }
+    let e0: f64 = daeStoredEnergy(n)
+    if not near(e0, 0.5 * C * 1.0, 1.0e-12) { return 44 }
+    # Integrate ~2 periods.
+    let nsteps: i32 = 400
+    for k in 0 to nsteps {
+        if not daeStep(n, 1.0e-12) { return 45 }
+    }
+    let e1: f64 = daeStoredEnergy(n)
+    if abs(e1 - e0) / e0 > 1.0e-3 { return 46 }
+    # Voltage should have crossed near zero at quarter-period scale.
+    let v: f64 = daeNodeVoltage(n, 0)
+    if abs(v) > 1.5 { return 47 }
+    return 0
+}
+
+function testNgspiceRc() -> i32 {
+    let mut elementCount: i32 = 0
+    let mut time: f64 = 0.0
+    let mut steps: i32 = 0
+    let mut ready: i32 = 0
+    let mut elements: array<DaeElement, 4> = [empty(), empty(), empty(), empty()]
+    let mut matrix: array<f64, 16> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut rhs: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut solution: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut previous: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut scratch: array<f64, 16> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut work: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let h: f64 = 1.0e-6
+    let n: DaeNetwork = makeNet(
+        2, 1, 0, DAE_TRAP, h, 20000,
+        &elementCount, 4, &elements[0], &matrix[0], &rhs[0], &solution[0], &previous[0],
+        &scratch[0], &work[0], &time, &steps, &ready
+    )
+    if not daeClear(n) { return 50 }
+    if daeAddVoltageSource(n, 0, 0, -1, 1.0) < 0 { return 51 }
+    if daeAddResistor(n, 0, 1, 1000.0) < 0 { return 52 }
+    let cId: i32 = daeAddCapacitor(n, 1, -1, 1.0e-6)
+    if cId < 0 or not daeSetCapVoltage(n, cId, 0.0) { return 53 }
+    if not daeInitUic(n, 1.0e-12) { return 54 }
+    # Run to 1 ms, 2 ms, 5 ms.
+    if not daeRun(n, 1000, 1.0e-12) { return 55 }
+    if not near(daeNodeVoltage(n, 1), REF_RC_1MS, 5.0e-4) { return 56 }
+    if not daeRun(n, 1000, 1.0e-12) { return 57 }
+    if not near(daeNodeVoltage(n, 1), REF_RC_2MS, 5.0e-4) { return 58 }
+    if not daeRun(n, 3000, 1.0e-12) { return 59 }
+    if not near(daeNodeVoltage(n, 1), REF_RC_5MS, 5.0e-4) { return 60 }
+    return 0
+}
+
+function testSingularAndCap() -> i32 {
+    let mut elementCount: i32 = 0
+    let mut time: f64 = 0.0
+    let mut steps: i32 = 0
+    let mut ready: i32 = 0
+    let mut elements: array<DaeElement, 2> = [empty(), empty()]
+    let mut matrix: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut rhs: array<f64, 2> = [0.0, 0.0]
+    let mut solution: array<f64, 2> = [0.0, 0.0]
+    let mut previous: array<f64, 2> = [0.0, 0.0]
+    let mut scratch: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut work: array<f64, 2> = [0.0, 0.0]
+    let n: DaeNetwork = makeNet(
+        2, 0, 0, DAE_BE, 1.0e-3, 2,
+        &elementCount, 2, &elements[0], &matrix[0], &rhs[0], &solution[0], &previous[0],
+        &scratch[0], &work[0], &time, &steps, &ready
+    )
+    if not daeClear(n) { return 70 }
+    if daeAddResistor(n, 0, 1, 1000.0) < 0 { return 71 }
+    # Floating: no ground reference path via source/L.
+    if daeInitDc(n, 1.0e-12) { return 72 }
+    # Grounded RC with maxSteps=2.
+    elementCount = 0
+    if not daeClear(n) { return 73 }
+    # Rebuild as 1-node network with ground.
+    let n2: DaeNetwork = makeNet(
+        1, 1, 0, DAE_BE, 1.0e-3, 2,
+        &elementCount, 2, &elements[0], &matrix[0], &rhs[0], &solution[0], &previous[0],
+        &scratch[0], &work[0], &time, &steps, &ready
+    )
+    if not daeClear(n2) { return 74 }
+    if daeAddVoltageSource(n2, 0, 0, -1, 1.0) < 0 { return 75 }
+    if daeAddResistor(n2, 0, -1, 1000.0) < 0 { return 76 }
+    if not daeInitDc(n2, 1.0e-12) { return 77 }
+    if not daeStep(n2, 1.0e-12) or not daeStep(n2, 1.0e-12) { return 78 }
+    if daeStep(n2, 1.0e-12) { return 79 }
+    return 0
+}
+
+function main() -> i32 {
+    let mut code: i32 = testRcBeAnalytic()
+    if code != 0 {
+        print("FAIL RC BE ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testRlBeAnalytic()
+    if code != 0 {
+        print("FAIL RL BE ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testRlcStep()
+    if code != 0 {
+        print("FAIL RLC ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testLcOscillator()
+    if code != 0 {
+        print("FAIL LC oscillator ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testNgspiceRc()
+    if code != 0 {
+        print("FAIL ngspice RC ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testSingularAndCap()
+    if code != 0 {
+        print("FAIL singular/cap ")
+        print(code)
+        println("")
+        return code
+    }
+    println("PASS index-1 DAE MNA transient (BE/TRAP, LC, ngspice RC)")
+    return 0
+}

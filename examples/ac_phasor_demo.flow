@@ -1,0 +1,47 @@
+import herbie.ac {
+    AcNetwork, acClear, acStampResistor, acStampCapacitor, acStampVoltageSource,
+    acSolve, acMaxResidual, acMagnitude, acPhase
+}
+
+function main() -> i32 {
+    # Series RC low-pass at omega = 1/RC: |H| = 1/sqrt(2), phase = -45 deg.
+    let mut matrix: array<f64, 36> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut rhs: array<f64, 6> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut v: array<f64, 6> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut scratch: array<f64, 36> = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+    let mut scratchRhs: array<f64, 6> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let n: AcNetwork = AcNetwork {
+        nodeCount: 2, voltageSourceCount: 1, omega: 1000.0,
+        matrix: &matrix[0], rhs: &rhs[0]
+    }
+    if not acClear(n) { return 1 }
+    if not acStampVoltageSource(n, 0, 0, -1, 1.0, 0.0) { return 2 }
+    if not acStampResistor(n, 0, 1, 1000.0) { return 3 }
+    if not acStampCapacitor(n, 1, -1, 1.0e-6) { return 4 }
+    if not acSolve(n, &v[0], &scratch[0], &scratchRhs[0], 1.0e-12) { return 5 }
+    println("Vout real (V):")
+    println(v[1])
+    println("Vout imag (V):")
+    println(v[4])
+    println("|H|:")
+    println(acMagnitude(v[1], v[4]))
+    println("phase (rad):")
+    println(acPhase(v[1], v[4]))
+    println("AC residual:")
+    println(acMaxResidual(n, &v[0]))
+    return 0
+}

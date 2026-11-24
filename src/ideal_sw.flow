@@ -1,0 +1,340 @@
+# @module herbie.ideal_sw
+# Dense DC MNA with zero-Ron ideal switches (branch-current formulation).
+# Closed switch: enforces V(a)-V(b)=0 with an explicit branch-current unknown
+# (same incidence pattern as a 0 V ideal source). Open switch: forces that
+# branch current to 0 (unit diagonal, no nodal incidence) so system size is fixed.
+# Explicit threshold events flip open/closed. Callers own all buffers.
+# Linear resistive + independent V/I only. No Ron/Roff approximation here
+# (see herbie.nl for resistive switches). No transient/AC claims.
+
+export const ISW_R: i32 = 0
+export const ISW_I: i32 = 1
+export const ISW_V: i32 = 2
+export const ISW_S: i32 = 3
+
+export struct IswElement {
+    kind: i32,
+    a: i32,
+    b: i32,
+    aux: i32,
+    p0: f64,
+    closed: f64
+}
+
+export struct IswNetwork {
+    nodeCount: i32,
+    voltageSourceCount: i32,
+    switchCount: i32,
+    elementCount: ptr<i32>,
+    elementCapacity: i32,
+    elements: ptr<IswElement>,
+    matrix: ptr<f64>,
+    rhs: ptr<f64>,
+    solution: ptr<f64>,
+    scratchMatrix: ptr<f64>,
+    scratchRhs: ptr<f64>
+}
+
+export function iswUnknownCount(n: IswNetwork) -> i32 {
+    return n.nodeCount + n.voltageSourceCount + n.switchCount
+}
+
+function iswAbs(value: f64) -> f64 {
+    if value < 0.0 {
+        return -value
+    }
+    return value
+}
+
+function iswFinite(value: f64) -> bool {
+    return value == value and value <= 1.7976931348623157e308 and value >= -1.7976931348623157e308
+}
+
+function iswNodeValid(n: IswNetwork, node: i32) -> bool {
+    return node >= -1 and node < n.nodeCount
+}
+
+export function iswClear(n: IswNetwork) -> bool {
+    if n.nodeCount <= 0 or n.voltageSourceCount < 0 or n.switchCount < 0 or n.elementCapacity <= 0 {
+        return false
+    }
+    n.elementCount[0] = 0
+    let size: i32 = iswUnknownCount(n)
+    for i in 0 to size * size {
+        n.matrix[i] = 0.0
+    }
+    for i in 0 to size {
+        n.rhs[i] = 0.0
+        n.solution[i] = 0.0
+    }
+    return true
+}
+
+function iswAdd(n: IswNetwork, kind: i32, a: i32, b: i32, aux: i32, p0: f64, closed: f64) -> i32 {
+    let count: i32 = n.elementCount[0]
+    if count >= n.elementCapacity or not iswNodeValid(n, a) or not iswNodeValid(n, b)
+        or a == b or not iswFinite(p0) or not iswFinite(closed) {
+        return -1
+    }
+    n.elements[count] = IswElement { kind: kind, a: a, b: b, aux: aux, p0: p0, closed: closed }
+    n.elementCount[0] = count + 1
+    return count
+}
+
+export function iswAddResistor(n: IswNetwork, a: i32, b: i32, ohms: f64) -> i32 {
+    if ohms <= 0.0 {
+        return -1
+    }
+    return iswAdd(n, ISW_R, a, b, 0, ohms, 0.0)
+}
+
+export function iswAddCurrentSource(n: IswNetwork, fromNode: i32, toNode: i32, amperes: f64) -> i32 {
+    return iswAdd(n, ISW_I, fromNode, toNode, 0, amperes, 0.0)
+}
+
+export function iswAddVoltageSource(n: IswNetwork, sourceIndex: i32, plusNode: i32, minusNode: i32, volts: f64) -> i32 {
+    if sourceIndex < 0 or sourceIndex >= n.voltageSourceCount {
+        return -1
+    }
+    return iswAdd(n, ISW_V, plusNode, minusNode, sourceIndex, volts, 0.0)
+}
+
+export function iswAddSwitch(n: IswNetwork, switchIndex: i32, a: i32, b: i32, closed: bool) -> i32 {
+    if switchIndex < 0 or switchIndex >= n.switchCount {
+        return -1
+    }
+    let mut state: f64 = 0.0
+    if closed {
+        state = 1.0
+    }
+    return iswAdd(n, ISW_S, a, b, switchIndex, 0.0, state)
+}
+
+export function iswSwitchIsClosed(n: IswNetwork, id: i32) -> bool {
+    if id < 0 or id >= n.elementCount[0] or n.elements[id].kind != ISW_S {
+        return false
+    }
+    return n.elements[id].closed >= 0.5
+}
+
+export function iswSwitchEvent(n: IswNetwork, id: i32, vControl: f64, threshold: f64) -> bool {
+    if id < 0 or id >= n.elementCount[0] or n.elements[id].kind != ISW_S
+        or not iswFinite(vControl) or not iswFinite(threshold) {
+        return false
+    }
+    let closed: bool = n.elements[id].closed >= 0.5
+    if not closed and vControl >= threshold {
+        n.elements[id].closed = 1.0
+        return true
+    }
+    if closed and vControl < threshold {
+        n.elements[id].closed = 0.0
+        return true
+    }
+    return false
+}
+
+function iswStampG(n: IswNetwork, a: i32, b: i32, g: f64) -> void {
+    let size: i32 = iswUnknownCount(n)
+    if a >= 0 {
+        n.matrix[a * size + a] += g
+    }
+    if b >= 0 {
+        n.matrix[b * size + b] += g
+    }
+    if a >= 0 and b >= 0 {
+        n.matrix[a * size + b] -= g
+        n.matrix[b * size + a] -= g
+    }
+}
+
+function iswAssemble(n: IswNetwork) -> bool {
+    let size: i32 = iswUnknownCount(n)
+    for i in 0 to size * size {
+        n.matrix[i] = 0.0
+    }
+    for i in 0 to size {
+        n.rhs[i] = 0.0
+    }
+    for i in 0 to n.elementCount[0] {
+        let e: IswElement = n.elements[i]
+        if e.kind == ISW_R {
+            iswStampG(n, e.a, e.b, 1.0 / e.p0)
+        } else {
+            if e.kind == ISW_I {
+                if e.a >= 0 {
+                    n.rhs[e.a] -= e.p0
+                }
+                if e.b >= 0 {
+                    n.rhs[e.b] += e.p0
+                }
+            } else {
+                if e.kind == ISW_V {
+                    let branch: i32 = n.nodeCount + e.aux
+                    if e.a >= 0 {
+                        n.matrix[e.a * size + branch] += 1.0
+                        n.matrix[branch * size + e.a] += 1.0
+                    }
+                    if e.b >= 0 {
+                        n.matrix[e.b * size + branch] -= 1.0
+                        n.matrix[branch * size + e.b] -= 1.0
+                    }
+                    n.rhs[branch] += e.p0
+                } else {
+                    if e.kind == ISW_S {
+                        let branch: i32 = n.nodeCount + n.voltageSourceCount + e.aux
+                        if e.closed >= 0.5 {
+                            # Ideal short: V(a)-V(b)=0, branch current free.
+                            if e.a >= 0 {
+                                n.matrix[e.a * size + branch] += 1.0
+                                n.matrix[branch * size + e.a] += 1.0
+                            }
+                            if e.b >= 0 {
+                                n.matrix[e.b * size + branch] -= 1.0
+                                n.matrix[branch * size + e.b] -= 1.0
+                            }
+                        } else {
+                            # Open: force branch current = 0; no nodal coupling.
+                            n.matrix[branch * size + branch] = 1.0
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return true
+}
+
+function iswSolveLinear(n: IswNetwork, absolutePivotTolerance: f64) -> bool {
+    let size: i32 = iswUnknownCount(n)
+    for i in 0 to size * size {
+        n.scratchMatrix[i] = n.matrix[i]
+    }
+    for i in 0 to size {
+        n.scratchRhs[i] = n.rhs[i]
+    }
+    for col in 0 to size {
+        let mut pivotRow: i32 = col
+        let mut best: f64 = iswAbs(n.scratchMatrix[col * size + col])
+        for row in col + 1 to size {
+            let candidate: f64 = iswAbs(n.scratchMatrix[row * size + col])
+            if candidate > best {
+                best = candidate
+                pivotRow = row
+            }
+        }
+        if best <= absolutePivotTolerance or best != best {
+            return false
+        }
+        if pivotRow != col {
+            for k in col to size {
+                let a: i32 = col * size + k
+                let b: i32 = pivotRow * size + k
+                let temp: f64 = n.scratchMatrix[a]
+                n.scratchMatrix[a] = n.scratchMatrix[b]
+                n.scratchMatrix[b] = temp
+            }
+            let rhs: f64 = n.scratchRhs[col]
+            n.scratchRhs[col] = n.scratchRhs[pivotRow]
+            n.scratchRhs[pivotRow] = rhs
+        }
+        for row in col + 1 to size {
+            let factor: f64 = n.scratchMatrix[row * size + col] / n.scratchMatrix[col * size + col]
+            n.scratchMatrix[row * size + col] = 0.0
+            for k in col + 1 to size {
+                n.scratchMatrix[row * size + k] -= factor * n.scratchMatrix[col * size + k]
+            }
+            n.scratchRhs[row] -= factor * n.scratchRhs[col]
+        }
+    }
+    let mut i: i32 = size - 1
+    while i >= 0 {
+        let mut v: f64 = n.scratchRhs[i]
+        for j in i + 1 to size {
+            v -= n.scratchMatrix[i * size + j] * n.solution[j]
+        }
+        n.solution[i] = v / n.scratchMatrix[i * size + i]
+        if n.solution[i] != n.solution[i] {
+            return false
+        }
+        i = i - 1
+    }
+    return true
+}
+
+export function iswSolve(n: IswNetwork, absolutePivotTolerance: f64) -> bool {
+    if absolutePivotTolerance <= 0.0 or n.elementCount[0] <= 0 {
+        return false
+    }
+    if not iswAssemble(n) {
+        return false
+    }
+    return iswSolveLinear(n, absolutePivotTolerance)
+}
+
+export function iswNodeVoltage(n: IswNetwork, node: i32) -> f64 {
+    if node < 0 {
+        return 0.0
+    }
+    if node >= n.nodeCount {
+        return 0.0 / 0.0
+    }
+    return n.solution[node]
+}
+
+export function iswSwitchCurrent(n: IswNetwork, id: i32) -> f64 {
+    if id < 0 or id >= n.elementCount[0] or n.elements[id].kind != ISW_S {
+        return 0.0 / 0.0
+    }
+    let idx: i32 = n.nodeCount + n.voltageSourceCount + n.elements[id].aux
+    return n.solution[idx]
+}
+
+export function iswVoltageSourceCurrent(n: IswNetwork, sourceIndex: i32) -> f64 {
+    if sourceIndex < 0 or sourceIndex >= n.voltageSourceCount {
+        return 0.0 / 0.0
+    }
+    return n.solution[n.nodeCount + sourceIndex]
+}
+
+export function iswMaxResidual(n: IswNetwork) -> f64 {
+    let size: i32 = iswUnknownCount(n)
+    let mut worst: f64 = 0.0
+    for row in 0 to size {
+        let mut residual: f64 = 0.0 - n.rhs[row]
+        for col in 0 to size {
+            residual += n.matrix[row * size + col] * n.solution[col]
+        }
+        if iswAbs(residual) > worst {
+            worst = iswAbs(residual)
+        }
+    }
+    return worst
+}
+
+export function iswSourcePower(n: IswNetwork) -> f64 {
+    let mut power: f64 = 0.0
+    for i in 0 to n.elementCount[0] {
+        let e: IswElement = n.elements[i]
+        if e.kind == ISW_V {
+            power += 0.0 - e.p0 * n.solution[n.nodeCount + e.aux]
+        }
+        if e.kind == ISW_I {
+            let v: f64 = iswNodeVoltage(n, e.a) - iswNodeVoltage(n, e.b)
+            power += v * e.p0
+        }
+    }
+    return power
+}
+
+export function iswResistorPower(n: IswNetwork) -> f64 {
+    let mut power: f64 = 0.0
+    for i in 0 to n.elementCount[0] {
+        let e: IswElement = n.elements[i]
+        if e.kind == ISW_R {
+            let v: f64 = iswNodeVoltage(n, e.a) - iswNodeVoltage(n, e.b)
+            power += v * v / e.p0
+        }
+    }
+    return power
+}

@@ -1,0 +1,19 @@
+* herbie ngspice ref: series RLC step
+V1 in 0 DC 1
+R1 in mid 100
+L1 mid cap 0.1
+C1 cap 0 1u
+.ic v(cap)=0
+.tran 1u 5m uic
+.control
+run
+meas tran vc1ms FIND v(cap) AT=1m
+meas tran vc2ms FIND v(cap) AT=2m
+meas tran vc5ms FIND v(cap) AT=5m
+echo meas_done
+print vc1ms
+print vc2ms
+print vc5ms
+quit
+.endc
+.end

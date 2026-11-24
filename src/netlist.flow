@@ -1,0 +1,1160 @@
+# @module herbie.netlist
+# Versioned SPICE-subset netlist import/export for Herbie circuit solvers.
+#
+# Format version (NETLIST_FORMAT_VERSION): decks should carry
+#   * herbie-netlist 1
+# as a comment (or `.herbie 1`). Classic SPICE title lines are also accepted;
+# the parser then assumes format version 1.
+#
+# Elements (case-insensitive; engineering suffixes as in SPICE):
+#   Rname  n+ n- value
+#   Cname  n+ n- value
+#   Lname  n+ n- value
+#   Vname  n+ n- [DC] value
+#   Iname  n+ n- [DC] value          current flows n+ -> n-
+#   Dname  n+ n- [IS=..] [N=..]      Shockley; nVt = N * 0.025852
+#   Sname  n+ n- Ron Roff [CLOSED|OPEN]   Herbie resistive switch extension
+#
+# Nodes: `0`, `gnd`, `ground` are reference. Other names are allocated in
+# first-seen order. Herbie solvers use ground = -1; netlistNode() returns
+# that convention (0..nodeCount-1 for named nodes).
+#
+# Dot cards accepted: .op .tran .ac .end .print .plot .options .title .herbie
+# Unsupported cards are counted (netlistSkipped), not silently ignored.
+#
+# Optional I/O front-end: uses calloc/fopen. Not a real-time kernel.
+# No .subckt, .model system, controlled sources, or waveform sources.
+
+import herbie.mna {
+    MnaNetwork, mnaClear, mnaStampResistor, mnaStampCurrentSource,
+    mnaStampVoltageSource, mnaSolve, mnaUnknownCount
+}
+import herbie.ac {
+    AcNetwork, acClear, acStampResistor, acStampCapacitor, acStampInductor,
+    acStampCurrentSource, acStampVoltageSource, acSolve, acUnknownCount
+}
+import herbie.nl {
+    NlNetwork, nlClear, nlAddResistor, nlAddCurrentSource, nlAddVoltageSource,
+    nlAddDiode, nlAddSwitch, nlSolve, nlNodeVoltage
+}
+
+extern {
+    function fopen(path: string, mode: string) -> ptr<void>
+    function fread(p: ptr<void>, size: i64, n: i64, f: ptr<void>) -> i64
+    function fwrite(p: ptr<void>, size: i64, n: i64, f: ptr<void>) -> i64
+    function fseek(f: ptr<void>, off: i64, whence: i32) -> i32
+    function ftell(f: ptr<void>) -> i64
+    function fclose(f: ptr<void>) -> i32
+    function calloc(n: i64, size: i64) -> ptr<void>
+    function snprintf(buf: ptr<u8>, n: i64, fmt: string, v: f64) -> i32
+}
+
+export const NETLIST_FORMAT_VERSION: i32 = 1
+
+export const NL_KIND_R: i32 = 0
+export const NL_KIND_C: i32 = 1
+export const NL_KIND_L: i32 = 2
+export const NL_KIND_V: i32 = 3
+export const NL_KIND_I: i32 = 4
+export const NL_KIND_D: i32 = 5
+export const NL_KIND_S: i32 = 6
+
+const NL_MAX_TEXT: i32 = 65536
+const NL_MAX_NAMES: i32 = 128
+const NL_MAX_ELEMS: i32 = 256
+const NL_MAX_EXPORT: i32 = 65536
+const NL_SEEK_SET: i32 = 0
+const NL_SEEK_END: i32 = 2
+const NL_VT: f64 = 0.025852
+
+export struct NetlistElement {
+    kind: i32,
+    a: i32,
+    b: i32,
+    nameOff: i32,
+    nameLen: i32,
+    p0: f64,
+    p1: f64,
+    p2: f64,
+    state: i32
+}
+
+let mut nl_text: ptr<u8> = null
+let mut nl_len: i32 = 0
+let mut nl_pos: i32 = 0
+let mut nl_line: i32 = 0
+let mut nl_tok: i32 = 0
+let mut nl_toklen: i32 = 0
+
+let mut nl_name_off: ptr<i32> = null
+let mut nl_name_len: ptr<i32> = null
+let mut nl_nnames: i32 = 0
+
+let mut nl_elems: ptr<NetlistElement> = null
+let mut nl_nelem: i32 = 0
+let mut nl_vcount: i32 = 0
+
+let mut nl_export: ptr<u8> = null
+let mut nl_export_len: i32 = 0
+
+let mut nl_version: i32 = 0
+let mut nl_skipped: i32 = 0
+let mut nl_errline: i32 = 0
+let mut nl_ready: bool = false
+let mut nl_has_op: bool = false
+let mut nl_has_tran: bool = false
+let mut nl_has_ac: bool = false
+let mut nl_tstep: f64 = 0.0
+let mut nl_tstop: f64 = 0.0
+let mut nl_ac_fstart: f64 = 0.0
+let mut nl_ac_fstop: f64 = 0.0
+let mut nl_ac_omega: f64 = 0.0
+
+function nl_ch(i: i32) -> i32 {
+    if i < 0 or i >= nl_len {
+        return 0
+    }
+    return nl_text[i] as i32
+}
+
+function nl_low(c: i32) -> i32 {
+    if c >= 65 and c <= 90 {
+        return c + 32
+    }
+    return c
+}
+
+function nl_is_space(c: i32) -> bool {
+    return c == 32 or c == 9 or c == 13
+}
+
+function nl_is_eol(c: i32) -> bool {
+    return c == 10 or c == 0
+}
+
+function nl_is_digit(c: i32) -> bool {
+    return c >= 48 and c <= 57
+}
+
+function nl_finite(value: f64) -> bool {
+    return value == value and value <= 1.7976931348623157e308 and value >= -1.7976931348623157e308
+}
+
+function nl_next() -> bool {
+    while nl_pos < nl_len and nl_is_space(nl_ch(nl_pos)) {
+        nl_pos = nl_pos + 1
+    }
+    let c: i32 = nl_ch(nl_pos)
+    if nl_is_eol(c) or c == 59 {
+        return false
+    }
+    if c == 61 or c == 40 or c == 41 or c == 44 {
+        nl_tok = nl_pos
+        nl_toklen = 1
+        nl_pos = nl_pos + 1
+        return true
+    }
+    nl_tok = nl_pos
+    while nl_pos < nl_len {
+        let d: i32 = nl_ch(nl_pos)
+        if nl_is_space(d) or nl_is_eol(d) or d == 59 or d == 61
+            or d == 40 or d == 41 or d == 44 {
+            break
+        }
+        nl_pos = nl_pos + 1
+    }
+    nl_toklen = nl_pos - nl_tok
+    return nl_toklen > 0
+}
+
+function nl_eat_line() -> bool {
+    while nl_pos < nl_len and nl_ch(nl_pos) != 10 {
+        nl_pos = nl_pos + 1
+    }
+    if nl_pos < nl_len {
+        nl_pos = nl_pos + 1
+        nl_line = nl_line + 1
+        return true
+    }
+    return false
+}
+
+function nl_tok_is(lit: string) -> bool {
+    let b: ptr<u8> = lit as ptr<u8>
+    let mut i: i32 = 0
+    while i < nl_toklen {
+        let a: i32 = nl_low(nl_ch(nl_tok + i))
+        let c: i32 = b[i] as i32
+        if c == 0 {
+            return false
+        }
+        if a != nl_low(c) {
+            return false
+        }
+        i = i + 1
+    }
+    return b[nl_toklen] as i32 == 0
+}
+
+function nl_lit_eq(off: i32, len: i32, lit: string) -> bool {
+    let b: ptr<u8> = lit as ptr<u8>
+    let mut i: i32 = 0
+    while i < len {
+        let c: i32 = b[i] as i32
+        if c == 0 {
+            return false
+        }
+        if nl_low(nl_ch(off + i)) != nl_low(c) {
+            return false
+        }
+        i = i + 1
+    }
+    return b[len] as i32 == 0
+}
+
+function nl_names_eq(off1: i32, len1: i32, off2: i32, len2: i32) -> bool {
+    if len1 != len2 {
+        return false
+    }
+    for i in 0 to len1 {
+        if nl_low(nl_ch(off1 + i)) != nl_low(nl_ch(off2 + i)) {
+            return false
+        }
+    }
+    return true
+}
+
+function nl_suffix(off: i32, len: i32) -> f64 {
+    if len <= 0 {
+        return 1.0
+    }
+    if len >= 3 {
+        if nl_low(nl_ch(off)) == 109 and nl_low(nl_ch(off + 1)) == 101
+            and nl_low(nl_ch(off + 2)) == 103 {
+            return 1e6
+        }
+    }
+    let c: i32 = nl_low(nl_ch(off))
+    if c == 116 { return 1e12 }
+    if c == 103 { return 1e9 }
+    if c == 107 { return 1e3 }
+    if c == 109 { return 1e-3 }
+    if c == 117 { return 1e-6 }
+    if c == 110 { return 1e-9 }
+    if c == 112 { return 1e-12 }
+    if c == 102 { return 1e-15 }
+    return 1.0
+}
+
+function nl_number(off: i32, len: i32) -> f64 {
+    let mut i: i32 = 0
+    let mut sign: f64 = 1.0
+    if i < len and nl_ch(off + i) == 45 {
+        sign = -1.0
+        i = i + 1
+    } else {
+        if i < len and nl_ch(off + i) == 43 {
+            i = i + 1
+        }
+    }
+    let mut mant: f64 = 0.0
+    while i < len and nl_is_digit(nl_ch(off + i)) {
+        mant = mant * 10.0 + ((nl_ch(off + i) - 48) as f64)
+        i = i + 1
+    }
+    if i < len and nl_ch(off + i) == 46 {
+        i = i + 1
+        let mut scale: f64 = 0.1
+        while i < len and nl_is_digit(nl_ch(off + i)) {
+            mant = mant + scale * ((nl_ch(off + i) - 48) as f64)
+            scale = scale * 0.1
+            i = i + 1
+        }
+    }
+    if i < len and nl_low(nl_ch(off + i)) == 101 {
+        let nxt: i32 = nl_ch(off + i + 1)
+        if i + 1 < len and (nl_is_digit(nxt) or nxt == 43 or nxt == 45) {
+            i = i + 1
+            let mut esign: i32 = 1
+            if nl_ch(off + i) == 45 {
+                esign = -1
+                i = i + 1
+            } else {
+                if nl_ch(off + i) == 43 {
+                    i = i + 1
+                }
+            }
+            let mut ev: i32 = 0
+            while i < len and nl_is_digit(nl_ch(off + i)) {
+                ev = ev * 10 + (nl_ch(off + i) - 48)
+                i = i + 1
+            }
+            let mut p: f64 = 1.0
+            for k in 0 to ev {
+                p = p * 10.0
+            }
+            if esign < 0 {
+                mant = mant / p
+            } else {
+                mant = mant * p
+            }
+        }
+    }
+    return sign * mant * nl_suffix(off + i, len - i)
+}
+
+function nl_tok_number() -> f64 {
+    return nl_number(nl_tok, nl_toklen)
+}
+
+function nl_is_ground(off: i32, len: i32) -> bool {
+    if nl_lit_eq(off, len, "0") {
+        return true
+    }
+    if nl_lit_eq(off, len, "gnd") {
+        return true
+    }
+    return nl_lit_eq(off, len, "ground")
+}
+
+# Allocate named node; returns herbie index (>=0). Ground returns -1.
+function nl_node() -> i32 {
+    if nl_is_ground(nl_tok, nl_toklen) {
+        return -1
+    }
+    for i in 0 to nl_nnames {
+        if nl_names_eq(nl_name_off[i], nl_name_len[i], nl_tok, nl_toklen) {
+            return i
+        }
+    }
+    if nl_nnames >= NL_MAX_NAMES {
+        return -2
+    }
+    nl_name_off[nl_nnames] = nl_tok
+    nl_name_len[nl_nnames] = nl_toklen
+    nl_nnames = nl_nnames + 1
+    return nl_nnames - 1
+}
+
+function nl_alloc() -> bool {
+    if nl_text != null {
+        return true
+    }
+    nl_text = calloc((NL_MAX_TEXT + 1) as i64, 1) as ptr<u8>
+    nl_name_off = calloc(NL_MAX_NAMES as i64, 4) as ptr<i32>
+    nl_name_len = calloc(NL_MAX_NAMES as i64, 4) as ptr<i32>
+    nl_elems = calloc(NL_MAX_ELEMS as i64, 64) as ptr<NetlistElement>
+    nl_export = calloc((NL_MAX_EXPORT + 1) as i64, 1) as ptr<u8>
+    return nl_text != null and nl_elems != null and nl_export != null
+}
+
+function nl_reset_parse_state() -> void {
+    nl_pos = 0
+    nl_line = 1
+    nl_nnames = 0
+    nl_nelem = 0
+    nl_vcount = 0
+    nl_skipped = 0
+    nl_errline = 0
+    nl_version = 0
+    nl_has_op = false
+    nl_has_tran = false
+    nl_has_ac = false
+    nl_tstep = 0.0
+    nl_tstop = 0.0
+    nl_ac_fstart = 0.0
+    nl_ac_fstop = 0.0
+    nl_ac_omega = 0.0
+    nl_export_len = 0
+}
+
+export function netlistClear() -> bool {
+    if not nl_alloc() {
+        return false
+    }
+    nl_len = 0
+    nl_text[0] = 0
+    nl_ready = false
+    nl_reset_parse_state()
+    return true
+}
+
+# Load deck bytes into the session buffer (copies up to NL_MAX_TEXT).
+export function netlistLoadText(src: ptr<u8>, srcLen: i32) -> bool {
+    if not nl_alloc() or src == null or srcLen <= 0 or srcLen > NL_MAX_TEXT {
+        nl_errline = -2
+        return false
+    }
+    for i in 0 to srcLen {
+        nl_text[i] = src[i]
+    }
+    nl_len = srcLen
+    nl_text[nl_len] = 0
+    nl_ready = true
+    nl_reset_parse_state()
+    return true
+}
+
+export function netlistLoadString(deck: string) -> bool {
+    let b: ptr<u8> = deck as ptr<u8>
+    let mut n: i32 = 0
+    while b[n] as i32 != 0 {
+        n = n + 1
+        if n > NL_MAX_TEXT {
+            nl_errline = -2
+            return false
+        }
+    }
+    return netlistLoadText(b, n)
+}
+
+export function netlistLoadFile(path: string) -> bool {
+    if not nl_alloc() {
+        return false
+    }
+    let f: ptr<void> = fopen(path, "rb")
+    if f == null {
+        nl_errline = -1
+        return false
+    }
+    let seek_end: i32 = fseek(f, 0, NL_SEEK_END)
+    let size: i64 = ftell(f)
+    let rewound: i32 = fseek(f, 0, NL_SEEK_SET)
+    if size > NL_MAX_TEXT as i64 or size <= 0 {
+        let closed: i32 = fclose(f)
+        nl_errline = -2
+        return false
+    }
+    let got: i64 = fread(nl_text as ptr<void>, 1, size, f)
+    let closed2: i32 = fclose(f)
+    if got != size {
+        nl_errline = -3
+        return false
+    }
+    nl_len = got as i32
+    nl_text[nl_len] = 0
+    nl_ready = true
+    nl_reset_parse_state()
+    return true
+}
+
+let mut nl_n1: i32 = 0
+let mut nl_n2: i32 = 0
+
+function nl_two_nodes() -> bool {
+    if not nl_next() {
+        return false
+    }
+    nl_n1 = nl_node()
+    if not nl_next() {
+        return false
+    }
+    nl_n2 = nl_node()
+    return nl_n1 >= -1 and nl_n2 >= -1 and nl_n1 != -2 and nl_n2 != -2
+}
+
+function nl_add_elem(kind: i32, a: i32, b: i32, nameOff: i32, nameLen: i32,
+    p0: f64, p1: f64, p2: f64, state: i32) -> bool {
+    if nl_nelem >= NL_MAX_ELEMS or a == b or not nl_finite(p0) or not nl_finite(p1) or not nl_finite(p2) {
+        return false
+    }
+    nl_elems[nl_nelem] = NetlistElement {
+        kind: kind, a: a, b: b, nameOff: nameOff, nameLen: nameLen,
+        p0: p0, p1: p1, p2: p2, state: state
+    }
+    nl_nelem = nl_nelem + 1
+    return true
+}
+
+function nl_card_rcl(kind: i32, nameOff: i32, nameLen: i32) -> bool {
+    if not nl_two_nodes() {
+        return false
+    }
+    if not nl_next() {
+        return false
+    }
+    let value: f64 = nl_tok_number()
+    if value <= 0.0 {
+        return false
+    }
+    while nl_next() {
+        nl_skipped = nl_skipped + 1
+    }
+    return nl_add_elem(kind, nl_n1, nl_n2, nameOff, nameLen, value, 0.0, 0.0, 0)
+}
+
+function nl_card_source(kind: i32, nameOff: i32, nameLen: i32) -> bool {
+    if not nl_two_nodes() {
+        return false
+    }
+    if not nl_next() {
+        return false
+    }
+    if nl_tok_is("dc") {
+        if not nl_next() {
+            return false
+        }
+    }
+    if nl_tok_is("ac") or nl_tok_is("pulse") or nl_tok_is("sin")
+        or nl_tok_is("pwl") or nl_tok_is("exp") {
+        nl_skipped = nl_skipped + 1
+        while nl_next() {
+        }
+        return false
+    }
+    let value: f64 = nl_tok_number()
+    while nl_next() {
+        nl_skipped = nl_skipped + 1
+    }
+    let mut state: i32 = 0
+    if kind == NL_KIND_V {
+        state = nl_vcount
+        nl_vcount = nl_vcount + 1
+    }
+    return nl_add_elem(kind, nl_n1, nl_n2, nameOff, nameLen, value, 0.0, 0.0, state)
+}
+
+function nl_card_diode(nameOff: i32, nameLen: i32) -> bool {
+    if not nl_two_nodes() {
+        return false
+    }
+    let mut is_sat: f64 = 1e-14
+    let mut nemis: f64 = 1.0
+    while nl_next() {
+        if nl_tok_is("is") {
+            if not nl_next() {
+                return false
+            }
+            if nl_tok_is("=") {
+                if not nl_next() {
+                    return false
+                }
+            }
+            is_sat = nl_tok_number()
+        } else {
+            if nl_tok_is("n") {
+                if not nl_next() {
+                    return false
+                }
+                if nl_tok_is("=") {
+                    if not nl_next() {
+                        return false
+                    }
+                }
+                nemis = nl_tok_number()
+            } else {
+                nl_skipped = nl_skipped + 1
+            }
+        }
+    }
+    if is_sat <= 0.0 or nemis <= 0.0 {
+        return false
+    }
+    return nl_add_elem(NL_KIND_D, nl_n1, nl_n2, nameOff, nameLen, is_sat, nemis * NL_VT, 0.0, 0)
+}
+
+function nl_card_switch(nameOff: i32, nameLen: i32) -> bool {
+    if not nl_two_nodes() {
+        return false
+    }
+    if not nl_next() {
+        return false
+    }
+    let ron: f64 = nl_tok_number()
+    if not nl_next() {
+        return false
+    }
+    let roff: f64 = nl_tok_number()
+    let mut closed: i32 = 1
+    while nl_next() {
+        if nl_tok_is("open") {
+            closed = 0
+        } else {
+            if nl_tok_is("closed") or nl_tok_is("on") {
+                closed = 1
+            } else {
+                if nl_tok_is("off") {
+                    closed = 0
+                } else {
+                    nl_skipped = nl_skipped + 1
+                }
+            }
+        }
+    }
+    if ron <= 0.0 or roff <= 0.0 or ron >= roff {
+        return false
+    }
+    return nl_add_elem(NL_KIND_S, nl_n1, nl_n2, nameOff, nameLen, ron, roff, 0.0, closed)
+}
+
+function nl_scan_version_comment() -> void {
+    # Current token starts with '*'; look for herbie-netlist <n>
+    if not nl_next() {
+        return
+    }
+    if nl_tok_is("herbie-netlist") {
+        if nl_next() {
+            nl_version = nl_tok_number() as i32
+        }
+    }
+}
+
+function nl_card_dot() -> bool {
+    if nl_tok_is(".herbie") {
+        if nl_next() {
+            nl_version = nl_tok_number() as i32
+        }
+        return true
+    }
+    if nl_tok_is(".op") {
+        nl_has_op = true
+        return true
+    }
+    if nl_tok_is(".tran") {
+        if not nl_next() {
+            return false
+        }
+        nl_tstep = nl_tok_number()
+        if not nl_next() {
+            return false
+        }
+        nl_tstop = nl_tok_number()
+        nl_has_tran = true
+        while nl_next() {
+        }
+        return true
+    }
+    if nl_tok_is(".ac") {
+        # .ac [lin|dec|oct] npoints fstart fstop  OR  .ac omega=<rad/s>
+        if not nl_next() {
+            return false
+        }
+        if nl_tok_is("omega") {
+            if not nl_next() {
+                return false
+            }
+            if nl_tok_is("=") {
+                if not nl_next() {
+                    return false
+                }
+            }
+            nl_ac_omega = nl_tok_number()
+            nl_has_ac = true
+            return nl_ac_omega > 0.0
+        }
+        # skip type token if present
+        if nl_tok_is("lin") or nl_tok_is("dec") or nl_tok_is("oct") {
+            if not nl_next() {
+                return false
+            }
+        }
+        # optional npoints
+        let maybe_points: f64 = nl_tok_number()
+        if not nl_next() {
+            # single frequency as omega or Hz — treat as Hz, convert later if needed
+            nl_ac_fstart = maybe_points
+            nl_ac_fstop = maybe_points
+            nl_ac_omega = 2.0 * 3.141592653589793 * maybe_points
+            nl_has_ac = true
+            return maybe_points > 0.0
+        }
+        nl_ac_fstart = nl_tok_number()
+        if not nl_next() {
+            return false
+        }
+        nl_ac_fstop = nl_tok_number()
+        nl_ac_omega = 2.0 * 3.141592653589793 * nl_ac_fstart
+        nl_has_ac = true
+        while nl_next() {
+        }
+        return nl_ac_fstart > 0.0
+    }
+    if nl_tok_is(".end") or nl_tok_is(".ends") or nl_tok_is(".print")
+        or nl_tok_is(".plot") or nl_tok_is(".options") or nl_tok_is(".option")
+        or nl_tok_is(".width") or nl_tok_is(".title") {
+        return true
+    }
+    nl_skipped = nl_skipped + 1
+    return true
+}
+
+export function netlistParse() -> bool {
+    if not nl_ready or nl_text == null {
+        return false
+    }
+    nl_reset_parse_state()
+
+    # Title / version line
+    if nl_next() {
+        if nl_tok_is("*") or (nl_toklen > 0 and nl_ch(nl_tok) == 42) {
+            nl_scan_version_comment()
+        } else {
+            if nl_tok_is(".herbie") {
+                if nl_next() {
+                    nl_version = nl_tok_number() as i32
+                }
+            }
+        }
+    }
+    if not nl_eat_line() {
+        # empty after title
+    }
+    if nl_version == 0 {
+        nl_version = NETLIST_FORMAT_VERSION
+    }
+    if nl_version != NETLIST_FORMAT_VERSION {
+        nl_errline = 1
+        return false
+    }
+
+    while nl_pos < nl_len {
+        if nl_next() {
+            let c: i32 = nl_low(nl_ch(nl_tok))
+            let mut ok: bool = true
+            if c == 42 {
+                if nl_tok_is("*") {
+                    nl_scan_version_comment()
+                } else {
+                    # token may be "*herbie-netlist" glued — treat as comment
+                    ok = true
+                }
+            } else {
+                if c == 46 {
+                    ok = nl_card_dot()
+                } else {
+                    let noff: i32 = nl_tok
+                    let nlen: i32 = nl_toklen
+                    if c == 114 {
+                        ok = nl_card_rcl(NL_KIND_R, noff, nlen)
+                    } else {
+                        if c == 99 {
+                            ok = nl_card_rcl(NL_KIND_C, noff, nlen)
+                        } else {
+                            if c == 108 {
+                                ok = nl_card_rcl(NL_KIND_L, noff, nlen)
+                            } else {
+                                if c == 118 {
+                                    ok = nl_card_source(NL_KIND_V, noff, nlen)
+                                } else {
+                                    if c == 105 {
+                                        ok = nl_card_source(NL_KIND_I, noff, nlen)
+                                    } else {
+                                        if c == 100 {
+                                            ok = nl_card_diode(noff, nlen)
+                                        } else {
+                                            if c == 115 {
+                                                ok = nl_card_switch(noff, nlen)
+                                            } else {
+                                                nl_skipped = nl_skipped + 1
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if not ok {
+                nl_errline = nl_line
+                return false
+            }
+        }
+        if not nl_eat_line() {
+            nl_pos = nl_len
+        }
+    }
+    return nl_nelem > 0 and nl_nnames > 0
+}
+
+export function netlistFormatVersion() -> i32 { return nl_version }
+export function netlistErrorLine() -> i32 { return nl_errline }
+export function netlistSkipped() -> i32 { return nl_skipped }
+export function netlistElementCount() -> i32 { return nl_nelem }
+export function netlistNodeCount() -> i32 { return nl_nnames }
+export function netlistVoltageSourceCount() -> i32 { return nl_vcount }
+export function netlistHasOp() -> bool { return nl_has_op }
+export function netlistHasTran() -> bool { return nl_has_tran }
+export function netlistHasAc() -> bool { return nl_has_ac }
+export function netlistTranStep() -> f64 { return nl_tstep }
+export function netlistTranStop() -> f64 { return nl_tstop }
+export function netlistAcOmega() -> f64 { return nl_ac_omega }
+
+export function netlistElement(i: i32) -> NetlistElement {
+    if i < 0 or i >= nl_nelem {
+        return NetlistElement {
+            kind: -1, a: -1, b: -1, nameOff: 0, nameLen: 0,
+            p0: 0.0, p1: 0.0, p2: 0.0, state: 0
+        }
+    }
+    return nl_elems[i]
+}
+
+export function netlistNode(name: string) -> i32 {
+    let b: ptr<u8> = name as ptr<u8>
+    let mut n: i32 = 0
+    while b[n] as i32 != 0 {
+        n = n + 1
+    }
+    if n == 1 and b[0] as i32 == 48 {
+        return -1
+    }
+    if n == 3 and nl_low(b[0] as i32) == 103 and nl_low(b[1] as i32) == 110
+        and nl_low(b[2] as i32) == 100 {
+        return -1
+    }
+    if n == 6 and nl_low(b[0] as i32) == 103 and nl_low(b[1] as i32) == 114
+        and nl_low(b[2] as i32) == 111 and nl_low(b[3] as i32) == 117
+        and nl_low(b[4] as i32) == 110 and nl_low(b[5] as i32) == 100 {
+        return -1
+    }
+    for i in 0 to nl_nnames {
+        if nl_name_len[i] == n {
+            let mut ok: bool = true
+            for k in 0 to n {
+                if nl_low(nl_ch(nl_name_off[i] + k)) != nl_low(b[k] as i32) {
+                    ok = false
+                }
+            }
+            if ok {
+                return i
+            }
+        }
+    }
+    return -2
+}
+
+function nl_emit_byte(c: i32) -> bool {
+    if nl_export_len >= NL_MAX_EXPORT {
+        return false
+    }
+    nl_export[nl_export_len] = c as u8
+    nl_export_len = nl_export_len + 1
+    return true
+}
+
+function nl_emit_cstr(s: string) -> bool {
+    let b: ptr<u8> = s as ptr<u8>
+    let mut i: i32 = 0
+    while b[i] as i32 != 0 {
+        if not nl_emit_byte(b[i] as i32) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+function nl_emit_slice(off: i32, len: i32) -> bool {
+    for i in 0 to len {
+        if not nl_emit_byte(nl_ch(off + i)) {
+            return false
+        }
+    }
+    return true
+}
+
+function nl_emit_f64(v: f64) -> bool {
+    let mut tmp: array<u8, 64> = [
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    ]
+    let n: i32 = snprintf(&tmp[0], 64, "%.12g", v)
+    if n <= 0 {
+        return false
+    }
+    for i in 0 to n {
+        if not nl_emit_byte(tmp[i] as i32) {
+            return false
+        }
+    }
+    return true
+}
+
+function nl_emit_node(node: i32) -> bool {
+    if node < 0 {
+        return nl_emit_cstr("0")
+    }
+    if node >= nl_nnames {
+        return false
+    }
+    return nl_emit_slice(nl_name_off[node], nl_name_len[node])
+}
+
+function nl_kind_letter(kind: i32) -> string {
+    if kind == NL_KIND_R { return "R" }
+    if kind == NL_KIND_C { return "C" }
+    if kind == NL_KIND_L { return "L" }
+    if kind == NL_KIND_V { return "V" }
+    if kind == NL_KIND_I { return "I" }
+    if kind == NL_KIND_D { return "D" }
+    if kind == NL_KIND_S { return "S" }
+    return "X"
+}
+
+# Export the parsed deck to the session export buffer. Returns byte length or -1.
+export function netlistExport() -> i32 {
+    if nl_nelem <= 0 or nl_export == null {
+        return -1
+    }
+    nl_export_len = 0
+    if not nl_emit_cstr("* herbie-netlist ") {
+        return -1
+    }
+    if not nl_emit_f64(NETLIST_FORMAT_VERSION as f64) {
+        return -1
+    }
+    if not nl_emit_byte(10) {
+        return -1
+    }
+    for i in 0 to nl_nelem {
+        let e: NetlistElement = nl_elems[i]
+        if e.nameLen > 0 {
+            if not nl_emit_slice(e.nameOff, e.nameLen) {
+                return -1
+            }
+        } else {
+            if not nl_emit_cstr(nl_kind_letter(e.kind)) {
+                return -1
+            }
+            if not nl_emit_f64((i + 1) as f64) {
+                return -1
+            }
+        }
+        if not nl_emit_byte(32) or not nl_emit_node(e.a) or not nl_emit_byte(32) or not nl_emit_node(e.b) or not nl_emit_byte(32) {
+            return -1
+        }
+        if e.kind == NL_KIND_D {
+            if not nl_emit_cstr("IS=") or not nl_emit_f64(e.p0) or not nl_emit_cstr(" N=") {
+                return -1
+            }
+            if not nl_emit_f64(e.p1 / NL_VT) {
+                return -1
+            }
+        } else {
+            if e.kind == NL_KIND_S {
+                if not nl_emit_f64(e.p0) or not nl_emit_byte(32) or not nl_emit_f64(e.p1) or not nl_emit_byte(32) {
+                    return -1
+                }
+                if e.state >= 1 {
+                    if not nl_emit_cstr("CLOSED") {
+                        return -1
+                    }
+                } else {
+                    if not nl_emit_cstr("OPEN") {
+                        return -1
+                    }
+                }
+            } else {
+                if e.kind == NL_KIND_V or e.kind == NL_KIND_I {
+                    if not nl_emit_cstr("DC ") or not nl_emit_f64(e.p0) {
+                        return -1
+                    }
+                } else {
+                    if not nl_emit_f64(e.p0) {
+                        return -1
+                    }
+                }
+            }
+        }
+        if not nl_emit_byte(10) {
+            return -1
+        }
+    }
+    if nl_has_op {
+        if not nl_emit_cstr(".op\n") {
+            return -1
+        }
+    }
+    if nl_has_tran {
+        if not nl_emit_cstr(".tran ") or not nl_emit_f64(nl_tstep) or not nl_emit_byte(32)
+            or not nl_emit_f64(nl_tstop) or not nl_emit_byte(10) {
+            return -1
+        }
+    }
+    if nl_has_ac {
+        if not nl_emit_cstr(".ac omega=") or not nl_emit_f64(nl_ac_omega) or not nl_emit_byte(10) {
+            return -1
+        }
+    }
+    if not nl_emit_cstr(".end\n") {
+        return -1
+    }
+    nl_export[nl_export_len] = 0
+    return nl_export_len
+}
+
+export function netlistExportText() -> ptr<u8> {
+    return nl_export
+}
+
+export function netlistExportFile(path: string) -> bool {
+    let n: i32 = netlistExport()
+    if n < 0 {
+        return false
+    }
+    let f: ptr<void> = fopen(path, "wb")
+    if f == null {
+        return false
+    }
+    let wrote: i64 = fwrite(nl_export as ptr<void>, 1, n as i64, f)
+    let closed: i32 = fclose(f)
+    return wrote == n as i64
+}
+
+# Stamp resistive DC (R/V/I only) into herbie.mna.
+export function netlistStampMna(n: MnaNetwork) -> bool {
+    if nl_nelem <= 0 or n.nodeCount != nl_nnames or n.voltageSourceCount != nl_vcount {
+        return false
+    }
+    if not mnaClear(n) {
+        return false
+    }
+    for i in 0 to nl_nelem {
+        let e: NetlistElement = nl_elems[i]
+        if e.kind == NL_KIND_R {
+            if not mnaStampResistor(n, e.a, e.b, e.p0) {
+                return false
+            }
+        } else {
+            if e.kind == NL_KIND_I {
+                if not mnaStampCurrentSource(n, e.a, e.b, e.p0) {
+                    return false
+                }
+            } else {
+                if e.kind == NL_KIND_V {
+                    if not mnaStampVoltageSource(n, e.state, e.a, e.b, e.p0) {
+                        return false
+                    }
+                } else {
+                    return false
+                }
+            }
+        }
+    }
+    return true
+}
+
+# Stamp linear AC (R/C/L/V/I) into herbie.ac. Uses deck .ac omega if set,
+# otherwise the AcNetwork.omega already configured by the caller.
+export function netlistStampAc(n: AcNetwork) -> bool {
+    if nl_nelem <= 0 or n.nodeCount != nl_nnames or n.voltageSourceCount != nl_vcount {
+        return false
+    }
+    if nl_has_ac and nl_ac_omega > 0.0 {
+        # Caller should have set omega; we only stamp.
+    }
+    if not acClear(n) {
+        return false
+    }
+    for i in 0 to nl_nelem {
+        let e: NetlistElement = nl_elems[i]
+        if e.kind == NL_KIND_R {
+            if not acStampResistor(n, e.a, e.b, e.p0) {
+                return false
+            }
+        } else {
+            if e.kind == NL_KIND_C {
+                if not acStampCapacitor(n, e.a, e.b, e.p0) {
+                    return false
+                }
+            } else {
+                if e.kind == NL_KIND_L {
+                    if not acStampInductor(n, e.a, e.b, e.p0) {
+                        return false
+                    }
+                } else {
+                    if e.kind == NL_KIND_I {
+                        if not acStampCurrentSource(n, e.a, e.b, e.p0, 0.0) {
+                            return false
+                        }
+                    } else {
+                        if e.kind == NL_KIND_V {
+                            if not acStampVoltageSource(n, e.state, e.a, e.b, e.p0, 0.0) {
+                                return false
+                            }
+                        } else {
+                            return false
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return true
+}
+
+# Stamp DC nonlinear deck (R/V/I/D/S) into herbie.nl.
+export function netlistStampNl(n: NlNetwork) -> bool {
+    if nl_nelem <= 0 or n.nodeCount != nl_nnames or n.voltageSourceCount != nl_vcount {
+        return false
+    }
+    if not nlClear(n) {
+        return false
+    }
+    for i in 0 to nl_nelem {
+        let e: NetlistElement = nl_elems[i]
+        let mut id: i32 = -1
+        if e.kind == NL_KIND_R {
+            id = nlAddResistor(n, e.a, e.b, e.p0)
+        } else {
+            if e.kind == NL_KIND_I {
+                id = nlAddCurrentSource(n, e.a, e.b, e.p0)
+            } else {
+                if e.kind == NL_KIND_V {
+                    id = nlAddVoltageSource(n, e.state, e.a, e.b, e.p0)
+                } else {
+                    if e.kind == NL_KIND_D {
+                        id = nlAddDiode(n, e.a, e.b, e.p0, e.p1)
+                    } else {
+                        if e.kind == NL_KIND_S {
+                            let mut closed: bool = false
+                            if e.state >= 1 {
+                                closed = true
+                            }
+                            id = nlAddSwitch(n, e.a, e.b, e.p0, e.p1, closed)
+                        } else {
+                            return false
+                        }
+                    }
+                }
+            }
+        }
+        if id < 0 {
+            return false
+        }
+    }
+    return true
+}
+
+export function netlistHasOnlyResistiveDc() -> bool {
+    for i in 0 to nl_nelem {
+        let k: i32 = nl_elems[i].kind
+        if k != NL_KIND_R and k != NL_KIND_V and k != NL_KIND_I {
+            return false
+        }
+    }
+    return nl_nelem > 0
+}
+
+export function netlistHasNonlinear() -> bool {
+    for i in 0 to nl_nelem {
+        let k: i32 = nl_elems[i].kind
+        if k == NL_KIND_D or k == NL_KIND_S {
+            return true
+        }
+    }
+    return false
+}
+
+export function netlistHasDynamics() -> bool {
+    for i in 0 to nl_nelem {
+        let k: i32 = nl_elems[i].kind
+        if k == NL_KIND_C or k == NL_KIND_L {
+            return true
+        }
+    }
+    return false
+}
