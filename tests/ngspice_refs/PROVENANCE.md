@@ -19,7 +19,7 @@ ngspice -b tests/ngspice_refs/rc_ac.cir   | tee tests/ngspice_refs/rc_ac.raw
 ngspice -b tests/ngspice_refs/diode.cir   | tee tests/ngspice_refs/diode.raw
 ```
 
-Curated print lines are copied into `*.out`; tabulated SI values are in `values.tsv`.
+Curated print lines are copied into `*.print`; tabulated SI values are in `values.tsv`.
 
 ## Circuits
 
@@ -29,4 +29,4 @@ Curated print lines are copied into `*.out`; tabulated SI values are in `values.
 
 ## Regeneration
 
-`scripts/regen_ngspice_refs.sh` re-runs the three batch decks and refreshes `*.raw` / `*.out` / `values.tsv` / this provenance stamp. CI does **not** require ngspice: `tests/ngspice_crossval.flow` compares Herbie solvers against the stored reference numbers.
+`scripts/regen_ngspice_refs.sh` re-runs the three batch decks and refreshes `*.raw` / `*.print` / `values.tsv` / this provenance stamp. CI does **not** require ngspice: `tests/ngspice_crossval.flow` compares Herbie solvers against the stored reference numbers.

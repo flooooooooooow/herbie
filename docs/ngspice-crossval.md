@@ -14,7 +14,7 @@ Diode tolerance is looser because Herbie uses a fixed `nVt = 0.025852` while ngs
 
 ## Provenance
 
-See [tests/ngspice_refs/PROVENANCE.md](../tests/ngspice_refs/PROVENANCE.md) for ngspice version, host, UTC stamp and exact `ngspice -b …` commands. Curated prints: `*.out`. Tabulated SI values: `values.tsv`. Full batch logs: `*.raw`.
+See [tests/ngspice_refs/PROVENANCE.md](../tests/ngspice_refs/PROVENANCE.md) for ngspice version, host, UTC stamp and exact `ngspice -b …` commands. Curated prints: `*.print`. Tabulated SI values: `values.tsv`. Full batch logs: `*.raw`.
 
 Regenerate on a machine with ngspice:
 

@@ -19,17 +19,17 @@ import herbie.netlist {
     netlistStampNl, netlistNodeCount, netlistVoltageSourceCount, netlistAcOmega
 }
 
-# ngspice-42 divider.out
+# ngspice-42 divider.print
 const REF_DIV_VIN: f64 = 12.0
 const REF_DIV_VMID: f64 = 6.0
 const REF_DIV_IV1: f64 = -0.006
 
-# ngspice-42 rc_ac.out at omega=1000
+# ngspice-42 rc_ac.print at omega=1000
 const REF_RC_VRE: f64 = 0.5
 const REF_RC_VIM: f64 = -0.5
 const REF_RC_MAG: f64 = 0.7071068
 
-# ngspice-42 diode.out (TEMP=27, IS=1e-14, N=1)
+# ngspice-42 diode.print (TEMP=27, IS=1e-14, N=1)
 const REF_DIODE_VLOAD: f64 = 4.307109
 const REF_DIODE_VD: f64 = 0.692891
 

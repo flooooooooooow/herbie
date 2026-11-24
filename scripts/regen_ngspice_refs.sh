@@ -18,9 +18,9 @@ extract() {
   } > "$out"
 }
 
-extract "$REF/divider.raw" "$REF/divider.out"
-extract "$REF/rc_ac.raw" "$REF/rc_ac.out"
-extract "$REF/diode.raw" "$REF/diode.out"
+extract "$REF/divider.raw" "$REF/divider.print"
+extract "$REF/rc_ac.raw" "$REF/rc_ac.print"
+extract "$REF/diode.raw" "$REF/diode.print"
 
 echo "Refreshed raw/out under $REF — update PROVENANCE.md timestamp and values.tsv by hand if numbers change."
 ngspice --version | head -3
