@@ -1,0 +1,275 @@
+# @module herbie.fullcar
+# Native Flow seven-configuration-coordinate ride model:
+# heave, pitch, roll + four wheel vertical DOFs (14 first-order states).
+# Linear springs/dampers, antiroll coupling, unilateral tire contact loads.
+# Measured-from-static-equilibrium coordinates. SI units.
+# Illustrative plant matching the browser reference equations — not multibody DAE.
+
+export struct FullCarRideParameters {
+    sprungMass: f64,
+    pitchInertia: f64,
+    rollInertia: f64,
+    cgHeight: f64,
+    totalMass: f64,
+    gravity: f64,
+    # Per-corner arrays length 4: FL, FR, RL, RR
+    unsprungMass: ptr<f64>,
+    spring: ptr<f64>,
+    damper: ptr<f64>,
+    tireStiffness: ptr<f64>,
+    tireDamping: ptr<f64>,
+    # Corner hardpoints length 4 (longitudinal x, lateral z)
+    cornerX: ptr<f64>,
+    cornerZ: ptr<f64>,
+    # Antiroll front/rear length 2
+    antiRoll: ptr<f64>
+}
+
+# State layout (14): [heave, heaveDot, pitch, pitchDot, roll, rollDot,
+#   w0, w0Dot, w1, w1Dot, w2, w2Dot, w3, w3Dot]
+
+function fcAbs(x: f64) -> f64 {
+    if x < 0.0 { return -x }
+    return x
+}
+
+function fcFinite(x: f64) -> bool {
+    return x == x and x <= 1.7976931348623157e308 and x >= -1.7976931348623157e308
+}
+
+export function fullCarParamsOk(p: FullCarRideParameters) -> bool {
+    if p.sprungMass <= 0.0 or p.pitchInertia <= 0.0 or p.rollInertia <= 0.0 {
+        return false
+    }
+    if p.totalMass <= 0.0 or p.gravity <= 0.0 or not fcFinite(p.cgHeight) {
+        return false
+    }
+    for i in 0 to 4 {
+        if p.unsprungMass[i] <= 0.0 or p.spring[i] <= 0.0 or p.damper[i] < 0.0 {
+            return false
+        }
+        if p.tireStiffness[i] <= 0.0 or p.tireDamping[i] < 0.0 {
+            return false
+        }
+        if not fcFinite(p.cornerX[i]) or not fcFinite(p.cornerZ[i]) {
+            return false
+        }
+    }
+    for i in 0 to 2 {
+        if p.antiRoll[i] < 0.0 or not fcFinite(p.antiRoll[i]) {
+            return false
+        }
+    }
+    return true
+}
+
+# roadHeight/roadVel length 4. Writes springForce[4], tireDynamic[4], normal[4].
+export function fullCarCornerForces(
+    p: FullCarRideParameters,
+    y: ptr<f64>,
+    roadHeight: ptr<f64>,
+    roadVel: ptr<f64>,
+    springForce: ptr<f64>,
+    tireDynamic: ptr<f64>,
+    normalLoad: ptr<f64>
+) -> bool {
+    if not fullCarParamsOk(p) {
+        return false
+    }
+    let mut compression: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    for i in 0 to 4 {
+        let body: f64 = y[0] + p.cornerX[i] * y[2] + p.cornerZ[i] * y[4]
+        let bodyVel: f64 = y[1] + p.cornerX[i] * y[3] + p.cornerZ[i] * y[5]
+        let q: f64 = y[6 + 2 * i]
+        let v: f64 = y[7 + 2 * i]
+        compression[i] = q - body
+        springForce[i] = p.spring[i] * compression[i] + p.damper[i] * (v - bodyVel)
+        let rawTire: f64 = -p.tireStiffness[i] * (q - roadHeight[i]) - p.tireDamping[i] * (v - roadVel[i])
+        let axleShare: f64 = 0.45
+        if i < 2 {
+            axleShare = 0.55
+        }
+        let staticLoad: f64 = p.totalMass * p.gravity * axleShare / 2.0
+        let contact: f64 = staticLoad + rawTire
+        if contact < 0.0 {
+            contact = 0.0
+        }
+        normalLoad[i] = contact
+        tireDynamic[i] = contact - staticLoad
+    }
+    for axle in 0 to 2 {
+        let left: i32 = 2 * axle
+        let right: i32 = left + 1
+        let transfer: f64 = (compression[left] - compression[right]) * p.antiRoll[axle]
+        springForce[left] = springForce[left] + transfer
+        springForce[right] = springForce[right] - transfer
+    }
+    return true
+}
+
+export function fullCarRideDerivatives(
+    p: FullCarRideParameters,
+    y: ptr<f64>,
+    roadHeight: ptr<f64>,
+    roadVel: ptr<f64>,
+    accel: f64,
+    lateralAccel: f64,
+    dy: ptr<f64>
+) -> bool {
+    let mut springForce: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut tireDynamic: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut normalLoad: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    if not fullCarCornerForces(p, y, roadHeight, roadVel, &springForce[0], &tireDynamic[0], &normalLoad[0]) {
+        return false
+    }
+    let mut sum: f64 = 0.0
+    let mut pitchMoment: f64 = 0.0
+    let mut rollMoment: f64 = 0.0
+    for i in 0 to 4 {
+        let f: f64 = springForce[i]
+        sum = sum + f
+        pitchMoment = pitchMoment + p.cornerX[i] * f
+        rollMoment = rollMoment + p.cornerZ[i] * f
+        dy[6 + 2 * i] = y[7 + 2 * i]
+        dy[7 + 2 * i] = (-f + tireDynamic[i]) / p.unsprungMass[i]
+    }
+    dy[0] = y[1]
+    dy[1] = sum / p.sprungMass
+    dy[2] = y[3]
+    dy[3] = (pitchMoment + p.sprungMass * p.cgHeight * accel) / p.pitchInertia
+    dy[4] = y[5]
+    dy[5] = (rollMoment + p.sprungMass * p.cgHeight * lateralAccel) / p.rollInertia
+    return true
+}
+
+function fullCarAdvance(y: ptr<f64>, dy: ptr<f64>, h: f64, out: ptr<f64>) -> void {
+    for i in 0 to 14 {
+        out[i] = y[i] + h * dy[i]
+    }
+}
+
+# RK4 with road held at the three stage samples (road0 / roadMid / road1), matching the JS API.
+export function fullCarRideStep(
+    p: FullCarRideParameters,
+    y: ptr<f64>,
+    road0H: ptr<f64>,
+    road0V: ptr<f64>,
+    roadMidH: ptr<f64>,
+    roadMidV: ptr<f64>,
+    road1H: ptr<f64>,
+    road1V: ptr<f64>,
+    accel: f64,
+    lateralAccel: f64,
+    dt: f64,
+    yOut: ptr<f64>
+) -> bool {
+    if not fullCarParamsOk(p) or not fcFinite(dt) or dt <= 0.0 or dt > 0.02 {
+        return false
+    }
+    let mut k1: array<f64, 14> = [0.0; 14]
+    let mut k2: array<f64, 14> = [0.0; 14]
+    let mut k3: array<f64, 14> = [0.0; 14]
+    let mut k4: array<f64, 14> = [0.0; 14]
+    let mut yTemp: array<f64, 14> = [0.0; 14]
+    if not fullCarRideDerivatives(p, y, road0H, road0V, accel, lateralAccel, &k1[0]) {
+        return false
+    }
+    fullCarAdvance(y, &k1[0], 0.5 * dt, &yTemp[0])
+    if not fullCarRideDerivatives(p, &yTemp[0], roadMidH, roadMidV, accel, lateralAccel, &k2[0]) {
+        return false
+    }
+    fullCarAdvance(y, &k2[0], 0.5 * dt, &yTemp[0])
+    if not fullCarRideDerivatives(p, &yTemp[0], roadMidH, roadMidV, accel, lateralAccel, &k3[0]) {
+        return false
+    }
+    fullCarAdvance(y, &k3[0], dt, &yTemp[0])
+    if not fullCarRideDerivatives(p, &yTemp[0], road1H, road1V, accel, lateralAccel, &k4[0]) {
+        return false
+    }
+    let sixth: f64 = dt / 6.0
+    for i in 0 to 14 {
+        let next: f64 = y[i] + sixth * (k1[i] + 2.0 * k2[i] + 2.0 * k3[i] + k4[i])
+        if not fcFinite(next) or fcAbs(next) > 1.0e8 {
+            return false
+        }
+        yOut[i] = next
+    }
+    return true
+}
+
+# Conservative mechanical energy for undamped contact-preserving motions.
+export function fullCarRideEnergy(p: FullCarRideParameters, y: ptr<f64>) -> f64 {
+    let mut e: f64 = 0.5 * p.sprungMass * y[1] * y[1]
+        + 0.5 * p.pitchInertia * y[3] * y[3]
+        + 0.5 * p.rollInertia * y[5] * y[5]
+    let mut compression: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    for i in 0 to 4 {
+        let relative: f64 = y[6 + 2 * i] - y[0] - p.cornerX[i] * y[2] - p.cornerZ[i] * y[4]
+        compression[i] = relative
+        let q: f64 = y[6 + 2 * i]
+        let v: f64 = y[7 + 2 * i]
+        let axleShare: f64 = 0.45
+        if i < 2 {
+            axleShare = 0.55
+        }
+        let preload: f64 = p.totalMass * p.gravity * axleShare / 2.0
+        let tireK: f64 = p.tireStiffness[i]
+        let detachment: f64 = preload / tireK
+        let tyrePotential: f64 = 0.5 * tireK * q * q
+        if q > detachment {
+            tyrePotential = preload * q - 0.5 * preload * preload / tireK
+        }
+        e = e + 0.5 * p.unsprungMass[i] * v * v
+            + 0.5 * p.spring[i] * relative * relative
+            + tyrePotential
+    }
+    for axle in 0 to 2 {
+        let left: i32 = 2 * axle
+        let right: i32 = left + 1
+        let diff: f64 = compression[left] - compression[right]
+        e = e + 0.5 * p.antiRoll[axle] * diff * diff
+    }
+    return e
+}
+
+export function fullCarDefaultFill(
+    unsprungMass: ptr<f64>,
+    spring: ptr<f64>,
+    damper: ptr<f64>,
+    tireStiffness: ptr<f64>,
+    tireDamping: ptr<f64>,
+    cornerX: ptr<f64>,
+    cornerZ: ptr<f64>,
+    antiRoll: ptr<f64>
+) -> void {
+    unsprungMass[0] = 43.0
+    unsprungMass[1] = 43.0
+    unsprungMass[2] = 39.0
+    unsprungMass[3] = 39.0
+    spring[0] = 29000.0
+    spring[1] = 29000.0
+    spring[2] = 25500.0
+    spring[3] = 25500.0
+    damper[0] = 2250.0
+    damper[1] = 2250.0
+    damper[2] = 1900.0
+    damper[3] = 1900.0
+    tireStiffness[0] = 220000.0
+    tireStiffness[1] = 220000.0
+    tireStiffness[2] = 215000.0
+    tireStiffness[3] = 215000.0
+    tireDamping[0] = 65.0
+    tireDamping[1] = 65.0
+    tireDamping[2] = 60.0
+    tireDamping[3] = 60.0
+    cornerX[0] = 1.22
+    cornerX[1] = 1.22
+    cornerX[2] = -1.48
+    cornerX[3] = -1.48
+    cornerZ[0] = 0.79
+    cornerZ[1] = -0.79
+    cornerZ[2] = 0.79
+    cornerZ[3] = -0.79
+    antiRoll[0] = 6500.0
+    antiRoll[1] = 4300.0
+}

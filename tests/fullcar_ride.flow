@@ -1,0 +1,235 @@
+# Native Flow seven-DOF ride gates vs analytic rest/energy and JS parity samples.
+
+import herbie.fullcar {
+    FullCarRideParameters, fullCarParamsOk, fullCarDefaultFill,
+    fullCarRideStep, fullCarRideEnergy, fullCarCornerForces
+}
+
+function near(a: f64, b: f64, eps: f64) -> bool {
+    return a >= b - eps and a <= b + eps
+}
+
+function absf(x: f64) -> f64 {
+    if x < 0.0 { return -x }
+    return x
+}
+
+function makeParams(
+    unsprung: ptr<f64>, spring: ptr<f64>, damper: ptr<f64>,
+    tireK: ptr<f64>, tireC: ptr<f64>, cx: ptr<f64>, cz: ptr<f64>, anti: ptr<f64>
+) -> FullCarRideParameters {
+    fullCarDefaultFill(unsprung, spring, damper, tireK, tireC, cx, cz, anti)
+    return FullCarRideParameters {
+        sprungMass: 1316.0,
+        pitchInertia: 2460.0,
+        rollInertia: 590.0,
+        cgHeight: 0.52,
+        totalMass: 1480.0,
+        gravity: 9.80665,
+        unsprungMass: unsprung,
+        spring: spring,
+        damper: damper,
+        tireStiffness: tireK,
+        tireDamping: tireC,
+        cornerX: cx,
+        cornerZ: cz,
+        antiRoll: anti
+    }
+}
+
+function zeroState(y: ptr<f64>) -> void {
+    for i in 0 to 14 {
+        y[i] = 0.0
+    }
+}
+
+function flatRoad(h: ptr<f64>, v: ptr<f64>) -> void {
+    for i in 0 to 4 {
+        h[i] = 0.0
+        v[i] = 0.0
+    }
+}
+
+function testRestAndStaticLoads() -> i32 {
+    let mut unsprung: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut spring: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut damper: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut tireK: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut tireC: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut cx: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut cz: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut anti: array<f64, 2> = [0.0, 0.0]
+    let p: FullCarRideParameters = makeParams(&unsprung[0], &spring[0], &damper[0], &tireK[0], &tireC[0], &cx[0], &cz[0], &anti[0])
+    if not fullCarParamsOk(p) {
+        return 1
+    }
+    let mut y: array<f64, 14> = [0.0; 14]
+    let mut yOut: array<f64, 14> = [0.0; 14]
+    let mut rh: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut rv: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    for s in 0 to 2000 {
+        if not fullCarRideStep(p, &y[0], &rh[0], &rv[0], &rh[0], &rv[0], &rh[0], &rv[0], 0.0, 0.0, 0.001, &yOut[0]) {
+            return 2
+        }
+        for i in 0 to 14 {
+            y[i] = yOut[i]
+        }
+    }
+    for i in 0 to 14 {
+        if absf(y[i]) > 1.0e-12 {
+            println("FAIL rest drift")
+            return 3
+        }
+    }
+    let mut sf: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut td: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut n: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    zeroState(&y[0])
+    if not fullCarCornerForces(p, &y[0], &rh[0], &rv[0], &sf[0], &td[0], &n[0]) {
+        return 4
+    }
+    for i in 0 to 4 {
+        if n[i] <= 0.0 {
+            return 5
+        }
+    }
+    return 0
+}
+
+function testUndampedEnergyAndJsParity() -> i32 {
+    let mut unsprung: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut spring: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut damper: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut tireK: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut tireC: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut cx: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut cz: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut anti: array<f64, 2> = [0.0, 0.0]
+    let mut p: FullCarRideParameters = makeParams(&unsprung[0], &spring[0], &damper[0], &tireK[0], &tireC[0], &cx[0], &cz[0], &anti[0])
+    # Zero dampers for conservative check (matches browser suite).
+    for i in 0 to 4 {
+        damper[i] = 0.0
+        tireC[i] = 0.0
+    }
+    let mut y: array<f64, 14> = [0.0; 14]
+    y[0] = 0.025
+    y[6] = 0.02
+    let e0: f64 = fullCarRideEnergy(p, &y[0])
+    let mut yOut: array<f64, 14> = [0.0; 14]
+    let mut rh: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut rv: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    for s in 0 to 1000 {
+        if not fullCarRideStep(p, &y[0], &rh[0], &rv[0], &rh[0], &rv[0], &rh[0], &rv[0], 0.0, 0.0, 0.001, &yOut[0]) {
+            return 1
+        }
+        for i in 0 to 14 {
+            y[i] = yOut[i]
+        }
+    }
+    let e1: f64 = fullCarRideEnergy(p, &y[0])
+    let rel: f64 = absf(e1 / e0 - 1.0)
+    if rel > 0.001 {
+        println("FAIL undamped energy")
+        return 2
+    }
+    # JS parity after 1.0 s (recorded from site/fullcar.js with identical IC/params).
+    if not near(y[0], -0.01624640238050865, 1.0e-9) {
+        println("FAIL JS parity heave")
+        return 3
+    }
+    if not near(y[2], 0.0023153402488059484, 1.0e-9) {
+        return 4
+    }
+    if not near(y[4], 0.00023066481672714717, 1.0e-9) {
+        return 5
+    }
+    if not near(y[6], -0.005120079567777264, 1.0e-9) {
+        return 6
+    }
+    if not near(y[8], 0.012796796022063316, 1.0e-9) {
+        return 7
+    }
+    return 0
+}
+
+function testBumpExcitationAndDamping() -> i32 {
+    let mut unsprung: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut spring: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut damper: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut tireK: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut tireC: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut cx: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut cz: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut anti: array<f64, 2> = [0.0, 0.0]
+    let p: FullCarRideParameters = makeParams(&unsprung[0], &spring[0], &damper[0], &tireK[0], &tireC[0], &cx[0], &cz[0], &anti[0])
+    let mut y: array<f64, 14> = [0.0; 14]
+    let mut yOut: array<f64, 14> = [0.0; 14]
+    let mut rh: array<f64, 4> = [0.03, 0.0, 0.0, 0.0]
+    let mut rv: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    if not fullCarRideStep(p, &y[0], &rh[0], &rv[0], &rh[0], &rv[0], &rh[0], &rv[0], 0.0, 0.0, 0.001, &yOut[0]) {
+        return 1
+    }
+    # One-step JS parity under FL 30 mm road step.
+    if not near(yOut[6], 0.00007534931556942016, 1.0e-12) {
+        println("FAIL one-step wheel parity")
+        return 2
+    }
+    if not near(yOut[7], 0.14928906132419476, 1.0e-12) {
+        return 3
+    }
+    for i in 0 to 14 {
+        y[i] = yOut[i]
+    }
+    for s in 0 to 399 {
+        if not fullCarRideStep(p, &y[0], &rh[0], &rv[0], &rh[0], &rv[0], &rh[0], &rv[0], 0.0, 0.0, 0.001, &yOut[0]) {
+            return 4
+        }
+        for i in 0 to 14 {
+            y[i] = yOut[i]
+        }
+    }
+    if absf(y[4]) <= 1.0e-6 or absf(y[2]) <= 1.0e-6 or absf(y[6]) <= 1.0e-6 {
+        println("FAIL bump roll/pitch/wheel excitation")
+        return 5
+    }
+
+    # Damped decay from heave IC on flat road.
+    zeroState(&y[0])
+    y[0] = 0.025
+    y[6] = 0.02
+    let eStart: f64 = fullCarRideEnergy(p, &y[0])
+    flatRoad(&rh[0], &rv[0])
+    for s in 0 to 4000 {
+        if not fullCarRideStep(p, &y[0], &rh[0], &rv[0], &rh[0], &rv[0], &rh[0], &rv[0], 0.0, 0.0, 0.001, &yOut[0]) {
+            return 6
+        }
+        for i in 0 to 14 {
+            y[i] = yOut[i]
+        }
+    }
+    if fullCarRideEnergy(p, &y[0]) >= eStart * 0.02 {
+        println("FAIL damped energy decay")
+        return 7
+    }
+    if fullCarRideStep(p, &y[0], &rh[0], &rv[0], &rh[0], &rv[0], &rh[0], &rv[0], 0.0, 0.0, -0.001, &yOut[0]) {
+        return 8
+    }
+    return 0
+}
+
+function main() -> i32 {
+    let a: i32 = testRestAndStaticLoads()
+    if a != 0 {
+        return 10 + a
+    }
+    let b: i32 = testUndampedEnergyAndJsParity()
+    if b != 0 {
+        return 20 + b
+    }
+    let c: i32 = testBumpExcitationAndDamping()
+    if c != 0 {
+        return 30 + c
+    }
+    println("PASS native full-car ride: rest, energy, JS parity, bump/damping")
+    return 0
+}

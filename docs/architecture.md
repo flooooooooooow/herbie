@@ -26,6 +26,7 @@ src/
   maps.flow          Clamped bilinear lookup for calibrated models
   engine.flow        Torque-map crank dynamics and fuel flow
   vehicle.flow       Vertical quarter car and planar bicycle
+  fullcar.flow       Seven-DOF heave/pitch/roll + four-wheel ride
   powertrain.flow    Longitudinal point-mass motion
   structures.flow    Elastic stress and introductory fatigue
   truss.flow         Local 2D truss element stiffness and force

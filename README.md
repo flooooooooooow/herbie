@@ -28,6 +28,7 @@
 | `herbie.maps` | Validated monotone two-axis grids and clamped bilinear map lookup | Row-major, linear interpolation only, caller-owned data |
 | `herbie.engine` | Mapped engine torque vs RPM/throttle, crank acceleration and idealized fuel accounting | Dyno-map scaffold only, not transient combustion, emissions, idle, or certification |
 | `herbie.vehicle` | Two-degree-of-freedom vertical quarter car, fixed-step RK4, energy; planar linear-tire bicycle, fixed-step Euler | Small motions; no bump stops, contact loss, saturation, or low-speed bicycle handling |
+| `herbie.fullcar` | Native seven-DOF ride (heave/pitch/roll + four wheels), antiroll, unilateral tire loads, RK4; JS parity gates | Linear springs; not multibody joints, nonlinear tires, brakes/ABS or calibrated rig data |
 | `herbie.powertrain` | Point-mass longitudinal force balance with rolling resistance, drag, road gradient | No driveline dynamics, tire slip, regeneration, or reverse |
 | `herbie.structures` | Axial, bending, torsional, plane-stress von Mises, Euler buckling, fully constrained thermal stress, Goodman and Miner rules | Linear elastic and elementary analytical assumptions; no general FEM |
 | `herbie.truss` | Linear 2D truss axial element, 4x4 stiffness matrix, displacement-to-axial-force and strain energy | Small displacement, pin-jointed bar; no global FEM assembly or contact |
@@ -90,6 +91,8 @@ flow run tests/montecarlo_stack.flow
 flow run examples/montecarlo_stack_demo.flow
 flow run tests/fem_truss.flow
 flow run examples/fem_truss_demo.flow
+flow run tests/fullcar_ride.flow
+flow run examples/fullcar_ride_demo.flow
 flow run tests/ac_phasor_mna.flow
 flow run examples/ac_phasor_demo.flow
 flow run tests/sparse_mna.flow
