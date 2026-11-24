@@ -1,0 +1,576 @@
+# @module herbie.dae
+# Dense index-1 DAE modified nodal analysis for linear R/C/L networks.
+# Companion models: backward Euler and trapezoidal for C and L.
+# Unknowns = node voltages, then ideal V-source currents, then inductor currents.
+# Ground = -1. Consistent DC initialization (C open, L short) or UIC.
+# Caller-owned buffers; deterministic maxSteps cap on daeRun.
+# No nonlinear devices, switches, sparse fill-reducing LU or real-time claims.
+
+export const DAE_BE: i32 = 0
+export const DAE_TRAP: i32 = 1
+
+export const DAE_R: i32 = 0
+export const DAE_C: i32 = 1
+export const DAE_L: i32 = 2
+export const DAE_V: i32 = 3
+export const DAE_I: i32 = 4
+
+export struct DaeElement {
+    kind: i32,
+    a: i32,
+    b: i32,
+    aux: i32,
+    value: f64,
+    prevV: f64,
+    prevI: f64
+}
+
+export struct DaeNetwork {
+    nodeCount: i32,
+    voltageSourceCount: i32,
+    inductorCount: i32,
+    elementCount: ptr<i32>,
+    elementCapacity: i32,
+    method: i32,
+    maxSteps: i32,
+    dt: f64,
+    elements: ptr<DaeElement>,
+    matrix: ptr<f64>,
+    rhs: ptr<f64>,
+    solution: ptr<f64>,
+    previous: ptr<f64>,
+    scratchMatrix: ptr<f64>,
+    scratchRhs: ptr<f64>,
+    time: ptr<f64>,
+    steps: ptr<i32>,
+    ready: ptr<i32>
+}
+
+export function daeUnknownCount(n: DaeNetwork) -> i32 {
+    return n.nodeCount + n.voltageSourceCount + n.inductorCount
+}
+
+function daeAbs(value: f64) -> f64 {
+    if value < 0.0 {
+        return -value
+    }
+    return value
+}
+
+function daeFinite(value: f64) -> bool {
+    return value == value and value <= 1.7976931348623157e308 and value >= -1.7976931348623157e308
+}
+
+function daeNodeValid(n: DaeNetwork, node: i32) -> bool {
+    return node >= -1 and node < n.nodeCount
+}
+
+export function daeClear(n: DaeNetwork) -> bool {
+    if n.nodeCount <= 0 or n.voltageSourceCount < 0 or n.inductorCount < 0
+        or n.elementCapacity <= 0 or n.maxSteps <= 0
+        or (n.method != DAE_BE and n.method != DAE_TRAP)
+        or not daeFinite(n.dt) or n.dt <= 0.0 {
+        return false
+    }
+    n.elementCount[0] = 0
+    n.time[0] = 0.0
+    n.steps[0] = 0
+    n.ready[0] = 0
+    let size: i32 = daeUnknownCount(n)
+    for i in 0 to size * size {
+        n.matrix[i] = 0.0
+    }
+    for i in 0 to size {
+        n.rhs[i] = 0.0
+        n.solution[i] = 0.0
+        n.previous[i] = 0.0
+    }
+    return true
+}
+
+function daeAdd(n: DaeNetwork, kind: i32, a: i32, b: i32, aux: i32, value: f64) -> i32 {
+    let count: i32 = n.elementCount[0]
+    if n.ready[0] != 0 or count >= n.elementCapacity
+        or not daeNodeValid(n, a) or not daeNodeValid(n, b) or a == b
+        or not daeFinite(value) {
+        return -1
+    }
+    n.elements[count] = DaeElement {
+        kind: kind, a: a, b: b, aux: aux, value: value, prevV: 0.0, prevI: 0.0
+    }
+    n.elementCount[0] = count + 1
+    return count
+}
+
+export function daeAddResistor(n: DaeNetwork, a: i32, b: i32, ohms: f64) -> i32 {
+    if ohms <= 0.0 {
+        return -1
+    }
+    return daeAdd(n, DAE_R, a, b, 0, ohms)
+}
+
+export function daeAddCapacitor(n: DaeNetwork, a: i32, b: i32, farads: f64) -> i32 {
+    if farads <= 0.0 {
+        return -1
+    }
+    return daeAdd(n, DAE_C, a, b, 0, farads)
+}
+
+export function daeAddInductor(n: DaeNetwork, a: i32, b: i32, henries: f64) -> i32 {
+    if henries <= 0.0 or n.inductorCount <= 0 {
+        return -1
+    }
+    let mut idx: i32 = 0
+    for i in 0 to n.elementCount[0] {
+        if n.elements[i].kind == DAE_L {
+            idx = idx + 1
+        }
+    }
+    if idx >= n.inductorCount {
+        return -1
+    }
+    return daeAdd(n, DAE_L, a, b, idx, henries)
+}
+
+export function daeAddVoltageSource(n: DaeNetwork, sourceIndex: i32, plusNode: i32, minusNode: i32, volts: f64) -> i32 {
+    if sourceIndex < 0 or sourceIndex >= n.voltageSourceCount {
+        return -1
+    }
+    return daeAdd(n, DAE_V, plusNode, minusNode, sourceIndex, volts)
+}
+
+export function daeAddCurrentSource(n: DaeNetwork, fromNode: i32, toNode: i32, amperes: f64) -> i32 {
+    return daeAdd(n, DAE_I, fromNode, toNode, 0, amperes)
+}
+
+export function daeSetCapVoltage(n: DaeNetwork, id: i32, volts: f64) -> bool {
+    if id < 0 or id >= n.elementCount[0] or n.elements[id].kind != DAE_C or not daeFinite(volts) {
+        return false
+    }
+    n.elements[id].prevV = volts
+    return true
+}
+
+export function daeSetInductorCurrent(n: DaeNetwork, id: i32, amperes: f64) -> bool {
+    if id < 0 or id >= n.elementCount[0] or n.elements[id].kind != DAE_L or not daeFinite(amperes) {
+        return false
+    }
+    n.elements[id].prevI = amperes
+    return true
+}
+
+export function daeSetSourceValue(n: DaeNetwork, id: i32, value: f64) -> bool {
+    if id < 0 or id >= n.elementCount[0] or not daeFinite(value) {
+        return false
+    }
+    let k: i32 = n.elements[id].kind
+    if k != DAE_V and k != DAE_I {
+        return false
+    }
+    n.elements[id].value = value
+    return true
+}
+
+function daeVoltage(n: DaeNetwork, node: i32) -> f64 {
+    if node < 0 {
+        return 0.0
+    }
+    return n.solution[node]
+}
+
+export function daeNodeVoltage(n: DaeNetwork, node: i32) -> f64 {
+    if not daeNodeValid(n, node) {
+        return 0.0 / 0.0
+    }
+    return daeVoltage(n, node)
+}
+
+export function daeBranchCurrent(n: DaeNetwork, id: i32) -> f64 {
+    if id < 0 or id >= n.elementCount[0] {
+        return 0.0 / 0.0
+    }
+    let e: DaeElement = n.elements[id]
+    if e.kind == DAE_V {
+        return n.solution[n.nodeCount + e.aux]
+    }
+    if e.kind == DAE_L {
+        return n.solution[n.nodeCount + n.voltageSourceCount + e.aux]
+    }
+    if e.kind == DAE_R {
+        return (daeVoltage(n, e.a) - daeVoltage(n, e.b)) / e.value
+    }
+    if e.kind == DAE_I {
+        return e.value
+    }
+    if e.kind == DAE_C {
+        return e.prevI
+    }
+    return 0.0 / 0.0
+}
+
+function daeStampG(n: DaeNetwork, a: i32, b: i32, g: f64) -> void {
+    let size: i32 = daeUnknownCount(n)
+    if a >= 0 {
+        n.matrix[a * size + a] += g
+    }
+    if b >= 0 {
+        n.matrix[b * size + b] += g
+    }
+    if a >= 0 and b >= 0 {
+        n.matrix[a * size + b] -= g
+        n.matrix[b * size + a] -= g
+    }
+}
+
+function daeInject(n: DaeNetwork, a: i32, b: i32, amperes: f64) -> void {
+    # Positive amperes inject into `a` and extract from `b` (current a <- source <- b).
+    if a >= 0 {
+        n.rhs[a] += amperes
+    }
+    if b >= 0 {
+        n.rhs[b] -= amperes
+    }
+}
+
+function daeClearSystem(n: DaeNetwork) -> void {
+    let size: i32 = daeUnknownCount(n)
+    for i in 0 to size * size {
+        n.matrix[i] = 0.0
+    }
+    for i in 0 to size {
+        n.rhs[i] = 0.0
+    }
+}
+
+function daeSolveLinear(n: DaeNetwork, absolutePivotTolerance: f64) -> bool {
+    let size: i32 = daeUnknownCount(n)
+    for i in 0 to size * size {
+        n.scratchMatrix[i] = n.matrix[i]
+    }
+    for i in 0 to size {
+        n.scratchRhs[i] = n.rhs[i]
+    }
+    for col in 0 to size {
+        let mut pivotRow: i32 = col
+        let mut best: f64 = daeAbs(n.scratchMatrix[col * size + col])
+        for row in col + 1 to size {
+            let candidate: f64 = daeAbs(n.scratchMatrix[row * size + col])
+            if candidate > best {
+                best = candidate
+                pivotRow = row
+            }
+        }
+        if best <= absolutePivotTolerance or best != best {
+            return false
+        }
+        if pivotRow != col {
+            for k in col to size {
+                let a: i32 = col * size + k
+                let b: i32 = pivotRow * size + k
+                let temp: f64 = n.scratchMatrix[a]
+                n.scratchMatrix[a] = n.scratchMatrix[b]
+                n.scratchMatrix[b] = temp
+            }
+            let rhs: f64 = n.scratchRhs[col]
+            n.scratchRhs[col] = n.scratchRhs[pivotRow]
+            n.scratchRhs[pivotRow] = rhs
+        }
+        for row in col + 1 to size {
+            let factor: f64 = n.scratchMatrix[row * size + col] / n.scratchMatrix[col * size + col]
+            n.scratchMatrix[row * size + col] = 0.0
+            for k in col + 1 to size {
+                n.scratchMatrix[row * size + k] -= factor * n.scratchMatrix[col * size + k]
+            }
+            n.scratchRhs[row] -= factor * n.scratchRhs[col]
+        }
+    }
+    let mut i: i32 = size - 1
+    while i >= 0 {
+        let mut v: f64 = n.scratchRhs[i]
+        for j in i + 1 to size {
+            v -= n.scratchMatrix[i * size + j] * n.solution[j]
+        }
+        n.solution[i] = v / n.scratchMatrix[i * size + i]
+        if n.solution[i] != n.solution[i] {
+            return false
+        }
+        i = i - 1
+    }
+    return true
+}
+
+# Assemble resistive DC with C open and L short (0 V) for consistent initialization.
+function daeAssembleDc(n: DaeNetwork) -> bool {
+    daeClearSystem(n)
+    let size: i32 = daeUnknownCount(n)
+    for i in 0 to n.elementCount[0] {
+        let e: DaeElement = n.elements[i]
+        if e.kind == DAE_R {
+            daeStampG(n, e.a, e.b, 1.0 / e.value)
+        } else {
+            if e.kind == DAE_I {
+                # Current from a to b: inject at b, extract at a.
+                daeInject(n, e.b, e.a, e.value)
+            } else {
+                if e.kind == DAE_V {
+                    let branch: i32 = n.nodeCount + e.aux
+                    if e.a >= 0 {
+                        n.matrix[e.a * size + branch] += 1.0
+                        n.matrix[branch * size + e.a] += 1.0
+                    }
+                    if e.b >= 0 {
+                        n.matrix[e.b * size + branch] -= 1.0
+                        n.matrix[branch * size + e.b] -= 1.0
+                    }
+                    n.rhs[branch] += e.value
+                } else {
+                    if e.kind == DAE_L {
+                        # Short: v(a)-v(b)=0 with inductor branch unknown.
+                        let branch: i32 = n.nodeCount + n.voltageSourceCount + e.aux
+                        if e.a >= 0 {
+                            n.matrix[e.a * size + branch] += 1.0
+                            n.matrix[branch * size + e.a] += 1.0
+                        }
+                        if e.b >= 0 {
+                            n.matrix[e.b * size + branch] -= 1.0
+                            n.matrix[branch * size + e.b] -= 1.0
+                        }
+                    }
+                    # Capacitors open: no stamp.
+                }
+            }
+        }
+    }
+    return true
+}
+
+function daeAssembleStep(n: DaeNetwork) -> bool {
+    daeClearSystem(n)
+    let size: i32 = daeUnknownCount(n)
+    let h: f64 = n.dt
+    let trap: bool = n.method == DAE_TRAP
+    for i in 0 to n.elementCount[0] {
+        let e: DaeElement = n.elements[i]
+        if e.kind == DAE_R {
+            daeStampG(n, e.a, e.b, 1.0 / e.value)
+        } else {
+            if e.kind == DAE_I {
+                daeInject(n, e.b, e.a, e.value)
+            } else {
+                if e.kind == DAE_V {
+                    let branch: i32 = n.nodeCount + e.aux
+                    if e.a >= 0 {
+                        n.matrix[e.a * size + branch] += 1.0
+                        n.matrix[branch * size + e.a] += 1.0
+                    }
+                    if e.b >= 0 {
+                        n.matrix[e.b * size + branch] -= 1.0
+                        n.matrix[branch * size + e.b] -= 1.0
+                    }
+                    n.rhs[branch] += e.value
+                } else {
+                    if e.kind == DAE_C {
+                        let mut geq: f64 = e.value / h
+                        if trap {
+                            geq = (2.0 * e.value) / h
+                        }
+                        daeStampG(n, e.a, e.b, geq)
+                        let mut ieq: f64 = geq * e.prevV
+                        if trap {
+                            ieq = geq * e.prevV + e.prevI
+                        }
+                        # i = geq*v - ieq; inject ieq into a (and out of b).
+                        daeInject(n, e.a, e.b, ieq)
+                    } else {
+                        if e.kind == DAE_L {
+                            let branch: i32 = n.nodeCount + n.voltageSourceCount + e.aux
+                            let mut req: f64 = e.value / h
+                            if trap {
+                                req = (2.0 * e.value) / h
+                            }
+                            if e.a >= 0 {
+                                n.matrix[e.a * size + branch] += 1.0
+                                n.matrix[branch * size + e.a] += 1.0
+                            }
+                            if e.b >= 0 {
+                                n.matrix[e.b * size + branch] -= 1.0
+                                n.matrix[branch * size + e.b] -= 1.0
+                            }
+                            # v - Req*i = -Req*i_prev  (+ for trap: also -v_prev? )
+                            # BE: v = L/h (i - i_prev) => v - (L/h)i = -(L/h)i_prev
+                            n.matrix[branch * size + branch] -= req
+                            let mut rhsL: f64 = 0.0 - req * e.prevI
+                            if trap {
+                                # v = (2L/h)(i - i_prev) - v_prev
+                                # v - (2L/h)i = -(2L/h)i_prev - v_prev
+                                rhsL = 0.0 - req * e.prevI - e.prevV
+                            }
+                            n.rhs[branch] += rhsL
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return true
+}
+
+function daeCommitHistory(n: DaeNetwork) -> void {
+    for i in 0 to n.elementCount[0] {
+        let e: DaeElement = n.elements[i]
+        if e.kind == DAE_C {
+            let v: f64 = daeVoltage(n, e.a) - daeVoltage(n, e.b)
+            let mut iC: f64 = 0.0
+            if n.method == DAE_BE {
+                iC = (e.value / n.dt) * (v - e.prevV)
+            } else {
+                iC = ((2.0 * e.value) / n.dt) * (v - e.prevV) - e.prevI
+            }
+            n.elements[i].prevV = v
+            n.elements[i].prevI = iC
+        }
+        if e.kind == DAE_L {
+            let iL: f64 = n.solution[n.nodeCount + n.voltageSourceCount + e.aux]
+            let vL: f64 = daeVoltage(n, e.a) - daeVoltage(n, e.b)
+            n.elements[i].prevI = iL
+            n.elements[i].prevV = vL
+        }
+    }
+    let size: i32 = daeUnknownCount(n)
+    for i in 0 to size {
+        n.previous[i] = n.solution[i]
+    }
+}
+
+# Consistent DC initialization: C open, L short. Seeds C/L history from the OP.
+export function daeInitDc(n: DaeNetwork, absolutePivotTolerance: f64) -> bool {
+    if absolutePivotTolerance <= 0.0 or n.elementCount[0] <= 0 {
+        return false
+    }
+    if not daeAssembleDc(n) or not daeSolveLinear(n, absolutePivotTolerance) {
+        return false
+    }
+    for i in 0 to n.elementCount[0] {
+        let e: DaeElement = n.elements[i]
+        if e.kind == DAE_C {
+            n.elements[i].prevV = daeVoltage(n, e.a) - daeVoltage(n, e.b)
+            n.elements[i].prevI = 0.0
+        }
+        if e.kind == DAE_L {
+            n.elements[i].prevI = n.solution[n.nodeCount + n.voltageSourceCount + e.aux]
+            n.elements[i].prevV = 0.0
+        }
+    }
+    let size: i32 = daeUnknownCount(n)
+    for i in 0 to size {
+        n.previous[i] = n.solution[i]
+    }
+    n.time[0] = 0.0
+    n.steps[0] = 0
+    n.ready[0] = 1
+    return true
+}
+
+# Use-initial-conditions: history already set via daeSetCapVoltage / daeSetInductorCurrent.
+# Does not advance time; the first daeStep applies the companion model from those ICs.
+export function daeInitUic(n: DaeNetwork, absolutePivotTolerance: f64) -> bool {
+    if absolutePivotTolerance <= 0.0 or n.elementCount[0] <= 0 {
+        return false
+    }
+    # Validate that the companion system is nonsingular before marking ready.
+    if not daeAssembleStep(n) or not daeSolveLinear(n, absolutePivotTolerance) {
+        return false
+    }
+    # Keep caller ICs; discard the probe solve so t=0 matches the stated history.
+    n.time[0] = 0.0
+    n.steps[0] = 0
+    n.ready[0] = 1
+    return true
+}
+
+export function daeStep(n: DaeNetwork, absolutePivotTolerance: f64) -> bool {
+    if n.ready[0] == 0 or absolutePivotTolerance <= 0.0 {
+        return false
+    }
+    if n.steps[0] >= n.maxSteps {
+        return false
+    }
+    if not daeAssembleStep(n) or not daeSolveLinear(n, absolutePivotTolerance) {
+        n.ready[0] = 0
+        return false
+    }
+    daeCommitHistory(n)
+    n.time[0] = n.time[0] + n.dt
+    n.steps[0] = n.steps[0] + 1
+    return true
+}
+
+# Advance exactly `count` steps or until maxSteps. Returns false on failure/cap.
+export function daeRun(n: DaeNetwork, count: i32, absolutePivotTolerance: f64) -> bool {
+    if count <= 0 {
+        return false
+    }
+    for i in 0 to count {
+        if not daeStep(n, absolutePivotTolerance) {
+            return false
+        }
+    }
+    return true
+}
+
+export function daeMaxResidual(n: DaeNetwork) -> f64 {
+    let size: i32 = daeUnknownCount(n)
+    let mut worst: f64 = 0.0
+    for row in 0 to size {
+        let mut residual: f64 = 0.0 - n.rhs[row]
+        for col in 0 to size {
+            residual += n.matrix[row * size + col] * n.solution[col]
+        }
+        if daeAbs(residual) > worst {
+            worst = daeAbs(residual)
+        }
+    }
+    return worst
+}
+
+# Instantaneous source/load power for resistive + independent sources at the OP/step.
+export function daeSourcePower(n: DaeNetwork) -> f64 {
+    let mut power: f64 = 0.0
+    for i in 0 to n.elementCount[0] {
+        let e: DaeElement = n.elements[i]
+        if e.kind == DAE_V {
+            power += 0.0 - e.value * n.solution[n.nodeCount + e.aux]
+        }
+        if e.kind == DAE_I {
+            let v: f64 = daeVoltage(n, e.a) - daeVoltage(n, e.b)
+            power += v * e.value
+        }
+    }
+    return power
+}
+
+export function daeResistorPower(n: DaeNetwork) -> f64 {
+    let mut power: f64 = 0.0
+    for i in 0 to n.elementCount[0] {
+        let e: DaeElement = n.elements[i]
+        if e.kind == DAE_R {
+            let v: f64 = daeVoltage(n, e.a) - daeVoltage(n, e.b)
+            power += v * v / e.value
+        }
+    }
+    return power
+}
+
+export function daeStoredEnergy(n: DaeNetwork) -> f64 {
+    let mut energy: f64 = 0.0
+    for i in 0 to n.elementCount[0] {
+        let e: DaeElement = n.elements[i]
+        if e.kind == DAE_C {
+            energy += 0.5 * e.value * e.prevV * e.prevV
+        }
+        if e.kind == DAE_L {
+            energy += 0.5 * e.value * e.prevI * e.prevI
+        }
+    }
+    return energy
+}

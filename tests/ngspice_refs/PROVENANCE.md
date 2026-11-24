@@ -30,3 +30,11 @@ Curated print lines are copied into `*.print`; tabulated SI values are in `value
 ## Regeneration
 
 `scripts/regen_ngspice_refs.sh` re-runs the three batch decks and refreshes `*.raw` / `*.print` / `values.tsv` / this provenance stamp. CI does **not** require ngspice: `tests/ngspice_crossval.flow` compares Herbie solvers against the stored reference numbers.
+
+## Additional transient fixture (PR DAE)
+
+```sh
+ngspice -b tests/ngspice_refs/rc_tran.cir | tee tests/ngspice_refs/rc_tran.raw
+```
+
+4. **rc_tran** — R=1 kΩ, C=1 µF, 1 V step, UIC, `meas` at 1/2/5 ms. Used by `tests/dae_mna.flow` against `herbie.dae` trapezoidal.
