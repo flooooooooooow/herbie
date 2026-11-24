@@ -42,6 +42,7 @@ src/
   thermal.flow       Lumped temperature evolution
   fluids.flow        Incompressible pipe/orifice/pump, NTU HX, cooling loop
   calibrate.flow     Train/val split, MAD outliers, affine fit, holdout RMSE
+  graph.flow         Typed block graph, schedule, loop/rate checks, round-trip
   control.flow       Bounded-output PID
 tests/
   engineering_smoke.flow
@@ -86,7 +87,7 @@ A later spatial geometry and manufacturing layer can support meshes, element ass
 
 Interoperability should be layered: CSV/Parquet and unit-tagged datasets; parameter/config schemas; FMU/FMI import/export; CAN/CAN FD, XCP and automotive Ethernet adapters; test bench and sensor bindings; ROS 2/Middleware adapters where useful; and APIs for optimization and CAD/CAE geometry. None of these adapters is implemented in the first release.
 
-A future block-graph front end could compile model graphs to Flow state evolution with statically checked rates, initialization order, algebraic loops and scheduling. The graph must have a canonical serialized form, reproducible compiler lowering and round-trip tests.
+`herbie.graph` provides a typed block-graph scaffold with sample-rate/unit tags, Kahn topological scheduling, algebraic-loop detection and a canonical i32 buffer round-trip. A full front end still needs Flow module codegen, graph↔source text round-trip, interactive plotting and native WASM execution of compiled plants.
 
 ## Truss and statistical assumptions
 

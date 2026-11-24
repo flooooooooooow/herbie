@@ -1,0 +1,43 @@
+# Schedule a continuous plant → discrete controller → discrete actuator chain.
+
+import herbie.graph {
+    GraphNode, GraphEdge, GraphView, GraphSchedule, graphSchedule, graphSerialize
+}
+
+function main() -> i32 {
+    let mut nodes: array<GraphNode, 3> = [
+        GraphNode { id: 1, samplePeriodUs: 0, kind: 0 },
+        GraphNode { id: 2, samplePeriodUs: 1000, kind: 1 },
+        GraphNode { id: 3, samplePeriodUs: 1000, kind: 1 }
+    ]
+    let mut edges: array<GraphEdge, 2> = [
+        GraphEdge { fromId: 1, toId: 2, unitTag: 10 },
+        GraphEdge { fromId: 2, toId: 3, unitTag: 11 }
+    ]
+    let g: GraphView = GraphView {
+        nodes: &nodes[0], nodeCount: 3, edges: &edges[0], edgeCount: 2
+    }
+    let mut order: array<i32, 3> = [0, 0, 0]
+    let mut scratch: array<i32, 9> = [0, 0, 0, 0, 0, 0, 0, 0, 0]
+    let sched: GraphSchedule = graphSchedule(g, &order[0], &scratch[0])
+    if not sched.ok {
+        println("FAIL schedule")
+        return 1
+    }
+    println("Execution order (node ids)")
+    println(order[0])
+    println(order[1])
+    println(order[2])
+    let mut buf: array<i32, 32> = [
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    ]
+    let n: i32 = graphSerialize(g, &buf[0], 32)
+    println("Serialized int count")
+    println(n)
+    if order[0] != 1 or order[1] != 2 or order[2] != 3 or n <= 0 {
+        return 2
+    }
+    println("PASS block graph demo")
+    return 0
+}
