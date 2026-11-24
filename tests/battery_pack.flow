@@ -1,0 +1,130 @@
+# Pack topology, limits, heating/thermal, OCV map and balance gates.
+
+import herbie.battery { BatteryParameters, BatteryState, batteryOpenCircuitVoltage }
+import herbie.maps { Table2D }
+import herbie.pack {
+    PackTopology, PackLimits, PackThermalParameters, PackState, PackResult,
+    packTopologyOk, packScaleCell, packOcvFromMap, packBalanceDeltaSoc, packStep
+}
+
+function near(a: f64, b: f64, eps: f64) -> bool {
+    return a >= b - eps and a <= b + eps
+}
+
+function absf(x: f64) -> f64 {
+    if x < 0.0 { return -x }
+    return x
+}
+
+function testScaleAndOcvMap() -> i32 {
+    let cell: BatteryParameters = BatteryParameters {
+        capacityAmpHours: 50.0, nominalVoltage: 3.7, openCircuitSlope: 0.5,
+        ohmicResistance: 0.002, polarizationResistance: 0.001, polarizationCapacitance: 1000.0
+    }
+    let topo: PackTopology = PackTopology { seriesCount: 100, parallelCount: 2 }
+    if not packTopologyOk(topo) {
+        return 1
+    }
+    let scaled: BatteryParameters = packScaleCell(cell, topo, 1.0)
+    if not near(scaled.capacityAmpHours, 100.0, 1.0e-12) {
+        return 2
+    }
+    if not near(scaled.nominalVoltage, 370.0, 1.0e-12) {
+        return 3
+    }
+    if not near(scaled.ohmicResistance, 0.1, 1.0e-12) {
+        return 4
+    }
+    let sohScaled: BatteryParameters = packScaleCell(cell, topo, 0.8)
+    if not near(sohScaled.capacityAmpHours, 80.0, 1.0e-12) {
+        return 5
+    }
+    let mut socAxis: array<f64, 2> = [0.2, 0.8]
+    let mut tempAxis: array<f64, 2> = [0.0, 40.0]
+    let mut ocv: array<f64, 4> = [3.5, 3.55, 4.0, 4.05]
+    let map: Table2D = Table2D {
+        xAxis: &socAxis[0], yAxis: &tempAxis[0], values: &ocv[0], xCount: 2, yCount: 2
+    }
+    let mut packV: array<f64, 1> = [0.0]
+    if not packOcvFromMap(map, 0.5, 20.0, 100, &packV[0]) {
+        return 6
+    }
+    # Mid SOC/temp: bilinear → 3.775 V/cell → 377.5 V pack
+    if not near(packV[0], 377.5, 1.0e-9) {
+        println("FAIL pack OCV map")
+        return 7
+    }
+    if packOcvFromMap(map, 0.0, 20.0, 100, &packV[0]) {
+        return 8
+    }
+    return 0
+}
+
+function testLimitsHeatingAndBalance() -> i32 {
+    let cell: BatteryParameters = BatteryParameters {
+        capacityAmpHours: 50.0, nominalVoltage: 3.7, openCircuitSlope: 0.0,
+        ohmicResistance: 0.002, polarizationResistance: 0.001, polarizationCapacitance: 500.0
+    }
+    let topo: PackTopology = PackTopology { seriesCount: 10, parallelCount: 1 }
+    let limits: PackLimits = PackLimits {
+        maxDischargeCurrent: 100.0, maxChargeCurrent: 50.0,
+        minVoltage: 30.0, maxVoltage: 42.0,
+        minTemperature: 0.0, maxTemperature: 60.0
+    }
+    let thermal: PackThermalParameters = PackThermalParameters {
+        heatCapacity: 20000.0, convection: 10.0, ambientTemperature: 25.0
+    }
+    let s0: PackState = PackState {
+        cell: BatteryState { stateOfCharge: 0.5, polarizationVoltage: 0.0 },
+        temperature: 25.0,
+        contactorClosed: true
+    }
+    # Current limit engages.
+    let limited: PackResult = packStep(s0, cell, topo, limits, thermal, 1.0, 150.0, 1.0)
+    if limited.fault != 2 or not near(limited.limitedCurrent, 100.0, 1.0e-12) {
+        println("FAIL current limit")
+        return 1
+    }
+    # Ohmic heat at 100 A: R_pack = 0.002*10 = 0.02 → I²R = 200 W (+ polarization term ≥ 0)
+    if limited.heatPower < 200.0 {
+        return 2
+    }
+    if limited.state.temperature <= 25.0 {
+        println("FAIL heating raises temperature")
+        return 3
+    }
+    # Open contactor on over-temperature.
+    let hot: PackState = PackState {
+        cell: s0.cell, temperature: 70.0, contactorClosed: true
+    }
+    let tripped: PackResult = packStep(hot, cell, topo, limits, thermal, 1.0, 10.0, 0.1)
+    if tripped.fault != 4 or tripped.state.contactorClosed {
+        return 4
+    }
+    # Coulomb count with SOH=0.5 halves capacity → twice ΔSOC.
+    let half: PackResult = packStep(s0, cell, topo, limits, thermal, 0.5, 50.0, 36.0)
+    # capacity pack = 50*1*0.5 = 25 Ah; ΔSOC = 50*36/(3600*25) = 0.02
+    if not near(s0.cell.stateOfCharge - half.state.cell.stateOfCharge, 0.02, 1.0e-12) {
+        println("FAIL SOH capacity scaling")
+        return 5
+    }
+    let dSoc: f64 = packBalanceDeltaSoc(0.6, 0.4, 50.0, 10.0, 1.0)
+    if dSoc >= 0.0 {
+        println("FAIL balance should drain higher SOC")
+        return 6
+    }
+    return 0
+}
+
+function main() -> i32 {
+    let a: i32 = testScaleAndOcvMap()
+    if a != 0 {
+        return 10 + a
+    }
+    let b: i32 = testLimitsHeatingAndBalance()
+    if b != 0 {
+        return 20 + b
+    }
+    println("PASS battery pack: topology, OCV map, limits, heat, SOH, balance")
+    return 0
+}

@@ -67,6 +67,17 @@ This establishes one model/solver/kernel agreement slice but **not** broad numer
 
 `tests/linear_stackups.flow` verifies a 20.00 mm bore minus 19.90 mm shaft nominal and interval 0.030–0.170 mm. With σ = 30/20 μm, perfect positive correlation gives clearance σ = 10 μm, independence yields variance 1.3×10⁻⁹ m², and perfect negative correlation gives 50 μm. Asymmetric covariance, a non-positive-semidefinite matrix, and negative half-widths are rejected; a zero covariance matrix is admitted. The method uses a caller-owned Cholesky-like factor with semidefinite pivot treatment and a relative matrix tolerance; its treatment of nearly singular matrices depends on the supplied tolerance. All dimensions are in metres; a 3D datum hierarchy remains unimplemented.
 
+## Battery pack / BMS / thermal (issue #14)
+
+`tests/battery_pack.flow` checks:
+
+- Ns×Np scaling of capacity, voltage and resistance; SOH multiplies capacity
+- Strict OCV map mid-cell pack voltage; out-of-domain rejected
+- Discharge current limit, ohmic heating raising temperature, over-temp contactor open
+- Passive balance ΔSOC drains the higher-SOC cell; no invented ageing curves
+
+Coolant network, pre-charge, Kalman SOC/SOH estimators, cycle degradation and chemistry identification remain open under [#14](https://github.com/flooooooooooow/herbie/issues/14).
+
 ## Mean-value mapped engine (issue #13)
 
 `tests/meanvalue_engine.flow` checks:

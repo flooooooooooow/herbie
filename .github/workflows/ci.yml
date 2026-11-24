@@ -119,6 +119,10 @@ jobs:
         run: flow run tests/meanvalue_engine.flow
       - name: Run mean-value engine demonstration
         run: flow run examples/meanvalue_engine_demo.flow
+      - name: Verify battery pack topology, limits, heat and SOH
+        run: flow run tests/battery_pack.flow
+      - name: Run battery pack demonstration
+        run: flow run examples/battery_pack_demo.flow
       - name: Run vehicle demo
         run: flow run examples/quarter_car_demo.flow
       - name: Run manufacturing demo
