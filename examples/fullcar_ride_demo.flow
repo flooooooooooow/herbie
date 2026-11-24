@@ -1,0 +1,56 @@
+# Native seven-DOF ride demo: rest, bump roll/pitch, undamped energy.
+
+import herbie.fullcar {
+    FullCarRideParameters, fullCarDefaultFill, fullCarRideStep, fullCarRideEnergy
+}
+
+function absf(x: f64) -> f64 {
+    if x < 0.0 { return -x }
+    return x
+}
+
+function main() -> i32 {
+    let mut unsprung: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut spring: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut damper: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut tireK: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut tireC: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut cx: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut cz: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut anti: array<f64, 2> = [0.0, 0.0]
+    fullCarDefaultFill(&unsprung[0], &spring[0], &damper[0], &tireK[0], &tireC[0], &cx[0], &cz[0], &anti[0])
+    for i in 0 to 4 {
+        damper[i] = 0.0
+        tireC[i] = 0.0
+    }
+    let p: FullCarRideParameters = FullCarRideParameters {
+        sprungMass: 1316.0, pitchInertia: 2460.0, rollInertia: 590.0,
+        cgHeight: 0.52, totalMass: 1480.0, gravity: 9.80665,
+        unsprungMass: &unsprung[0], spring: &spring[0], damper: &damper[0],
+        tireStiffness: &tireK[0], tireDamping: &tireC[0],
+        cornerX: &cx[0], cornerZ: &cz[0], antiRoll: &anti[0]
+    }
+    let mut y: array<f64, 14> = [0.0; 14]
+    y[0] = 0.025
+    y[6] = 0.02
+    let e0: f64 = fullCarRideEnergy(p, &y[0])
+    let mut yOut: array<f64, 14> = [0.0; 14]
+    let mut rh: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    let mut rv: array<f64, 4> = [0.0, 0.0, 0.0, 0.0]
+    for s in 0 to 4000 {
+        if not fullCarRideStep(p, &y[0], &rh[0], &rv[0], &rh[0], &rv[0], &rh[0], &rv[0], 0.0, 0.0, 0.001, &yOut[0]) {
+            return 1
+        }
+        for i in 0 to 14 {
+            y[i] = yOut[i]
+        }
+    }
+    let e1: f64 = fullCarRideEnergy(p, &y[0])
+    println("Relative energy drift")
+    println(absf(e1 / e0 - 1.0))
+    if absf(e1 / e0 - 1.0) > 0.001 {
+        return 2
+    }
+    println("PASS full-car ride demo")
+    return 0
+}

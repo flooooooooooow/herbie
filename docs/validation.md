@@ -67,6 +67,17 @@ This establishes one model/solver/kernel agreement slice but **not** broad numer
 
 `tests/linear_stackups.flow` verifies a 20.00 mm bore minus 19.90 mm shaft nominal and interval 0.030–0.170 mm. With σ = 30/20 μm, perfect positive correlation gives clearance σ = 10 μm, independence yields variance 1.3×10⁻⁹ m², and perfect negative correlation gives 50 μm. Asymmetric covariance, a non-positive-semidefinite matrix, and negative half-widths are rejected; a zero covariance matrix is admitted. The method uses a caller-owned Cholesky-like factor with semidefinite pivot treatment and a relative matrix tolerance; its treatment of nearly singular matrices depends on the supplied tolerance. All dimensions are in metres; a 3D datum hierarchy remains unimplemented.
 
+## Native seven-DOF full-car ride (issue #4)
+
+`herbie.fullcar` ports the browser seven-configuration-coordinate ride plant to native Flow with identical hardpoints and default parameters. `tests/fullcar_ride.flow` checks:
+
+- Flat-road rest over 2 s (state ≤ 1e-12) and positive static normal loads
+- Undamped energy relative drift < 0.001 over 1 s; state matches recorded `site/fullcar.js` samples to 1e-9
+- One-step FL 30 mm road bump wheel state matches JS to 1e-12; sustained bump excites roll and pitch
+- Damped energy falls below 2% of the initial value in 4 s; nonpositive `dt` rejected
+
+Nonlinear tires, brakes/ABS, driveline, kinematic hardpoint validation and rig calibration remain open under [#4](https://github.com/flooooooooooow/herbie/issues/4).
+
 ## Global 2D truss FEM (issue #5)
 
 `tests/fem_truss.flow` assembles pin-jointed meshes from `herbie.truss` elements:
