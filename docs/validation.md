@@ -65,7 +65,19 @@ This establishes one model/solver/kernel agreement slice but **not** broad numer
 
 ## Covariance-aware dimensional stack validation
 
-`tests/linear_stackups.flow` verifies a 20.00 mm bore minus 19.90 mm shaft nominal and interval 0.030–0.170 mm. With σ = 30/20 μm, perfect positive correlation gives clearance σ = 10 μm, independence yields variance 1.3×10⁻⁹ m², and perfect negative correlation gives 50 μm. Asymmetric covariance, a non-positive-semidefinite matrix, and negative half-widths are rejected; a zero covariance matrix is admitted. The method uses a caller-owned Cholesky-like factor with semidefinite pivot treatment and a relative matrix tolerance; its treatment of nearly singular matrices depends on the supplied tolerance. All dimensions are in metres; a 3D datum hierarchy and production process statistics remain unimplemented.
+`tests/linear_stackups.flow` verifies a 20.00 mm bore minus 19.90 mm shaft nominal and interval 0.030–0.170 mm. With σ = 30/20 μm, perfect positive correlation gives clearance σ = 10 μm, independence yields variance 1.3×10⁻⁹ m², and perfect negative correlation gives 50 μm. Asymmetric covariance, a non-positive-semidefinite matrix, and negative half-widths are rejected; a zero covariance matrix is admitted. The method uses a caller-owned Cholesky-like factor with semidefinite pivot treatment and a relative matrix tolerance; its treatment of nearly singular matrices depends on the supplied tolerance. All dimensions are in metres; a 3D datum hierarchy remains unimplemented.
+
+## Seeded Monte Carlo and process indices (issue #6)
+
+`tests/montecarlo_stack.flow` advances manufacturing tolerance acceptance with:
+
+- Independent Gaussian MC clearance mean/σ matching analytic RSS (√1.3×10⁻⁹ m²) and empirical 2.5%/97.5% percentiles near ±1.96σ
+- Correlated MC σ matching `stackEvaluate` for perfect positive correlation (10 μm)
+- Uniform ±half-width samples staying inside the worst-case interval and replaying under a fixed seed
+- Analytic Pp/Ppk for mean=10, σ=1, [7,13] and shifted mean=11
+- X̄ chart 3σ limits for n=4 subgroups: UCL/LCL = 10 ± 1.5
+
+This is **not** a GD&T datum solver, gauge R&R ANOVA package or certified SPC system. See [issue #6](https://github.com/flooooooooooow/herbie/issues/6).
 
 ## Modified nodal analysis validation (DC source stamping)
 

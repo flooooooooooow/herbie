@@ -1,0 +1,299 @@
+# @module herbie.montecarlo
+# Seeded Monte Carlo for affine dimensional stacks and basic SPC helpers.
+# Deterministic xorshift64* RNG; Box-Muller Gaussians; independent uniforms.
+# Correlated Gaussians use the same LDL factor as herbie.stackups.
+# Not a 3D GD&T engine. Confidence intervals are empirical percentiles.
+
+import herbie.stackups { LinearToleranceStack, stackCovariancePsd }
+
+export struct MonteCarloConfig {
+    samples: i32,
+    seed: u32,
+    # 0 = independent N(0, sigma_i^2) from diagonal covariance
+    # 1 = correlated N(0, Sigma) via LDL factor of covariance
+    # 2 = independent Uniform(-halfWidth, +halfWidth)
+    distribution: i32
+}
+
+export struct MonteCarloResult {
+    mean: f64,
+    variance: f64,
+    sigma: f64,
+    minimum: f64,
+    maximum: f64,
+    percentileLow: f64,
+    percentileHigh: f64,
+    samplesUsed: i32
+}
+
+export struct SpcXbarLimits {
+    grandMean: f64,
+    ucl: f64,
+    lcl: f64,
+    subgroupCount: i32,
+    subgroupSize: i32
+}
+
+let mut mcState: u32 = 0xA511E9B3
+
+function mcFinite(x: f64) -> bool {
+    return x == x and x <= 1.7976931348623157e308 and x >= -1.7976931348623157e308
+}
+
+export function mcSeed(seed: u32) -> bool {
+    if seed == 0 {
+        return false
+    }
+    mcState = seed
+    return true
+}
+
+function mcNextU32() -> u32 {
+    # xorshift32
+    let mut x: u32 = mcState
+    x = x ^ (x << 13)
+    x = x ^ (x >> 17)
+    x = x ^ (x << 5)
+    mcState = x
+    return x
+}
+
+# Uniform on (0, 1) from 24 random bits.
+function mcUniform01() -> f64 {
+    let bits: u32 = mcNextU32() & 16777215
+    if bits == 0 {
+        return 1.0 / 16777216.0
+    }
+    return (bits as f64) / 16777216.0
+}
+
+# Standard normal via Box-Muller; consumes two uniforms.
+function mcStandardNormal() -> f64 {
+    let mut u1: f64 = mcUniform01()
+    let mut u2: f64 = mcUniform01()
+    if u1 < 1.0e-16 {
+        u1 = 1.0e-16
+    }
+    return sqrt(-2.0 * log(u1)) * cos(2.0 * 3.141592653589793 * u2)
+}
+
+export function mcConfigOk(config: MonteCarloConfig) -> bool {
+    if config.samples < 16 or config.samples > 100000 {
+        return false
+    }
+    if config.seed == 0 {
+        return false
+    }
+    if config.distribution < 0 or config.distribution > 2 {
+        return false
+    }
+    return true
+}
+
+# Percentile in [0,1] on a mutable sample buffer (insertion-sorted copy region).
+# Writes sorted order into `scratch` of length `count`, then picks index.
+export function mcPercentile(samples: ptr<f64>, count: i32, p: f64, scratch: ptr<f64>) -> f64 {
+    if count <= 0 or p < 0.0 or p > 1.0 {
+        return 0.0 / 0.0
+    }
+    for i in 0 to count {
+        scratch[i] = samples[i]
+    }
+    # Insertion sort ascending.
+    for i in 1 to count {
+        let key: f64 = scratch[i]
+        let mut j: i32 = i - 1
+        while j >= 0 and scratch[j] > key {
+            scratch[j + 1] = scratch[j]
+            j = j - 1
+        }
+        scratch[j + 1] = key
+    }
+    let idx: i32 = ((p * ((count - 1) as f64)) + 0.5) as i32
+    if idx < 0 {
+        return scratch[0]
+    }
+    if idx >= count {
+        return scratch[count - 1]
+    }
+    return scratch[idx]
+}
+
+# Evaluate affine stack samples into `outSamples[samples]`.
+# For distribution 1, `factor` must be a valid LDL/Cholesky-like lower factor
+# from stackCovariancePsd (same scratch layout as stackups).
+export function mcStackSample(
+    stack: LinearToleranceStack,
+    config: MonteCarloConfig,
+    factor: ptr<f64>,
+    outSamples: ptr<f64>,
+    work: ptr<f64>
+) -> bool {
+    if not mcConfigOk(config) or stack.count <= 0 {
+        return false
+    }
+    let n: i32 = stack.count
+    if config.distribution == 1 {
+        if not stackCovariancePsd(stack.covariance, n, factor, 1.0e-12) {
+            return false
+        }
+    }
+    if not mcSeed(config.seed) {
+        return false
+    }
+    for s in 0 to config.samples {
+        let mut value: f64 = 0.0
+        if config.distribution == 2 {
+            for i in 0 to n {
+                let half: f64 = stack.halfWidths[i]
+                if half < 0.0 or not mcFinite(half) {
+                    return false
+                }
+                let u: f64 = (mcUniform01() * 2.0 - 1.0) * half
+                value = value + stack.coefficients[i] * (stack.nominal[i] + u)
+            }
+        } else {
+            # Fill work[0..n) with independent standard normals.
+            for i in 0 to n {
+                work[i] = mcStandardNormal()
+            }
+            if config.distribution == 1 {
+                # y = L z where factor holds lower-triangular L (stackups layout).
+                for i in 0 to n {
+                    let mut yi: f64 = 0.0
+                    for k in 0 to i + 1 {
+                        yi = yi + factor[i * n + k] * work[k]
+                    }
+                    if not mcFinite(yi) {
+                        return false
+                    }
+                    value = value + stack.coefficients[i] * (stack.nominal[i] + yi)
+                }
+            } else {
+                for i in 0 to n {
+                    let varI: f64 = stack.covariance[i * n + i]
+                    if varI < 0.0 or not mcFinite(varI) {
+                        return false
+                    }
+                    let yi: f64 = sqrt(varI) * work[i]
+                    value = value + stack.coefficients[i] * (stack.nominal[i] + yi)
+                }
+            }
+        }
+        if not mcFinite(value) {
+            return false
+        }
+        outSamples[s] = value
+    }
+    return true
+}
+
+export function mcSummarize(
+    samples: ptr<f64>,
+    count: i32,
+    percentileLow: f64,
+    percentileHigh: f64,
+    scratch: ptr<f64>,
+    out: ptr<MonteCarloResult>
+) -> bool {
+    if count <= 0 or percentileLow < 0.0 or percentileHigh > 1.0 or percentileLow >= percentileHigh {
+        return false
+    }
+    let mut sum: f64 = 0.0
+    let mut sumSq: f64 = 0.0
+    let mut lo: f64 = samples[0]
+    let mut hi: f64 = samples[0]
+    for i in 0 to count {
+        let v: f64 = samples[i]
+        if not mcFinite(v) {
+            return false
+        }
+        sum = sum + v
+        sumSq = sumSq + v * v
+        if v < lo {
+            lo = v
+        }
+        if v > hi {
+            hi = v
+        }
+    }
+    let mean: f64 = sum / (count as f64)
+    let variance: f64 = sumSq / (count as f64) - mean * mean
+    if variance < 0.0 {
+        if variance > -1.0e-18 {
+            variance = 0.0
+        } else {
+            return false
+        }
+    }
+    let pLo: f64 = mcPercentile(samples, count, percentileLow, scratch)
+    let pHi: f64 = mcPercentile(samples, count, percentileHigh, scratch)
+    if not mcFinite(pLo) or not mcFinite(pHi) {
+        return false
+    }
+    out[0] = MonteCarloResult {
+        mean: mean,
+        variance: variance,
+        sigma: sqrt(variance),
+        minimum: lo,
+        maximum: hi,
+        percentileLow: pLo,
+        percentileHigh: pHi,
+        samplesUsed: count
+    }
+    return true
+}
+
+# Overall process performance (Pp/Ppk) from sample mean/sigma.
+# Assumes stable normal process; caller supplies overall sigma (not within-subgroup).
+export function processPp(sigma: f64, lowerSpecLimit: f64, upperSpecLimit: f64) -> f64 {
+    if sigma <= 0.0 or not mcFinite(sigma) or upperSpecLimit <= lowerSpecLimit {
+        return 0.0 / 0.0
+    }
+    return (upperSpecLimit - lowerSpecLimit) / (6.0 * sigma)
+}
+
+export function processPpk(mean: f64, sigma: f64, lowerSpecLimit: f64, upperSpecLimit: f64) -> f64 {
+    if sigma <= 0.0 or not mcFinite(sigma) or not mcFinite(mean) or upperSpecLimit <= lowerSpecLimit {
+        return 0.0 / 0.0
+    }
+    let upper: f64 = (upperSpecLimit - mean) / (3.0 * sigma)
+    let lower: f64 = (mean - lowerSpecLimit) / (3.0 * sigma)
+    if lower < upper {
+        return lower
+    }
+    return upper
+}
+
+# X̄ chart limits for equal-sized subgroups using known within-sigma.
+# UCL/LCL = grandMean ± A * sigma / sqrt(n), with A=3 (3-sigma chart).
+export function spcXbarLimits(
+    measurements: ptr<f64>,
+    subgroupCount: i32,
+    subgroupSize: i32,
+    withinSigma: f64,
+    out: ptr<SpcXbarLimits>
+) -> bool {
+    if subgroupCount <= 0 or subgroupSize <= 1 or withinSigma <= 0.0 or not mcFinite(withinSigma) {
+        return false
+    }
+    let total: i32 = subgroupCount * subgroupSize
+    let mut sumAll: f64 = 0.0
+    for i in 0 to total {
+        let v: f64 = measurements[i]
+        if not mcFinite(v) {
+            return false
+        }
+        sumAll = sumAll + v
+    }
+    let grand: f64 = sumAll / (total as f64)
+    let half: f64 = 3.0 * withinSigma / sqrt(subgroupSize as f64)
+    out[0] = SpcXbarLimits {
+        grandMean: grand,
+        ucl: grand + half,
+        lcl: grand - half,
+        subgroupCount: subgroupCount,
+        subgroupSize: subgroupSize
+    }
+    return true
+}

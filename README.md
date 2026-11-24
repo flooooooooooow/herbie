@@ -34,6 +34,7 @@
 | `herbie.uncertainty` | First-order correlated covariance propagation and Gaussian intervals | Input covariance must be physically valid; not non-Gaussian metrology |
 | `herbie.tolerances` | Worst-case interval stacks, clearances, independent RSS standard deviations, Cp/Cpk, thermal length | Statistical normal/independent approximation for RSS; no full GD&T solver |
 | `herbie.stackups` | N-dimensional affine worst-case stacks and covariance-aware variance with PSD checks and sensitivity rank | First-order linear dimensional chains; all SI lengths, no 3D GD&T geometry, SPC, or measured-process qualification |
+| `herbie.montecarlo` | Seeded xorshift Monte Carlo for independent/correlated Gaussian and uniform stacks; empirical percentiles; Pp/Ppk; X̄ chart limits | Affine SI stacks only; not 3D GD&T, gauge R&R ANOVA or nonnormal process qualification |
 | `herbie.control` | PID with derivative on measurement, output/integral clamps and conditional anti-windup | Caller must provide valid dt and output limits |
 | `herbie.thermal` | Lumped-capacitance heat balance, fixed-step Euler, thermal time constant | Uniform temperature, constant coefficients |
 
@@ -84,6 +85,8 @@ flow run tests/ode_platform.flow
 flow run examples/ode_platform_demo.flow
 flow run tests/verification_matrix.flow
 flow run examples/verification_matrix_demo.flow
+flow run tests/montecarlo_stack.flow
+flow run examples/montecarlo_stack_demo.flow
 flow run tests/ac_phasor_mna.flow
 flow run examples/ac_phasor_demo.flow
 flow run tests/sparse_mna.flow
