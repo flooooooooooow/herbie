@@ -1,0 +1,239 @@
+# @module herbie.fluids
+# Incompressible lumped thermo-fluid kernels: laminar pipe, orifice, linear pump,
+# hydraulic volume, effectiveness-NTU exchanger and a closed cooling-loop balance.
+# Compressible flow, cavitation, DAE networks and map-based turbomachinery are out of scope.
+# SI units throughout. Positive flow is port A → B.
+
+export struct FluidProperties {
+    density: f64,
+    dynamicViscosity: f64,
+    specificHeat: f64
+}
+
+export struct PipeParameters {
+    length: f64,
+    diameter: f64
+}
+
+export struct OrificeParameters {
+    dischargeCoefficient: f64,
+    area: f64
+}
+
+export struct LinearPumpParameters {
+    # Open-flow Q at zero head; Q = max(0, freeFlow - headGain * Δp).
+    freeFlow: f64,
+    headGain: f64
+}
+
+export struct HydraulicVolume {
+    capacitance: f64
+}
+
+export struct HeatExchangerParameters {
+    # Overall UA [W/K] for ε-NTU with two streams.
+    overallUA: f64
+}
+
+export struct CoolantNodeState {
+    temperature: f64
+}
+
+export struct CoolantNodeParameters {
+    mass: f64,
+    specificHeat: f64
+}
+
+export struct CoolingLoopResult {
+    flow: f64,
+    pumpPressureRise: f64,
+    pipePressureDrop: f64,
+    coolantTemperature: f64,
+    radiatorReject: f64,
+    ok: bool
+}
+
+function flFinite(x: f64) -> bool {
+    return x == x and x <= 1.7976931348623157e308 and x >= -1.7976931348623157e308
+}
+
+function flAbs(x: f64) -> f64 {
+    if x < 0.0 {
+        return -x
+    }
+    return x
+}
+
+function flSign(x: f64) -> f64 {
+    if x < 0.0 {
+        return -1.0
+    }
+    if x > 0.0 {
+        return 1.0
+    }
+    return 0.0
+}
+
+export function fluidPropertiesOk(f: FluidProperties) -> bool {
+    return f.density > 0.0 and f.dynamicViscosity > 0.0 and f.specificHeat > 0.0
+}
+
+# Hagen–Poiseuille laminar pipe: Δp = 128 μ L Q / (π D^4).
+export function pipeLaminarPressureDrop(pipe: PipeParameters, fluid: FluidProperties, volumeFlow: f64) -> f64 {
+    if pipe.length <= 0.0 or pipe.diameter <= 0.0 or not fluidPropertiesOk(fluid) {
+        return 0.0 / 0.0
+    }
+    let d2: f64 = pipe.diameter * pipe.diameter
+    let d4: f64 = d2 * d2
+    return 128.0 * fluid.dynamicViscosity * pipe.length * volumeFlow / (3.141592653589793 * d4)
+}
+
+# Reynolds number for circular pipe (diagnostic / laminar check).
+export function pipeReynolds(pipe: PipeParameters, fluid: FluidProperties, volumeFlow: f64) -> f64 {
+    if pipe.diameter <= 0.0 or not fluidPropertiesOk(fluid) {
+        return 0.0 / 0.0
+    }
+    let area: f64 = 0.25 * 3.141592653589793 * pipe.diameter * pipe.diameter
+    let speed: f64 = flAbs(volumeFlow) / area
+    return fluid.density * speed * pipe.diameter / fluid.dynamicViscosity
+}
+
+# Turbulent/orifice quadratic: Q = Cd A sign(Δp) √(2|Δp|/ρ).
+export function orificeVolumeFlow(orifice: OrificeParameters, fluid: FluidProperties, pressureDrop: f64) -> f64 {
+    if orifice.dischargeCoefficient <= 0.0 or orifice.area <= 0.0 or not fluidPropertiesOk(fluid) {
+        return 0.0 / 0.0
+    }
+    return orifice.dischargeCoefficient * orifice.area * flSign(pressureDrop)
+        * sqrt(2.0 * flAbs(pressureDrop) / fluid.density)
+}
+
+export function pumpLinearFlow(pump: LinearPumpParameters, pressureRise: f64) -> f64 {
+    if pump.freeFlow < 0.0 or pump.headGain < 0.0 {
+        return 0.0 / 0.0
+    }
+    let q: f64 = pump.freeFlow - pump.headGain * pressureRise
+    if q < 0.0 {
+        return 0.0
+    }
+    return q
+}
+
+# Invert linear pump + laminar pipe in series: Q = Q0 / (1 + k * R), Δp = R Q.
+export function pumpPipeOperatingPoint(
+    pump: LinearPumpParameters,
+    pipe: PipeParameters,
+    fluid: FluidProperties
+) -> CoolingLoopResult {
+    let fail: CoolingLoopResult = CoolingLoopResult {
+        flow: 0.0, pumpPressureRise: 0.0, pipePressureDrop: 0.0,
+        coolantTemperature: 0.0, radiatorReject: 0.0, ok: false
+    }
+    if pump.freeFlow < 0.0 or pump.headGain < 0.0 or not fluidPropertiesOk(fluid) {
+        return fail
+    }
+    if pipe.length <= 0.0 or pipe.diameter <= 0.0 {
+        return fail
+    }
+    let d2: f64 = pipe.diameter * pipe.diameter
+    let d4: f64 = d2 * d2
+    let rHyd: f64 = 128.0 * fluid.dynamicViscosity * pipe.length / (3.141592653589793 * d4)
+    let denom: f64 = 1.0 + pump.headGain * rHyd
+    if denom <= 0.0 {
+        return fail
+    }
+    let q: f64 = pump.freeFlow / denom
+    let dp: f64 = rHyd * q
+    return CoolingLoopResult {
+        flow: q, pumpPressureRise: dp, pipePressureDrop: dp,
+        coolantTemperature: 0.0, radiatorReject: 0.0, ok: true
+    }
+}
+
+export function hydraulicVolumeStep(p: f64, volume: HydraulicVolume, netInflow: f64, dt: f64) -> f64 {
+    if volume.capacitance <= 0.0 or dt <= 0.0 {
+        return 0.0 / 0.0
+    }
+    let next: f64 = p + dt * netInflow / volume.capacitance
+    if not flFinite(next) {
+        return 0.0 / 0.0
+    }
+    return next
+}
+
+# Counterflow ε-NTU: NTU = UA/Cmin, Cr = Cmin/Cmax, ε = (1-exp(-NTU(1-Cr)))/(1-Cr·exp(-NTU(1-Cr))).
+export function heatExchangerEffectiveness(hx: HeatExchangerParameters, cMin: f64, cMax: f64) -> f64 {
+    if hx.overallUA <= 0.0 or cMin <= 0.0 or cMax < cMin {
+        return 0.0 / 0.0
+    }
+    let ntu: f64 = hx.overallUA / cMin
+    if cMax <= cMin * 1.000000000000001 {
+        # Balanced Cr → 1: ε = NTU / (1 + NTU)
+        return ntu / (1.0 + ntu)
+    }
+    let cr: f64 = cMin / cMax
+    let e: f64 = exp(-ntu * (1.0 - cr))
+    return (1.0 - e) / (1.0 - cr * e)
+}
+
+export function heatExchangerHeatTransfer(
+    hx: HeatExchangerParameters,
+    cHot: f64,
+    cCold: f64,
+    tHotIn: f64,
+    tColdIn: f64
+) -> f64 {
+    let mut cMin: f64 = cHot
+    let mut cMax: f64 = cCold
+    if cCold < cHot {
+        cMin = cCold
+        cMax = cHot
+    }
+    let eps: f64 = heatExchangerEffectiveness(hx, cMin, cMax)
+    if not flFinite(eps) {
+        return 0.0 / 0.0
+    }
+    return eps * cMin * (tHotIn - tColdIn)
+}
+
+# Lumped coolant energy: m cp dT/dt = Q_in - Q_out.
+export function coolantNodeStep(
+    s: CoolantNodeState,
+    p: CoolantNodeParameters,
+    heatIn: f64,
+    heatOut: f64,
+    dt: f64
+) -> CoolantNodeState {
+    if p.mass <= 0.0 or p.specificHeat <= 0.0 or dt <= 0.0 {
+        return CoolantNodeState { temperature: 0.0 / 0.0 }
+    }
+    let next: f64 = s.temperature + dt * (heatIn - heatOut) / (p.mass * p.specificHeat)
+    return CoolantNodeState { temperature: next }
+}
+
+# Closed cooling loop: laminar series pipe + linear pump, radiator as UA*(T - Tamb).
+# Steady coolant temperature: Tamb + Q_engine / UA. Flow from pump–pipe intersection.
+export function coolingLoopSteady(
+    pump: LinearPumpParameters,
+    pipe: PipeParameters,
+    fluid: FluidProperties,
+    radiatorUA: f64,
+    engineHeat: f64,
+    ambientTemperature: f64
+) -> CoolingLoopResult {
+    let op = pumpPipeOperatingPoint(pump, pipe, fluid)
+    if not op.ok or radiatorUA <= 0.0 {
+        return CoolingLoopResult {
+            flow: 0.0, pumpPressureRise: 0.0, pipePressureDrop: 0.0,
+            coolantTemperature: 0.0, radiatorReject: 0.0, ok: false
+        }
+    }
+    let tCool: f64 = ambientTemperature + engineHeat / radiatorUA
+    return CoolingLoopResult {
+        flow: op.flow,
+        pumpPressureRise: op.pumpPressureRise,
+        pipePressureDrop: op.pipePressureDrop,
+        coolantTemperature: tCool,
+        radiatorReject: engineHeat,
+        ok: true
+    }
+}

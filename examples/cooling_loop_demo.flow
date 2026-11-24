@@ -1,0 +1,31 @@
+# Closed coolant loop: linear pump, laminar pipe, UA radiator energy balance.
+
+import herbie.fluids {
+    FluidProperties, PipeParameters, LinearPumpParameters, coolingLoopSteady
+}
+
+function main() -> i32 {
+    let fluid: FluidProperties = FluidProperties {
+        density: 1050.0, dynamicViscosity: 0.0008, specificHeat: 3800.0
+    }
+    let pump: LinearPumpParameters = LinearPumpParameters { freeFlow: 0.002, headGain: 4.0e-7 }
+    let pipe: PipeParameters = PipeParameters { length: 5.0, diameter: 0.022 }
+    let loop = coolingLoopSteady(pump, pipe, fluid, 1200.0, 36000.0, 298.0)
+    if not loop.ok {
+        println("FAIL cooling loop")
+        return 1
+    }
+    println("Loop flow [m3/s]")
+    println(loop.flow)
+    println("Pump Δp [Pa]")
+    println(loop.pumpPressureRise)
+    println("Coolant temperature [K]")
+    println(loop.coolantTemperature)
+    println("Radiator reject [W]")
+    println(loop.radiatorReject)
+    if loop.coolantTemperature <= 298.0 or loop.flow <= 0.0 {
+        return 2
+    }
+    println("PASS cooling loop demo")
+    return 0
+}

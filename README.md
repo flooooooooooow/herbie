@@ -43,6 +43,7 @@
 | `herbie.montecarlo` | Seeded xorshift Monte Carlo for independent/correlated Gaussian and uniform stacks; empirical percentiles; Pp/Ppk; X̄ chart limits | Affine SI stacks only; not 3D GD&T, gauge R&R ANOVA or nonnormal process qualification |
 | `herbie.control` | PID with derivative on measurement, output/integral clamps and conditional anti-windup | Caller must provide valid dt and output limits |
 | `herbie.thermal` | Lumped-capacitance heat balance, fixed-step Euler, thermal time constant | Uniform temperature, constant coefficients |
+| `herbie.fluids` | Hagen–Poiseuille pipe, orifice, linear pump, hydraulic volume, ε-NTU HX, closed cooling-loop balance | Incompressible only; no cavitation, compressible DAE nets or turbomachinery maps |
 
 Except for `herbie.transient`, which uses the upstream single-session circuit workspace, dynamic kernels are explicit functions of state, parameters, inputs and `dt`; they contain no I/O or dynamic allocation in the source and can be called by a real-time host. This alone does **not** demonstrate worst-case execution time or determinism of a target build.
 
@@ -105,6 +106,8 @@ flow run tests/battery_pack.flow
 flow run examples/battery_pack_demo.flow
 flow run tests/electric_drive.flow
 flow run examples/pmsm_foc_demo.flow
+flow run tests/thermo_fluid.flow
+flow run examples/cooling_loop_demo.flow
 flow run tests/ac_phasor_mna.flow
 flow run examples/ac_phasor_demo.flow
 flow run tests/sparse_mna.flow
