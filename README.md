@@ -24,7 +24,8 @@
 | `herbie.electrical` | Closed-form RC/RL transients; series RLC RK4 and stored energy | Ideal lumped/passive networks only, no circuit graph, switching devices or circuit DAE |
 | `herbie.mechanics` | Single-axis rotational inertia, torsional stiffness/damping RK4 and ideal fixed-ratio gear power balance | No joints, bearing dynamics, contact, clutch or multibody assembly |
 | `herbie.driveline` | Simple pendulum, two-inertia torsional shaft, open differential power split, Coulomb clutch limit | Not 6-DOF multibody, torque converters, backlash maps or tire/suspension ports |
-| `herbie.motors` | Brushed permanent-magnet DC motor, coupled armature/rotor RK4, energy and torque | Lumped motor only; no inverter, commutation, saturation or thermal losses |
+| `herbie.motors` | Brushed permanent-magnet DC motor, coupled armature/rotor RK4, energy and torque | Lumped brushed DC only; three-phase drives live in `herbie.drive` |
+| `herbie.drive` | Amplitude-invariant Clarke/Park, salient PMSM dq, averaged DC-link inverter clip, FOC current PI with decoupling | No switching PWM, BLDC six-step, induction, observers or device loss maps |
 | `herbie.battery` | First-order Thevenin OCV + ohmic + polarization RC, coulomb-count SOC | Cell-level only; pack/BMS live in `herbie.pack` |
 | `herbie.pack` | Ns×Np scale, OCV map, current/voltage/temp limits, contactor, ohmic+polarization heat, lumped thermal, balance ΔSOC; SOH as capacity input | No ageing curves, coolant network, pre-charge, Kalman SOC or chemistry ID |
 | `herbie.maps` | Validated monotone two-axis grids, clamped bilinear lookup and strict in-domain bilinear (no extrapolation) | Row-major, linear interpolation only, caller-owned data |
@@ -102,6 +103,8 @@ flow run tests/meanvalue_engine.flow
 flow run examples/meanvalue_engine_demo.flow
 flow run tests/battery_pack.flow
 flow run examples/battery_pack_demo.flow
+flow run tests/electric_drive.flow
+flow run examples/pmsm_foc_demo.flow
 flow run tests/ac_phasor_mna.flow
 flow run examples/ac_phasor_demo.flow
 flow run tests/sparse_mna.flow

@@ -1,0 +1,203 @@
+# Clarke/Park identities, salient PMSM steady torque/voltages, inverter clip, FOC track.
+
+import herbie.drive {
+    ClarkeABC, AlphaBeta, Dq, PmsmParameters, PmsmState, AveragedInverter, FocPiGains, FocState,
+    clarkeAbcToAlphaBeta, clarkeAlphaBetaToAbc, parkAlphaBetaToDq, parkDqToAlphaBeta,
+    pmsmTorque, pmsmVoltageDrop, pmsmStep, inverterApplyDq, focCurrentStep
+}
+
+function near(a: f64, b: f64, eps: f64) -> bool {
+    return a >= b - eps and a <= b + eps
+}
+
+function absf(x: f64) -> f64 {
+    if x < 0.0 { return -x }
+    return x
+}
+
+function testTransforms() -> i32 {
+    let abc: ClarkeABC = ClarkeABC { a: 1.0, b: -0.5, c: -0.5 }
+    let ab: AlphaBeta = clarkeAbcToAlphaBeta(abc)
+    if not near(ab.alpha, 1.0, 1.0e-12) or not near(ab.beta, 0.0, 1.0e-12) {
+        println("FAIL Clarke peak A")
+        return 1
+    }
+    let back: ClarkeABC = clarkeAlphaBetaToAbc(ab)
+    if not near(back.a, 1.0, 1.0e-12) or not near(back.b, -0.5, 1.0e-12) or not near(back.c, -0.5, 1.0e-12) {
+        return 2
+    }
+    let th: f64 = 0.7
+    let dq: Dq = parkAlphaBetaToDq(ab, th)
+    let ab2: AlphaBeta = parkDqToAlphaBeta(dq, th)
+    if not near(ab2.alpha, ab.alpha, 1.0e-12) or not near(ab2.beta, ab.beta, 1.0e-12) {
+        println("FAIL Park round-trip")
+        return 3
+    }
+    # At θe = 0, d aligns with α.
+    let dq0: Dq = parkAlphaBetaToDq(ab, 0.0)
+    if not near(dq0.d, 1.0, 1.0e-12) or not near(dq0.q, 0.0, 1.0e-12) {
+        return 4
+    }
+    return 0
+}
+
+function testPmsmSteadyAndSaliency() -> i32 {
+    let p: PmsmParameters = PmsmParameters {
+        statorResistance: 0.05, inductanceD: 0.0008, inductanceQ: 0.0012,
+        fluxLinkage: 0.08, polePairs: 4.0, rotorInertia: 0.02, viscousDamping: 0.0
+    }
+    let iq: f64 = 50.0
+    let wm: f64 = 100.0
+    let s: PmsmState = PmsmState {
+        currentD: 0.0, currentQ: iq, electricalAngle: 0.0, mechanicalSpeed: wm
+    }
+    let te: f64 = pmsmTorque(s, p)
+    let expectedTe: f64 = 1.5 * 4.0 * 0.08 * iq
+    if not near(te, expectedTe, 1.0e-12) {
+        println("FAIL PM torque")
+        return 1
+    }
+    let v: Dq = pmsmVoltageDrop(s, p)
+    let we: f64 = 4.0 * wm
+    if not near(v.d, -we * 0.0012 * iq, 1.0e-12) {
+        return 2
+    }
+    if not near(v.q, 0.05 * iq + we * 0.08, 1.0e-12) {
+        return 3
+    }
+    # Reluctance: Ld < Lq → negative reluctance contribution for id>0, iq>0.
+    let salient: PmsmState = PmsmState {
+        currentD: 20.0, currentQ: 40.0, electricalAngle: 0.0, mechanicalSpeed: 0.0
+    }
+    let teR: f64 = pmsmTorque(salient, p)
+    let teExp: f64 = 1.5 * 4.0 * (0.08 * 40.0 + (0.0008 - 0.0012) * 20.0 * 40.0)
+    if not near(teR, teExp, 1.0e-12) {
+        println("FAIL saliency torque")
+        return 4
+    }
+    # Locked rotor: apply steady voltages, currents settle to ohmic.
+    let mut locked: PmsmState = PmsmState {
+        currentD: 0.0, currentQ: 0.0, electricalAngle: 0.0, mechanicalSpeed: 0.0
+    }
+    let vd: f64 = 2.0
+    let vq: f64 = 3.0
+    for i in 0 to 5000 {
+        let r = pmsmStep(locked, p, vd, vq, 0.0, 0.0002)
+        locked = r.state
+        # Pin speed for locked-rotor current test.
+        locked = PmsmState {
+            currentD: locked.currentD, currentQ: locked.currentQ,
+            electricalAngle: locked.electricalAngle, mechanicalSpeed: 0.0
+        }
+    }
+    if not near(locked.currentD, vd / p.statorResistance, 1.0e-6) {
+        println("FAIL locked id")
+        return 5
+    }
+    if not near(locked.currentQ, vq / p.statorResistance, 1.0e-6) {
+        println("FAIL locked iq")
+        return 6
+    }
+    # Invalid dt yields NaN torque.
+    let bad = pmsmStep(s, p, 0.0, 0.0, 0.0, 0.0)
+    if bad.electromagneticTorque == bad.electromagneticTorque {
+        return 7
+    }
+    return 0
+}
+
+function testInverterAndFoc() -> i32 {
+    let inv: AveragedInverter = AveragedInverter { dcLinkVoltage: 400.0, maxModulation: 1.0 }
+    let vmax: f64 = 400.0 / 1.7320508075688772
+    let clipped: Dq = inverterApplyDq(inv, Dq { d: vmax * 2.0, q: 0.0 })
+    if not near(clipped.d, vmax, 1.0e-9) or not near(clipped.q, 0.0, 1.0e-12) {
+        println("FAIL inverter clip")
+        return 1
+    }
+    let inside: Dq = inverterApplyDq(inv, Dq { d: 10.0, q: 20.0 })
+    if not near(inside.d, 10.0, 1.0e-12) or not near(inside.q, 20.0, 1.0e-12) {
+        return 2
+    }
+    let plant: PmsmParameters = PmsmParameters {
+        statorResistance: 0.1, inductanceD: 0.001, inductanceQ: 0.001,
+        fluxLinkage: 0.05, polePairs: 4.0, rotorInertia: 0.05, viscousDamping: 0.001
+    }
+    let gains: FocPiGains = FocPiGains { kp: 2.0, ki: 200.0, voltageLimit: 150.0 }
+    let mut foc: FocState = FocState { integralD: 0.0, integralQ: 0.0 }
+    let mut motor: PmsmState = PmsmState {
+        currentD: 0.0, currentQ: 0.0, electricalAngle: 0.0, mechanicalSpeed: 0.0
+    }
+    let idRef: f64 = 5.0
+    let iqRef: f64 = 15.0
+    for i in 0 to 4000 {
+        let measured: Dq = Dq { d: motor.currentD, q: motor.currentQ }
+        let ref: Dq = Dq { d: idRef, q: iqRef }
+        let cmd = focCurrentStep(foc, gains, plant, measured, ref, motor.mechanicalSpeed, 0.0001, true)
+        foc = cmd.state
+        let applied: Dq = inverterApplyDq(inv, Dq { d: cmd.voltageD, q: cmd.voltageQ })
+        let stepped = pmsmStep(motor, plant, applied.d, applied.q, 0.0, 0.0001)
+        # Hold rotor for current-loop gate (observer/speed loop out of scope).
+        motor = PmsmState {
+            currentD: stepped.state.currentD,
+            currentQ: stepped.state.currentQ,
+            electricalAngle: stepped.state.electricalAngle,
+            mechanicalSpeed: 0.0
+        }
+    }
+    if absf(motor.currentD - idRef) > 0.05 or absf(motor.currentQ - iqRef) > 0.05 {
+        println("FAIL FOC current track")
+        println(motor.currentD)
+        println(motor.currentQ)
+        return 3
+    }
+    # Sample-rate gate: FOC at 1 kHz, plant at 10 kHz (control holds between samples).
+    let slowGains: FocPiGains = FocPiGains { kp: 1.0, ki: 80.0, voltageLimit: 150.0 }
+    foc = FocState { integralD: 0.0, integralQ: 0.0 }
+    motor = PmsmState {
+        currentD: 0.0, currentQ: 0.0, electricalAngle: 0.0, mechanicalSpeed: 0.0
+    }
+    let mut vdHold: f64 = 0.0
+    let mut vqHold: f64 = 0.0
+    for i in 0 to 20000 {
+        if i % 10 == 0 {
+            let measured: Dq = Dq { d: motor.currentD, q: motor.currentQ }
+            let ref: Dq = Dq { d: idRef, q: iqRef }
+            let cmd = focCurrentStep(foc, slowGains, plant, measured, ref, 0.0, 0.001, true)
+            foc = cmd.state
+            let applied: Dq = inverterApplyDq(inv, Dq { d: cmd.voltageD, q: cmd.voltageQ })
+            vdHold = applied.d
+            vqHold = applied.q
+        }
+        let stepped = pmsmStep(motor, plant, vdHold, vqHold, 0.0, 0.0001)
+        motor = PmsmState {
+            currentD: stepped.state.currentD,
+            currentQ: stepped.state.currentQ,
+            electricalAngle: 0.0,
+            mechanicalSpeed: 0.0
+        }
+    }
+    if absf(motor.currentD - idRef) > 0.25 or absf(motor.currentQ - iqRef) > 0.25 {
+        println("FAIL multirate FOC")
+        println(motor.currentD)
+        println(motor.currentQ)
+        return 4
+    }
+    return 0
+}
+
+function main() -> i32 {
+    let a: i32 = testTransforms()
+    if a != 0 {
+        return 10 + a
+    }
+    let b: i32 = testPmsmSteadyAndSaliency()
+    if b != 0 {
+        return 20 + b
+    }
+    let c: i32 = testInverterAndFoc()
+    if c != 0 {
+        return 30 + c
+    }
+    println("PASS electric drive: Clarke/Park, PMSM, inverter, FOC")
+    return 0
+}

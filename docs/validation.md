@@ -67,6 +67,16 @@ This establishes one model/solver/kernel agreement slice but **not** broad numer
 
 `tests/linear_stackups.flow` verifies a 20.00 mm bore minus 19.90 mm shaft nominal and interval 0.030–0.170 mm. With σ = 30/20 μm, perfect positive correlation gives clearance σ = 10 μm, independence yields variance 1.3×10⁻⁹ m², and perfect negative correlation gives 50 μm. Asymmetric covariance, a non-positive-semidefinite matrix, and negative half-widths are rejected; a zero covariance matrix is admitted. The method uses a caller-owned Cholesky-like factor with semidefinite pivot treatment and a relative matrix tolerance; its treatment of nearly singular matrices depends on the supplied tolerance. All dimensions are in metres; a 3D datum hierarchy remains unimplemented.
 
+## Electric drives / FOC (issue #12)
+
+`tests/electric_drive.flow` checks:
+
+- Amplitude-invariant Clarke peak-A and Park round-trip
+- PM and reluctance torque formulas; locked-rotor ohmic currents; steady vd/vq drop
+- Averaged inverter |v_dq| clip at Vdc/√3; FOC tracks id/iq at matched rate and at 1 kHz / 10 kHz multirate
+
+Switching PWM, BLDC six-step, induction machines, observers, device loss maps and thermal saturation remain open under [#12](https://github.com/flooooooooooow/herbie/issues/12).
+
 ## Battery pack / BMS / thermal (issue #14)
 
 `tests/battery_pack.flow` checks:

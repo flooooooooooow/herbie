@@ -123,6 +123,10 @@ jobs:
         run: flow run tests/battery_pack.flow
       - name: Run battery pack demonstration
         run: flow run examples/battery_pack_demo.flow
+      - name: Verify Clarke/Park, PMSM dq, averaged inverter and FOC
+        run: flow run tests/electric_drive.flow
+      - name: Run PMSM FOC demonstration
+        run: flow run examples/pmsm_foc_demo.flow
       - name: Run vehicle demo
         run: flow run examples/quarter_car_demo.flow
       - name: Run manufacturing demo
