@@ -15,6 +15,7 @@ src/
   nl.flow            Dense DC NR MNA with diodes and resistive switches
   netlist.flow       Versioned SPICE-subset import/export (optional I/O)
   dae.flow           Dense index-1 DAE MNA transient (BE/TRAP companions)
+  ideal_sw.flow      Dense DC MNA with zero-Ron ideal switches
   transient.flow     Shared Flow-backend linear RLC transient facade
   electrical.flow    Lumped passive RC/RL/RLC
   mechanics.flow     Single-axis rotation and ideal gear
@@ -40,6 +41,7 @@ tests/
   netlist.flow
   ngspice_crossval.flow
   dae_mna.flow
+  ideal_switch.flow
   ngspice_refs/        Stored ngspice-42 prints + provenance
 examples/
   quarter_car_demo.flow

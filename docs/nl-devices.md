@@ -31,4 +31,4 @@ flow run tests/nl_devices.flow
 
 ## Boundary
 
-DC operating points only. No transient diode capacitance, no ideal zero-Ron MNA branch switch, no BJT, no automatic event localisation in continuous time. Netlist import of diode/switch decks is covered by `herbie.netlist`; external SPICE waveform comparisons remain a separate increment under the electrical circuit solver roadmap.
+DC operating points only. No transient diode capacitance, no BJT, no automatic event localisation in continuous time. Zero-Ron ideal (branch-current) switches are in `herbie.ideal_sw`. Netlist import of diode/switch decks is covered by `herbie.netlist`.
