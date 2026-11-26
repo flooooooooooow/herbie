@@ -16,6 +16,8 @@ src/
   sparse_mna.flow    COO→CSR DC MNA assembly with dense expand solve
   nl.flow            Dense DC NR MNA with diodes and resistive switches
   netlist.flow       Versioned SPICE-subset import/export (optional I/O)
+  xml.flow           Strict XML subset reader and canonical writer
+  fmi2.flow          FMI 2.0 modelDescription rules and export
   dae.flow           Dense index-1 DAE MNA transient (BE/TRAP companions)
   ideal_sw.flow      Dense DC MNA with zero-Ron ideal switches
   transient.flow     Shared Flow-backend linear RLC transient facade
@@ -53,6 +55,8 @@ tests/
   nl_devices.flow
   netlist.flow
   ngspice_crossval.flow
+  fmi2_model_description.flow
+  fmi2/                FMI 2.0.4 XSD and Reference FMU descriptions
   dae_mna.flow
   ideal_switch.flow
   ngspice_fixtures.flow

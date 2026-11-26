@@ -16,6 +16,7 @@
 | `herbie.sparse_mna` | COO→CSR DC MNA assembly for R/I/V, CSR SpMV residual, dense expand + pivoted solve with dense-reference checks | Sparse assembly only; factorisation still dense; no AC/nonlinear/fill-reducing LU |
 | `herbie.nl` | Dense DC NR MNA with Shockley diodes (pnjlim), resistive switches and explicit threshold events | DC operating points only; finite Ron/Roff; no transient diode C or BJT |
 | `herbie.netlist` | Versioned SPICE-subset import/export (R/C/L/V/I/D/S) with stamps into MNA/AC/NL | Format v1 subset; no subcircuits, `.model` library or waveform sources |
+| `herbie.xml` / `herbie.fmi2` | Strict XML subset reader and canonical writer; FMI 2.0 `modelDescription.xml` rule checks and export for Real-valued model interfaces | Model description only; no FMU archive, binaries, fmi2 C API or co-simulation runtime |
 | `herbie.dae` | Dense index-1 DAE MNA transient with BE/TRAP C/L companions and consistent DC/UIC init | Linear R/C/L only; dense O(n³); no nonlinear/switch in this module |
 | `herbie.ideal_sw` | Dense DC MNA with zero-Ron ideal switches (branch-current shorts) and threshold events | DC linear only; not the Ron/Roff model in `herbie.nl` |
 | ngspice refs | Stored ngspice-42 divider / RC AC / diode OPs with provenance + tolerance tests | Three fixtures only; not general SPICE parity |
@@ -124,6 +125,8 @@ flow run tests/nl_devices.flow
 flow run examples/nl_devices_demo.flow
 flow run tests/netlist.flow
 flow run examples/netlist_demo.flow
+flow run tests/fmi2_model_description.flow
+xmllint --noout --schema tests/fmi2/schema/fmi2ModelDescription.xsd /tmp/herbie-fmi2-*.xml
 flow run tests/ngspice_crossval.flow
 flow run tests/ngspice_fixtures.flow
 flow run tests/dae_mna.flow
@@ -160,6 +163,10 @@ The exact Flow compiler revision used by CI is pinned in [the CI workflow](.gith
 
 [`herbie.netlist`](src/netlist.flow) reads and writes format-version-1 SPICE-subset decks (`R/C/L/V/I/D` plus Herbie resistive `S` switches) and stamps them into `herbie.mna`, `herbie.ac` or `herbie.nl`. Round-trip and solver fixtures live in [docs/netlist.md](docs/netlist.md). Example decks are under `examples/netlists/`.
 
+## FMI 2.0 model description
+
+[`herbie.fmi2`](src/fmi2.flow) parses FMI 2.0 `modelDescription.xml` with the allocation-free [`herbie.xml`](src/xml.flow) reader, checks the specification rules the XSD cannot express (causality and variability table, `initial` and `start` rules, derivatives, declared types, units and the `ModelStructure` lists), writes a canonical form and exports descriptions for Real-valued Herbie model interfaces. The six FMI 2.0 Reference FMU descriptions round-trip, and every rewrite and export validates against the vendored FMI 2.0.4 XSD in CI. Scope and fault codes are in [docs/fmi2.md](docs/fmi2.md). There is no FMU packaging or runtime yet (#7).
+
 ## ngspice cross-validation
 
 Stored ngspice-42 references for a DC divider, series RC AC phasor (`ω=1000`) and Shockley diode OP live under `tests/ngspice_refs/` with command provenance. `flow run tests/ngspice_crossval.flow` compares Herbie solvers within documented tolerances ([docs/ngspice-crossval.md](docs/ngspice-crossval.md)). Additional bridge, multi-diode rectifier and RLC transient fixtures: `flow run tests/ngspice_fixtures.flow` ([docs/ngspice-fixtures.md](docs/ngspice-fixtures.md)). CI does not require ngspice.
@@ -176,7 +183,7 @@ The standalone browser has no third-party runtime CDN requirement: official Thre
 
 ## Design rules
 
-Physics stays in Flow, not a concealed Python/MATLAB backend. SI units are used throughout the initial API. Callers validate masses, geometry, material properties, positive `dt`, and solver stability limits before entering the real-time loop. State is explicit and updates are bounded by fixed arithmetic work; no file or network operations are performed within step functions. Model assumptions, analytical baselines and test results must be versioned together.
+Physics stays in Flow. There is no concealed Python/MATLAB backend. SI units are used throughout the initial API. Callers validate masses, geometry, material properties, positive `dt`, and solver stability limits before entering the real-time loop. State is explicit and updates are bounded by fixed arithmetic work; no file or network operations are performed within step functions. Model assumptions, analytical baselines and test results must be versioned together.
 
 Herbie does **not** certify any model, component, controller, vehicle or manufacturing process. Do not use these kernels to approve a physical design or drive safety-critical hardware without independently validated models, target-specific timing qualification, fault handling, and the applicable engineering safety process.
 
