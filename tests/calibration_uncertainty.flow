@@ -1,0 +1,273 @@
+# Ridge-regularized affine fit and fit-uncertainty reporting: OLS equivalence at λ = 0,
+# closed-form ridge shrinkage, exact covariance on a replicated factorial design, Student-t
+# critical values, confidence/prediction intervals, leakage gate and seeded coverage.
+
+import herbie.calibrate {
+    CalibSplit, CalibAffine, CalibFitReport, CalibCovariance, CalibUncertainty, CalibInterval,
+    calibFitReport, calibFitAffineRidge, calibStudentT975, calibAffineUncertainty, calibAffineInterval
+}
+
+function near(a: f64, b: f64, eps: f64) -> bool {
+    return a >= b - eps and a <= b + eps
+}
+
+function rngNext(state: ptr<u32>) -> u32 {
+    let mut x: u32 = state[0]
+    x = x ^ (x << 13)
+    x = x ^ (x >> 17)
+    x = x ^ (x << 5)
+    state[0] = x
+    return x
+}
+
+function rngNormal(state: ptr<u32>) -> f64 {
+    let b1: u32 = rngNext(state) & 16777215
+    let b2: u32 = rngNext(state) & 16777215
+    let u1: f64 = ((b1 as f64) + 0.5) / 16777216.0
+    let u2: f64 = ((b2 as f64) + 0.5) / 16777216.0
+    return sqrt(-2.0 * log(u1)) * cos(2.0 * 3.141592653589793 * u2)
+}
+
+function testRidgeMatchesOlsAndShrinks() -> i32 {
+    # Points (±1, 0), (0, ±1) on z = 2 + 3x + 4y: centred, orthogonal, Sxx = Syy = 2.
+    let mut v: array<f64, 12> = [
+        1.0, 0.0, 5.0,
+        -1.0, 0.0, -1.0,
+        0.0, 1.0, 6.0,
+        0.0, -1.0, -2.0
+    ]
+    let split: CalibSplit = CalibSplit { trainCount: 4, valCount: 0 }
+    let mut m: array<CalibAffine, 1> = [CalibAffine { a: 0.0, b: 0.0, c: 0.0 }]
+    # valCount 0 is not a valid split for the existing report API; ridge uses the same gate.
+    if calibFitAffineRidge(&v[0], split, 0.0, &m[0]) {
+        return 1
+    }
+    let mut w: array<f64, 15> = [
+        1.0, 0.0, 5.0,
+        -1.0, 0.0, -1.0,
+        0.0, 1.0, 6.0,
+        0.0, -1.0, -2.0,
+        5.0, 5.0, 999.0
+    ]
+    let sp: CalibSplit = CalibSplit { trainCount: 4, valCount: 1 }
+    if not calibFitAffineRidge(&w[0], sp, 0.0, &m[0]) {
+        return 2
+    }
+    let ols: CalibFitReport = calibFitReport(&w[0], sp)
+    if not ols.ok or not near(m[0].a, ols.coefficients.a, 1.0e-12) or not near(m[0].b, ols.coefficients.b, 1.0e-12)
+        or not near(m[0].c, ols.coefficients.c, 1.0e-12) {
+        println("FAIL ridge λ=0 vs OLS")
+        return 3
+    }
+    # Closed form on the orthogonal design: b = Sxz/(Sxx + λ) = 6/(2 + λ), c = 8/(2 + λ), a = 2.
+    let lambdas: array<f64, 4> = [0.5, 1.0, 4.0, 100.0]
+    let mut prevNorm: f64 = 25.0
+    for i in 0 to 4 {
+        let lam: f64 = lambdas[i]
+        if not calibFitAffineRidge(&w[0], sp, lam, &m[0]) {
+            return 4
+        }
+        if not near(m[0].a, 2.0, 1.0e-12) or not near(m[0].b, 6.0 / (2.0 + lam), 1.0e-12)
+            or not near(m[0].c, 8.0 / (2.0 + lam), 1.0e-12) {
+            println("FAIL ridge closed form")
+            println(m[0].b)
+            return 5
+        }
+        let norm: f64 = m[0].b * m[0].b + m[0].c * m[0].c
+        if norm >= prevNorm {
+            return 6
+        }
+        prevNorm = norm
+    }
+    if calibFitAffineRidge(&w[0], sp, -1.0, &m[0]) {
+        return 7
+    }
+    # Collinear x = y: OLS is singular, ridge stays solvable and splits the slope evenly.
+    let mut col: array<f64, 15> = [
+        0.0, 0.0, 1.0,
+        1.0, 1.0, 3.0,
+        2.0, 2.0, 5.0,
+        3.0, 3.0, 7.0,
+        4.0, 4.0, 9.0
+    ]
+    let csp: CalibSplit = CalibSplit { trainCount: 4, valCount: 1 }
+    if calibFitAffineRidge(&col[0], csp, 0.0, &m[0]) {
+        println("FAIL singular OLS accepted")
+        return 8
+    }
+    if not calibFitAffineRidge(&col[0], csp, 0.01, &m[0]) or not near(m[0].b, m[0].c, 1.0e-9) {
+        return 9
+    }
+    if not near(m[0].b + m[0].c, 2.0, 0.01) {
+        return 10
+    }
+    return 0
+}
+
+function testTCritical() -> i32 {
+    if not near(calibStudentT975(1), 12.706205, 1.0e-6) or not near(calibStudentT975(10), 2.228139, 1.0e-6) {
+        return 1
+    }
+    if not near(calibStudentT975(30), 2.042272, 1.0e-6) {
+        return 2
+    }
+    # Expansion branch against published quantiles.
+    if not near(calibStudentT975(31), 2.039513, 1.0e-5) or not near(calibStudentT975(60), 2.000298, 1.0e-5)
+        or not near(calibStudentT975(120), 1.979930, 1.0e-5) {
+        println("FAIL t expansion")
+        return 3
+    }
+    let bad: f64 = calibStudentT975(0)
+    if bad == bad {
+        return 4
+    }
+    return 0
+}
+
+# Replicated 2² factorial at x, y ∈ {−1, 1} with residuals ±d in the xy-interaction pattern,
+# which is orthogonal to [1, x, y]: OLS recovers the plane, RSS = 8d², dof = 5,
+# σ̂² = 8d²/5, XᵀX = 8I so every coefficient SE is σ̂/√8 with zero covariance.
+function testExactCovariance() -> i32 {
+    let d: f64 = 0.25
+    let mut v: array<f64, 27> = [
+        -1.0, -1.0, 1.0 - 2.0 - 3.0 + d,
+        1.0, -1.0, 1.0 + 2.0 - 3.0 - d,
+        -1.0, 1.0, 1.0 - 2.0 + 3.0 - d,
+        1.0, 1.0, 1.0 + 2.0 + 3.0 + d,
+        -1.0, -1.0, 1.0 - 2.0 - 3.0 + d,
+        1.0, -1.0, 1.0 + 2.0 - 3.0 - d,
+        -1.0, 1.0, 1.0 - 2.0 + 3.0 - d,
+        1.0, 1.0, 1.0 + 2.0 + 3.0 + d,
+        0.0, 0.0, 100.0
+    ]
+    let sp: CalibSplit = CalibSplit { trainCount: 8, valCount: 1 }
+    let rep: CalibFitReport = calibFitReport(&v[0], sp)
+    if not rep.ok or not near(rep.coefficients.a, 1.0, 1.0e-12) or not near(rep.coefficients.b, 2.0, 1.0e-12)
+        or not near(rep.coefficients.c, 3.0, 1.0e-12) {
+        return 1
+    }
+    let u: CalibUncertainty = calibAffineUncertainty(&v[0], sp, rep.coefficients, 0.0)
+    let sigma: f64 = sqrt(8.0 * d * d / 5.0)
+    if not u.ok or u.degreesOfFreedom != 5 or not near(u.residualSigma, sigma, 1.0e-12) {
+        println("FAIL residual sigma")
+        return 2
+    }
+    let se: f64 = sigma / sqrt(8.0)
+    if not near(u.standardErrorA, se, 1.0e-12) or not near(u.standardErrorB, se, 1.0e-12) or not near(u.standardErrorC, se, 1.0e-12) {
+        println("FAIL coefficient SE")
+        return 3
+    }
+    if not near(u.covariance.cab, 0.0, 1.0e-15) or not near(u.covariance.cac, 0.0, 1.0e-15) or not near(u.covariance.cbc, 0.0, 1.0e-15) {
+        return 4
+    }
+    if not near(u.halfWidthB, 2.570582 * se, 1.0e-6 * se) {
+        return 5
+    }
+    # Intervals: mean SE² = se²(1 + x² + y²); prediction adds σ̂².
+    let iv: CalibInterval = calibAffineInterval(u, 0.5, -2.0)
+    if not near(iv.value, 1.0 + 1.0 - 6.0, 1.0e-12) {
+        return 6
+    }
+    if not near(iv.meanStandardError, se * sqrt(1.0 + 0.25 + 4.0), 1.0e-12)
+        or not near(iv.predictionStandardError, sqrt(se * se * 5.25 + sigma * sigma), 1.0e-12) {
+        println("FAIL interval SE")
+        return 7
+    }
+    let centre: CalibInterval = calibAffineInterval(u, 0.0, 0.0)
+    if centre.confidenceHalfWidth >= iv.confidenceHalfWidth or centre.predictionHalfWidth <= centre.confidenceHalfWidth {
+        return 8
+    }
+    # Leakage gate: the validation row does not enter σ̂ or the covariance.
+    v[8 * 3 + 2] = -500.0
+    let u2: CalibUncertainty = calibAffineUncertainty(&v[0], sp, rep.coefficients, 0.0)
+    if u2.residualSigma != u.residualSigma or u2.standardErrorB != u.standardErrorB {
+        return 9
+    }
+    # Ridge sandwich on the orthogonal design: Var(b) = σ̂²·8/(8 + λ)².
+    let lam: f64 = 2.0
+    let mut rm: array<CalibAffine, 1> = [CalibAffine { a: 0.0, b: 0.0, c: 0.0 }]
+    if not calibFitAffineRidge(&v[0], sp, lam, &rm[0]) {
+        return 10
+    }
+    let ur: CalibUncertainty = calibAffineUncertainty(&v[0], sp, rm[0], lam)
+    let rss: f64 = 8.0 * d * d + 8.0 * ((2.0 - rm[0].b) * (2.0 - rm[0].b) + (3.0 - rm[0].c) * (3.0 - rm[0].c))
+    let s2r: f64 = rss / 5.0
+    if not ur.ok or not near(ur.standardErrorB, sqrt(s2r * 8.0) / (8.0 + lam), 1.0e-12)
+        or not near(ur.standardErrorA, sqrt(s2r / 8.0), 1.0e-12) {
+        println("FAIL ridge covariance")
+        return 11
+    }
+    # Too few rows for any residual dof.
+    if calibAffineUncertainty(&v[0], CalibSplit { trainCount: 3, valCount: 1 }, rep.coefficients, 0.0).ok {
+        return 12
+    }
+    return 0
+}
+
+# Seeded coverage: 2000 noisy fits of z = 1 + 2x − 0.5y + N(0, 0.3²) on a 4×3 grid. The 95 %
+# intervals for b and for a new observation must cover in 93 %–97 % of trials (≈4σ binomial).
+function testCoverage() -> i32 {
+    let mut rng: array<u32, 1> = [2463534242 as u32]
+    let trials: i32 = 2000
+    let mut coverB: i32 = 0
+    let mut coverPred: i32 = 0
+    let mut v: array<f64, 39> = [0.0; 39]
+    let sp: CalibSplit = CalibSplit { trainCount: 12, valCount: 1 }
+    for t in 0 to trials {
+        for i in 0 to 12 {
+            let x: f64 = (i % 4) as f64
+            let y: f64 = (i / 4) as f64
+            v[i * 3] = x
+            v[i * 3 + 1] = y
+            v[i * 3 + 2] = 1.0 + 2.0 * x - 0.5 * y + 0.3 * rngNormal(&rng[0])
+        }
+        v[36] = 1.5
+        v[37] = 3.0
+        v[38] = 1.0 + 3.0 - 1.5 + 0.3 * rngNormal(&rng[0])
+        let rep: CalibFitReport = calibFitReport(&v[0], sp)
+        if not rep.ok {
+            return 1
+        }
+        let u: CalibUncertainty = calibAffineUncertainty(&v[0], sp, rep.coefficients, 0.0)
+        if not u.ok {
+            return 2
+        }
+        if rep.coefficients.b - u.halfWidthB <= 2.0 and rep.coefficients.b + u.halfWidthB >= 2.0 {
+            coverB = coverB + 1
+        }
+        let iv: CalibInterval = calibAffineInterval(u, 1.5, 3.0)
+        if near(v[38], iv.value, iv.predictionHalfWidth) {
+            coverPred = coverPred + 1
+        }
+    }
+    let fb: f64 = (coverB as f64) / (trials as f64)
+    let fp: f64 = (coverPred as f64) / (trials as f64)
+    if fb < 0.93 or fb > 0.97 or fp < 0.93 or fp > 0.97 {
+        println("FAIL coverage")
+        println(fb)
+        println(fp)
+        return 3
+    }
+    return 0
+}
+
+function main() -> i32 {
+    let a: i32 = testRidgeMatchesOlsAndShrinks()
+    if a != 0 {
+        return 10 + a
+    }
+    let b: i32 = testTCritical()
+    if b != 0 {
+        return 30 + b
+    }
+    let c: i32 = testExactCovariance()
+    if c != 0 {
+        return 40 + c
+    }
+    let d: i32 = testCoverage()
+    if d != 0 {
+        return 60 + d
+    }
+    println("PASS calibration uncertainty: ridge shrinkage, covariance, t intervals, coverage")
+    return 0
+}

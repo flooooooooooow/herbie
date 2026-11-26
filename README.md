@@ -113,6 +113,7 @@ flow run tests/thermo_fluid.flow
 flow run examples/cooling_loop_demo.flow
 flow run tests/calibration_pipeline.flow
 flow run examples/calibration_demo.flow
+flow run tests/calibration_uncertainty.flow
 flow run tests/block_graph.flow
 flow run examples/block_graph_demo.flow
 flow run tests/ac_phasor_mna.flow

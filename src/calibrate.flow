@@ -1,7 +1,8 @@
 # @module herbie.calibrate
 # Calibration helpers: train/validation split, MAD outlier gate, affine surface
-# fit (z = a + b x + c y), holdout RMSE, finite-difference sensitivity and a
-# seeded 1-D golden-section fit. CSV loading uses herbie.verify parsers.
+# fit (z = a + b x + c y), ridge-regularized affine fit, coefficient covariance with
+# Student-t confidence and prediction intervals, holdout RMSE, finite-difference
+# sensitivity and a seeded 1-D golden-section fit. CSV loading uses herbie.verify parsers.
 # No invented chemistry/ageing; fitted coefficients must cite source split.
 
 import herbie.verify { verifyParseCsvTable }
@@ -329,4 +330,248 @@ export function calibLoadXyzCsv(
     maxRows: i32
 ) -> i32 {
     return verifyParseCsvTable(text, 3, true, outValues, maxRows)
+}
+
+export struct CalibNormal {
+    # Symmetric XᵀX for columns [1, x, y] and Xᵀz on the training rows.
+    s00: f64,
+    s01: f64,
+    s02: f64,
+    s11: f64,
+    s12: f64,
+    s22: f64,
+    t0: f64,
+    t1: f64,
+    t2: f64,
+    count: i32,
+    ok: bool
+}
+
+export struct CalibCovariance {
+    # Symmetric 3×3 covariance of [a, b, c].
+    caa: f64,
+    cab: f64,
+    cac: f64,
+    cbb: f64,
+    cbc: f64,
+    ccc: f64
+}
+
+export struct CalibUncertainty {
+    coefficients: CalibAffine,
+    covariance: CalibCovariance,
+    # Residual standard deviation σ̂ = √(RSS / dof), dof = n − 3 (training rows only).
+    residualSigma: f64,
+    degreesOfFreedom: i32,
+    standardErrorA: f64,
+    standardErrorB: f64,
+    standardErrorC: f64,
+    # Two-sided 95 % Student-t critical value used for the half-widths below.
+    tCritical: f64,
+    halfWidthA: f64,
+    halfWidthB: f64,
+    halfWidthC: f64,
+    ok: bool
+}
+
+export struct CalibInterval {
+    value: f64,
+    # Standard error of the fitted mean surface and of a new observation at (x, y).
+    meanStandardError: f64,
+    predictionStandardError: f64,
+    confidenceHalfWidth: f64,
+    predictionHalfWidth: f64
+}
+
+export function calibNormalEquations(values: ptr<f64>, split: CalibSplit) -> CalibNormal {
+    let mut n: CalibNormal = CalibNormal {
+        s00: 0.0, s01: 0.0, s02: 0.0, s11: 0.0, s12: 0.0, s22: 0.0,
+        t0: 0.0, t1: 0.0, t2: 0.0, count: 0, ok: false
+    }
+    if not calibSplitOk(split, split.trainCount + split.valCount) {
+        return n
+    }
+    for i in 0 to split.trainCount {
+        let x: f64 = values[i * 3]
+        let y: f64 = values[i * 3 + 1]
+        let z: f64 = values[i * 3 + 2]
+        if not calFinite(x) or not calFinite(y) or not calFinite(z) {
+            return n
+        }
+        n.s00 = n.s00 + 1.0
+        n.s01 = n.s01 + x
+        n.s02 = n.s02 + y
+        n.s11 = n.s11 + x * x
+        n.s12 = n.s12 + x * y
+        n.s22 = n.s22 + y * y
+        n.t0 = n.t0 + z
+        n.t1 = n.t1 + x * z
+        n.t2 = n.t2 + y * z
+    }
+    n.count = split.trainCount
+    n.ok = true
+    return n
+}
+
+# Inverse of a symmetric positive-definite 3×3 by adjugate; false if near singular.
+function calibInvertSym3(
+    m00: f64, m01: f64, m02: f64, m11: f64, m12: f64, m22: f64,
+    out: ptr<CalibCovariance>
+) -> bool {
+    let c00: f64 = m11 * m22 - m12 * m12
+    let c01: f64 = m02 * m12 - m01 * m22
+    let c02: f64 = m01 * m12 - m02 * m11
+    let c11: f64 = m00 * m22 - m02 * m02
+    let c12: f64 = m01 * m02 - m00 * m12
+    let c22: f64 = m00 * m11 - m01 * m01
+    let det: f64 = m00 * c00 + m01 * c01 + m02 * c02
+    let scale: f64 = calAbs(m00) + calAbs(m11) + calAbs(m22)
+    if not calFinite(det) or calAbs(det) <= 1.0e-14 * scale * scale * scale {
+        return false
+    }
+    out[0] = CalibCovariance {
+        caa: c00 / det, cab: c01 / det, cac: c02 / det,
+        cbb: c11 / det, cbc: c12 / det, ccc: c22 / det
+    }
+    return true
+}
+
+# Ridge fit on training rows: minimise Σ(a + b x + c y − z)² + λ(b² + c²). The intercept
+# is not penalised; λ = 0 is ordinary least squares. Inputs are not rescaled, so λ acts in
+# the caller's units of x and y.
+export function calibFitAffineRidge(
+    values: ptr<f64>,
+    split: CalibSplit,
+    lambda: f64,
+    out: ptr<CalibAffine>
+) -> bool {
+    if lambda < 0.0 or not calFinite(lambda) or split.trainCount < 3 {
+        return false
+    }
+    let n: CalibNormal = calibNormalEquations(values, split)
+    if not n.ok {
+        return false
+    }
+    let mut inv: array<CalibCovariance, 1> = [CalibCovariance { caa: 0.0, cab: 0.0, cac: 0.0, cbb: 0.0, cbc: 0.0, ccc: 0.0 }]
+    if not calibInvertSym3(n.s00, n.s01, n.s02, n.s11 + lambda, n.s12, n.s22 + lambda, &inv[0]) {
+        return false
+    }
+    let g: CalibCovariance = inv[0]
+    let a: f64 = g.caa * n.t0 + g.cab * n.t1 + g.cac * n.t2
+    let b: f64 = g.cab * n.t0 + g.cbb * n.t1 + g.cbc * n.t2
+    let c: f64 = g.cac * n.t0 + g.cbc * n.t1 + g.ccc * n.t2
+    if not calFinite(a) or not calFinite(b) or not calFinite(c) {
+        return false
+    }
+    out[0] = CalibAffine { a: a, b: b, c: c }
+    return true
+}
+
+# Two-sided 95 % Student-t critical value t_{0.975, ν}. Tabulated for ν ≤ 30, then the
+# Cornish-Fisher expansion about z = 1.959964 (error below 2·10⁻⁵ for ν > 30).
+export function calibStudentT975(dof: i32) -> f64 {
+    if dof <= 0 {
+        return 0.0 / 0.0
+    }
+    let table: array<f64, 30> = [
+        12.706205, 4.302653, 3.182446, 2.776445, 2.570582, 2.446912, 2.364624, 2.306004, 2.262157, 2.228139,
+        2.200985, 2.178813, 2.160369, 2.144787, 2.131450, 2.119905, 2.109816, 2.100922, 2.093024, 2.085963,
+        2.079614, 2.073873, 2.068658, 2.063899, 2.059539, 2.055529, 2.051831, 2.048407, 2.045230, 2.042272
+    ]
+    if dof <= 30 {
+        return table[dof - 1]
+    }
+    let z: f64 = 1.959963984540054
+    let z3: f64 = z * z * z
+    let z5: f64 = z3 * z * z
+    let z7: f64 = z5 * z * z
+    let v: f64 = dof as f64
+    return z + (z3 + z) / (4.0 * v) + (5.0 * z5 + 16.0 * z3 + 3.0 * z) / (96.0 * v * v)
+        + (3.0 * z7 + 19.0 * z5 + 17.0 * z3 - 15.0 * z) / (384.0 * v * v * v)
+}
+
+# Coefficient covariance of a (ridge) affine fit from its training residuals:
+# Cov = σ̂²·G·XᵀX·G with G = (XᵀX + Λ)⁻¹, which is σ̂²(XᵀX)⁻¹ when λ = 0. Ridge intervals
+# are conditional on λ and centred on a biased estimate; they quantify variance only.
+export function calibAffineUncertainty(
+    values: ptr<f64>,
+    split: CalibSplit,
+    model: CalibAffine,
+    lambda: f64
+) -> CalibUncertainty {
+    let zero: CalibCovariance = CalibCovariance { caa: 0.0, cab: 0.0, cac: 0.0, cbb: 0.0, cbc: 0.0, ccc: 0.0 }
+    let nan: f64 = 0.0 / 0.0
+    let fail: CalibUncertainty = CalibUncertainty {
+        coefficients: model, covariance: zero, residualSigma: nan, degreesOfFreedom: 0,
+        standardErrorA: nan, standardErrorB: nan, standardErrorC: nan, tCritical: nan,
+        halfWidthA: nan, halfWidthB: nan, halfWidthC: nan, ok: false
+    }
+    if lambda < 0.0 or not calFinite(lambda) {
+        return fail
+    }
+    let n: CalibNormal = calibNormalEquations(values, split)
+    let dof: i32 = split.trainCount - 3
+    if not n.ok or dof <= 0 {
+        return fail
+    }
+    let mut inv: array<CalibCovariance, 1> = [zero]
+    if not calibInvertSym3(n.s00, n.s01, n.s02, n.s11 + lambda, n.s12, n.s22 + lambda, &inv[0]) {
+        return fail
+    }
+    let g: CalibCovariance = inv[0]
+    let mut rss: f64 = 0.0
+    for i in 0 to split.trainCount {
+        let e: f64 = calibAffineEval(model, values[i * 3], values[i * 3 + 1]) - values[i * 3 + 2]
+        rss = rss + e * e
+    }
+    let s2: f64 = rss / (dof as f64)
+    # H = XᵀX; P = G·H; Cov = s²·P·G (symmetric).
+    let p00: f64 = g.caa * n.s00 + g.cab * n.s01 + g.cac * n.s02
+    let p01: f64 = g.caa * n.s01 + g.cab * n.s11 + g.cac * n.s12
+    let p02: f64 = g.caa * n.s02 + g.cab * n.s12 + g.cac * n.s22
+    let p10: f64 = g.cab * n.s00 + g.cbb * n.s01 + g.cbc * n.s02
+    let p11: f64 = g.cab * n.s01 + g.cbb * n.s11 + g.cbc * n.s12
+    let p12: f64 = g.cab * n.s02 + g.cbb * n.s12 + g.cbc * n.s22
+    let p20: f64 = g.cac * n.s00 + g.cbc * n.s01 + g.ccc * n.s02
+    let p21: f64 = g.cac * n.s01 + g.cbc * n.s11 + g.ccc * n.s12
+    let p22: f64 = g.cac * n.s02 + g.cbc * n.s12 + g.ccc * n.s22
+    let cov: CalibCovariance = CalibCovariance {
+        caa: s2 * (p00 * g.caa + p01 * g.cab + p02 * g.cac),
+        cab: s2 * (p00 * g.cab + p01 * g.cbb + p02 * g.cbc),
+        cac: s2 * (p00 * g.cac + p01 * g.cbc + p02 * g.ccc),
+        cbb: s2 * (p10 * g.cab + p11 * g.cbb + p12 * g.cbc),
+        cbc: s2 * (p10 * g.cac + p11 * g.cbc + p12 * g.ccc),
+        ccc: s2 * (p20 * g.cac + p21 * g.cbc + p22 * g.ccc)
+    }
+    let t: f64 = calibStudentT975(dof)
+    let sa: f64 = sqrt(cov.caa)
+    let sb: f64 = sqrt(cov.cbb)
+    let sc: f64 = sqrt(cov.ccc)
+    if not calFinite(sa) or not calFinite(sb) or not calFinite(sc) {
+        return fail
+    }
+    return CalibUncertainty {
+        coefficients: model, covariance: cov, residualSigma: sqrt(s2), degreesOfFreedom: dof,
+        standardErrorA: sa, standardErrorB: sb, standardErrorC: sc, tCritical: t,
+        halfWidthA: t * sa, halfWidthB: t * sb, halfWidthC: t * sc, ok: true
+    }
+}
+
+# Confidence (mean surface) and prediction (new observation) intervals at (x, y).
+export function calibAffineInterval(u: CalibUncertainty, x: f64, y: f64) -> CalibInterval {
+    let c: CalibCovariance = u.covariance
+    let varMean: f64 = c.caa + x * x * c.cbb + y * y * c.ccc + 2.0 * x * c.cab + 2.0 * y * c.cac + 2.0 * x * y * c.cbc
+    let mut vm: f64 = varMean
+    if vm < 0.0 {
+        vm = 0.0
+    }
+    let seMean: f64 = sqrt(vm)
+    let sePred: f64 = sqrt(vm + u.residualSigma * u.residualSigma)
+    return CalibInterval {
+        value: calibAffineEval(u.coefficients, x, y),
+        meanStandardError: seMean,
+        predictionStandardError: sePred,
+        confidenceHalfWidth: u.tCritical * seMean,
+        predictionHalfWidth: u.tCritical * sePred
+    }
 }
