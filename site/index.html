@@ -3,18 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#07131d">
+  <meta name="theme-color" content="#e8edf2">
   <meta name="description" content="Herbie Vehicle Dynamics Laboratory. Interactive Three.js full-car visualization with seven-coordinate coupled suspension, four wheel loads and real-time physics telemetry.">
-  <title>Herbie | Vehicle Dynamics Laboratory</title>
+  <title>Herbie | Vehicle Engineering Workbench</title>
   <link rel="stylesheet" href="./styles.css">
-  <style>
-    html{background:#07131d;color:#e6f3f5;font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-    body{margin:0} .lab{width:min(1660px,calc(100% - 48px));margin:auto}
-    #viewport3d{height:100%;width:100%;position:absolute;inset:0}
-    #viewport3d canvas{width:100%;height:100%;display:block}
-    .viewport{position:relative;min-height:620px;background:#0c1825;overflow:hidden}
-    .render-error{display:flex;align-items:center;justify-content:center;padding:40px;max-width:500px;margin:auto;min-height:550px;text-align:center;color:#b7cad3}
-  </style>
   <script type="importmap">
     {
       "imports": {
@@ -26,18 +18,22 @@
 </head>
 <body>
 <header class="topbar">
-  <div class="lab nav-inner">
-    <a class="identity" href="./" aria-label="Herbie vehicle laboratory"><span class="identity-logo">H<span class="identity-spark"></span></span><span><strong>HERBIE</strong><small>VEHICLE DYNAMICS LAB</small></span></a>
-    <nav aria-label="Site sections"><a href="#lab">Simulator</a><a href="#corners">Suspension</a><a href="#manufacturing">Tolerances</a><a href="#method">Methods</a><a href="https://github.com/flooooooooooow/herbie" target="_blank" rel="noopener">GitHub <span aria-hidden="true">↗</span></a></nav>
-    <div class="build-status"><span class="live-dot"></span> PHYSICS ENGINE <strong>RUNNING</strong></div>
-  </div>
+  <div class="titlebar"><a class="identity" href="#lab"><span class="identity-logo" aria-hidden="true">H</span><strong>Herbie</strong><span class="product-name">Vehicle Engineering Workbench</span></a><span class="edition">Development model · Browser solver</span><a class="source-link" href="https://github.com/flooooooooooow/herbie" target="_blank" rel="noopener">Source ↗</a></div>
+  <nav class="workspace-tabs" aria-label="Workspaces"><a href="#lab" data-workspace-link="vehicle" aria-current="page">Vehicle dynamics</a><a href="#manufacturing" data-workspace-link="manufacturing">Manufacturing</a><a href="#method" data-workspace-link="method">Model documentation</a></nav>
+  <div class="toolstrip" aria-label="Simulation toolbar"><div class="tool-group"><div class="tool-buttons"><div class="heading-buttons"><button id="toggle" class="button accent" type="button">Pause simulation <span aria-hidden="true">Ⅱ</span></button><button id="reset" class="button" type="button">Reset <span aria-hidden="true">↺</span></button></div></div><span class="tool-label">Simulation</span></div><div class="tool-group"><div class="tool-buttons"><button type="button" class="button" data-view="overview">Isometric</button><button type="button" class="button" data-view="side">Side</button><button type="button" class="button" data-view="top">Top</button></div><span class="tool-label">Vehicle view</span></div><div class="tool-group"><div class="tool-buttons"><button class="button" id="csv" type="button">Export CSV</button><a class="button" href="#signals">Signals</a></div><span class="tool-label">Results</span></div><div class="build-status" role="status"><span class="live-dot"></span><strong id="solver-status">Running</strong><span>Fixed step: 10 ms</span></div></div>
 </header>
 <main class="lab">
-  <section class="heading">
-    <div><p class="kicker">HERBIE / VEHICLE TESTING ENVIRONMENT <span class="kicker-number">001 — DEVELOPMENT BUILD</span></p><h1>Engineering the <em>whole car.</em></h1>
-    <p class="lede">A real-time, inspectable vehicle assembly. See how the sprung chassis, four unsprung corners, damping, tyre contact, powertrain and road inputs affect each other.</p></div>
-    <div class="heading-buttons"><button id="toggle" class="button accent" type="button">Pause simulation <span aria-hidden="true">Ⅱ</span></button><button id="reset" class="button" type="button">Reset <span aria-hidden="true">↺</span></button></div>
-  </section>
+  <div class="workbench">
+    <aside class="explorer" aria-label="Model explorer"><div class="dock-title">Model explorer</div><div class="tree-heading">PROJECT / HERBIE</div><nav class="model-tree" aria-label="Model navigation">
+    <a href="#lab" class="tree-root" data-workspace-link="vehicle">Vehicle assembly</a>
+    <a href="#lab" data-view="overview">Sprung body / chassis</a>
+    <div class="tree-heading">Suspension</div>
+    <a href="#lab" data-view="fl">Front left (FL)</a><a href="#lab" data-view="fr">Front right (FR)</a><a href="#lab" data-view="rl">Rear left (RL)</a><a href="#lab" data-view="rr">Rear right (RR)</a>
+    <div class="tree-heading">Results</div><a href="#corners">Wheel loads &amp; travel</a><a href="#signals">Time-domain signals</a>
+    <div class="tree-heading">Studies</div><a href="#manufacturing" data-workspace-link="manufacturing">Bore / shaft tolerance</a><a href="#method" data-workspace-link="method">Model assumptions</a>
+    </nav><div class="explorer-meta"><strong>Model configuration</strong><span>7 ride coordinates</span><span>14 first-order ride states</span><span>Reduced-order powertrain</span><span>SI units</span></div></aside>
+    <div class="workspace" data-workspace="vehicle">
+    <div class="document-title"><span>Vehicle assembly</span><small>Full-car ride model / Live simulation</small></div>
   <section class="telemetry-strip" aria-label="Real-time system metrics">
     <div><span class="metric-label">SPEED</span><strong id="speed">0.0 <small>km/h</small></strong><p>Longitudinal chassis</p></div>
     <div><span class="metric-label">ENGINE</span><strong id="rpm">850 <small>rpm</small></strong><p id="gear">Automatic · 1st gear</p></div>
@@ -46,12 +42,12 @@
     <div><span class="metric-label">ENGINE HEAT</span><strong id="temperature">24.0 <small>°C</small></strong><p id="power">0.0 kW mechanical</p></div>
     <div><span class="metric-label">SIMULATION</span><strong id="elapsed">0.0 <small>s</small></strong><p>Fixed step · 10 ms</p></div>
   </section>
-  <section class="lab-frame" id="lab">
+  <div class="vehicle-grid" id="lab"><div class="vehicle-content"><section class="lab-frame">
     <div class="visual-panel">
       <div class="viewport" aria-label="3D car visualization and independent four-wheel suspension">
         <div id="viewport3d"></div>
-        <div class="scene-overlay scene-label"><div class="eyebrow"><span class="live-dot"></span> LIVE STRUCTURAL VIEW</div><strong>Full vehicle assembly</strong><span>Drag to orbit · scroll to zoom · select a suspension corner</span></div>
-        <div class="scene-overlay scene-modes"><button type="button" data-view="overview" class="active">ISO</button><button type="button" data-view="side">SIDE</button><button type="button" data-view="top">TOP</button><button type="button" data-view="fl">FRONT L</button><button type="button" data-view="rr">REAR R</button></div>
+        <div class="scene-overlay scene-label"><div class="eyebrow">VEHICLE VIEW</div><strong>Full vehicle assembly</strong><span>Drag to orbit · scroll to zoom · select a suspension corner</span></div>
+        <div class="scene-overlay scene-modes"><button type="button" data-view="overview" class="active">ISO</button><button type="button" data-view="side">SIDE</button><button type="button" data-view="top">TOP</button><button type="button" data-view="fl">FL</button><button type="button" data-view="fr">FR</button><button type="button" data-view="rl">RL</button><button type="button" data-view="rr">RR</button></div>
         <div class="scene-overlay scene-options"><label class="toggle-label"><input id="cutaway" type="checkbox" checked> Cutaway shell</label><label class="toggle-label"><input id="forces" type="checkbox" checked> Contact forces</label></div>
         <div class="viewport-footer"><span><span class="cyan-circle"></span> TRANSLATIONAL + ROTATIONAL RIDE RESPONSE</span><span>7 DISPLACEMENTS · 14 FIRST-ORDER STATES</span></div>
         <div class="render-error" id="render-error" hidden role="status"></div>
@@ -61,8 +57,21 @@
         <div class="inspector-value"><strong id="inspector-value">4 <small>corners</small></strong><span id="inspector-caption">Coupled across one sprung body</span></div>
       </div>
     </div>
-    <aside class="control-panel" aria-label="Vehicle and road parameter controls">
-      <div class="panel-top"><div><span class="eyebrow">02 / TEST VARIABLES</span><h2>Driver &amp; chassis</h2></div><span class="capsule">LIVE INPUT</span></div>
+
+  </section>
+  <section class="section-head" id="corners"><div><h2>Wheel loads &amp; suspension travel</h2></div><div class="small-key">Load bars: 0–8,000 N</div></section>
+  <section class="corners-grid" aria-label="Four independent suspension corners">
+    <button type="button" class="corner-card" data-corner="fl"><div class="corner-head"><span>01 / FRONT LEFT</span><strong>FL <span>↗</span></strong></div><div class="corner-big"><strong id="fl-travel">0.0</strong><small>mm travel</small></div><div class="corner-mini">TYRE LOAD <strong id="fl-load">0 N</strong></div><div class="load-track"><div id="fl-bar"></div></div><span class="contact" id="fl-contact">CONTACT</span></button>
+    <button type="button" class="corner-card" data-corner="fr"><div class="corner-head"><span>02 / FRONT RIGHT</span><strong>FR <span>↗</span></strong></div><div class="corner-big"><strong id="fr-travel">0.0</strong><small>mm travel</small></div><div class="corner-mini">TYRE LOAD <strong id="fr-load">0 N</strong></div><div class="load-track"><div id="fr-bar"></div></div><span class="contact" id="fr-contact">CONTACT</span></button>
+    <button type="button" class="corner-card" data-corner="rl"><div class="corner-head"><span>03 / REAR LEFT</span><strong>RL <span>↗</span></strong></div><div class="corner-big"><strong id="rl-travel">0.0</strong><small>mm travel</small></div><div class="corner-mini">TYRE LOAD <strong id="rl-load">0 N</strong></div><div class="load-track"><div id="rl-bar"></div></div><span class="contact" id="rl-contact">CONTACT</span></button>
+    <button type="button" class="corner-card" data-corner="rr"><div class="corner-head"><span>04 / REAR RIGHT</span><strong>RR <span>↗</span></strong></div><div class="corner-big"><strong id="rr-travel">0.0</strong><small>mm travel</small></div><div class="corner-mini">TYRE LOAD <strong id="rr-load">0 N</strong></div><div class="load-track"><div id="rr-bar"></div></div><span class="contact" id="rr-contact">CONTACT</span></button>
+  </section>
+  <section class="analysis-grid" id="signals">
+    <div class="graph-panel"><div class="panel-top"><div><span class="eyebrow">Signal inspector</span><h2>Time-domain telemetry</h2></div><span class="capsule">30 s window</span></div><canvas id="graph" width="800" height="290" aria-label="Vehicle heave and suspension wheel travel graph"></canvas><div class="legend"><span><i></i> Heave [mm]</span><span><i class="orange"></i> FL travel [mm]</span><span><i class="purple"></i> RR travel [mm]</span></div></div>
+    <div class="graph-panel"><div class="panel-top"><div><span class="eyebrow">Workspace variables</span><h2>Subsystem readouts</h2></div></div><div class="subsystem-grid"><div><span>SPRUNG MASS</span><strong>1,316 <small>kg</small></strong></div><div><span>UNSPRUNG MASS</span><strong>164 <small>kg</small></strong></div><div><span>FRONT SPRING</span><strong id="spring-k">29.0 <small>kN/m</small></strong></div><div><span>FRONT DAMPER</span><strong id="damper-c">2.25 <small>kN·s/m</small></strong></div><div><span>LONGITUDINAL G</span><strong id="long-g">0.00 <small>g</small></strong></div><div><span>LATERAL G</span><strong id="lat-g">0.00 <small>g</small></strong></div></div><p class="mini-disclaimer">Representative vehicle parameters, not a calibrated production vehicle. No nonlinear double-wishbone constraint solution or validated road test data.</p></div>
+  </section>
+</div>    <aside class="control-panel" aria-label="Vehicle and road parameter controls">
+      <div class="panel-top"><div><span class="eyebrow">Vehicle configuration</span><h2>Parameter editor</h2></div><span class="capsule">LIVE INPUT</span></div>
       <div class="control-group">
         <h3>POWERTRAIN</h3>
         <label for="throttle">Throttle <output id="throttle-value">38%</output></label><input type="range" id="throttle" min="0" max="100" value="38">
@@ -82,27 +91,15 @@
         <label for="grade">Road inclination <output id="grade-value">0°</output></label><input type="range" id="grade" min="-8" max="8" value="0">
       </div>
       <div class="scenario-block"><h3>ENGINEERING SCENARIOS</h3><div class="scenario-buttons"><button data-preset="rough" type="button" class="active">Uneven road</button><button data-preset="brake" type="button">Hard braking</button><button data-preset="corner" type="button">Cornering</button><button data-preset="launch" type="button">Acceleration</button><button data-preset="rest" type="button">Equilibrium</button></div></div>
-      <button class="export" id="csv" type="button">Export telemetry as CSV <span aria-hidden="true">↗</span></button>
-    </aside>
-  </section>
-  <section class="section-head" id="corners"><div><p class="eyebrow">03 / FOUR-CORNER DYNAMICS</p><h2>Every wheel. Independently resolved.</h2><p>Individual wheel travel, tyre normal load and contact states are driven by the same coupled sprung chassis.</p></div><div class="small-key"><i></i> Nominal static wheel load <span>VS</span> <i class="amber"></i> Instantaneous load</div></section>
-  <section class="corners-grid" aria-label="Four independent suspension corners">
-    <button type="button" class="corner-card" data-corner="fl"><div class="corner-head"><span>01 / FRONT LEFT</span><strong>FL <span>↗</span></strong></div><div class="corner-big"><strong id="fl-travel">0.0</strong><small>mm travel</small></div><div class="corner-mini">TYRE LOAD <strong id="fl-load">0 N</strong></div><div class="load-track"><div id="fl-bar"></div></div><span class="contact" id="fl-contact">CONTACT</span></button>
-    <button type="button" class="corner-card" data-corner="fr"><div class="corner-head"><span>02 / FRONT RIGHT</span><strong>FR <span>↗</span></strong></div><div class="corner-big"><strong id="fr-travel">0.0</strong><small>mm travel</small></div><div class="corner-mini">TYRE LOAD <strong id="fr-load">0 N</strong></div><div class="load-track"><div id="fr-bar"></div></div><span class="contact" id="fr-contact">CONTACT</span></button>
-    <button type="button" class="corner-card" data-corner="rl"><div class="corner-head"><span>03 / REAR LEFT</span><strong>RL <span>↗</span></strong></div><div class="corner-big"><strong id="rl-travel">0.0</strong><small>mm travel</small></div><div class="corner-mini">TYRE LOAD <strong id="rl-load">0 N</strong></div><div class="load-track"><div id="rl-bar"></div></div><span class="contact" id="rl-contact">CONTACT</span></button>
-    <button type="button" class="corner-card" data-corner="rr"><div class="corner-head"><span>04 / REAR RIGHT</span><strong>RR <span>↗</span></strong></div><div class="corner-big"><strong id="rr-travel">0.0</strong><small>mm travel</small></div><div class="corner-mini">TYRE LOAD <strong id="rr-load">0 N</strong></div><div class="load-track"><div id="rr-bar"></div></div><span class="contact" id="rr-contact">CONTACT</span></button>
-  </section>
-  <section class="analysis-grid">
-    <div class="graph-panel"><div class="panel-top"><div><span class="eyebrow">04 / SYSTEM RESPONSE</span><h2>Time-domain telemetry</h2></div><span class="capsule">LIVE TRACE</span></div><canvas id="graph" width="800" height="290" aria-label="Vehicle heave and suspension wheel travel graph"></canvas><div class="legend"><span><i></i> Heave [mm]</span><span><i class="orange"></i> FL travel [mm]</span><span><i class="purple"></i> RR travel [mm]</span></div></div>
-    <div class="graph-panel"><div class="panel-top"><div><span class="eyebrow">05 / ENERGY &amp; MOTION</span><h2>Subsystem readouts</h2></div></div><div class="subsystem-grid"><div><span>SPRUNG MASS</span><strong>1,316 <small>kg</small></strong></div><div><span>UNSPRUNG MASS</span><strong>164 <small>kg</small></strong></div><div><span>FRONT SPRING</span><strong id="spring-k">29.0 <small>kN/m</small></strong></div><div><span>FRONT DAMPER</span><strong id="damper-c">2.25 <small>kN·s/m</small></strong></div><div><span>LONGITUDINAL G</span><strong id="long-g">0.00 <small>g</small></strong></div><div><span>LATERAL G</span><strong id="lat-g">0.00 <small>g</small></strong></div></div><p class="mini-disclaimer">Representative vehicle parameters, not a calibrated production vehicle. No nonlinear double-wishbone constraint solution or validated road test data.</p></div>
-  </section>
+    </aside></div></div>
+    <div class="workspace" data-workspace="manufacturing" hidden><div class="document-title"><span>Manufacturing analysis</span><small>Dimensional engineering / Bore–shaft fit</small></div>
   <section class="manufacturing-section" id="manufacturing">
-    <div class="section-head"><div><p class="eyebrow">06 / DIMENSIONAL ENGINEERING</p><h2>Assembly tolerance studio.</h2><p>Bore/shaft fit with worst-case limits, differential thermal expansion and reproducible Monte Carlo samples.</p></div></div>
+    <div class="section-head"><div><p class="eyebrow">06 / DIMENSIONAL ENGINEERING</p><h2>Bore / shaft fit analysis</h2><p>Bore/shaft fit with worst-case limits, differential thermal expansion and reproducible Monte Carlo samples.</p></div></div>
     <div class="tolerance-layout"><div class="fit-control"><label for="tolerance">Tolerance multiplier <output id="tolerance-value">1.00×</output></label><input type="range" id="tolerance" min="25" max="300" value="100"><label for="heat">Temperature differential <output id="heat-value">0°C</output></label><input type="range" id="heat" min="-40" max="140" value="0"><div class="fit-values"><div><small>WORST-CASE CLEARANCE</small><strong id="range-value">0.030–0.170 mm</strong></div><div><small>SAMPLED PASS RATE</small><strong id="pass-value">--</strong></div><div><small>SAMPLED Cpk</small><strong id="cpk-value">--</strong></div></div></div><div><canvas id="histogram" width="900" height="340" aria-label="Assembly fit tolerance sample distribution"></canvas><p class="mini-disclaimer" id="sample-note">Synthetic sample, not measured process capability.</p></div></div>
   </section>
-  <section id="method" class="method-section"><div class="eyebrow">ENGINEERING TRANSPARENCY</div><h2>Simulating a car is not the same as validating one.</h2><p>This is a <strong>seven-coordinate coupled ride model</strong>: body heave, body pitch, body roll and four independent wheel vertical displacements, each with velocity. A separate longitudinal / yaw / engine / thermal model supplies driving and steering inputs. The 3D suspension geometry is an explanatory linkage visualization, not a solved rigid-body multibody constraint system.</p><p>Road inputs, tire normal contact clipping, suspension parameters, and vehicle dimensions are illustrative. The engine, tyres, braking and thermal components remain reduced-order. True suspension engineering requires measured hardpoints, nonlinear kinematics and compliance, bushings, bump stops, geometry, load transfer calibration, contact and external test data. Flow-native units and equation tests are tracked in the source repository.</p><a href="https://github.com/flooooooooooow/herbie/tree/main/docs" target="_blank" rel="noopener">Read the model and validation notes ↗</a></section>
-</main>
-<footer><div class="lab footer-inner"><strong>HERBIE.</strong><span>ENGINEERING FIRST · FLOW NATIVE PHYSICS PROGRAMME</span><a href="https://github.com/flooooooooooow/herbie">VIEW SOURCE ↗</a></div></footer>
+</div><div class="workspace" data-workspace="method" hidden><div class="document-title"><span>Model documentation</span><small>Assumptions and validation scope</small></div><section id="method" class="method-section"><div class="eyebrow">ENGINEERING TRANSPARENCY</div><h2>Model scope and validation</h2><p>This is a <strong>seven-coordinate coupled ride model</strong>: body heave, body pitch, body roll and four independent wheel vertical displacements, each with velocity. A separate longitudinal / yaw / engine / thermal model supplies driving and steering inputs. The 3D suspension geometry is an explanatory linkage visualization, not a solved rigid-body multibody constraint system.</p><p>Road inputs, tire normal contact clipping, suspension parameters, and vehicle dimensions are illustrative. The engine, tyres, braking and thermal components remain reduced-order. True suspension engineering requires measured hardpoints, nonlinear kinematics and compliance, bushings, bump stops, geometry, load transfer calibration, contact and external test data. Flow-native units and equation tests are tracked in the source repository.</p><a href="https://github.com/flooooooooooow/herbie/tree/main/docs" target="_blank" rel="noopener">Read the model and validation notes ↗</a></section>
+</div></div></main>
+<footer class="statusbar"><span>Herbie / Development model</span><span>SI units · Fixed-step simulation · Illustrative parameters</span><span>Flow physics programme</span></footer>
 <script type="module" src="./app.js"></script>
 </body>
 </html>
