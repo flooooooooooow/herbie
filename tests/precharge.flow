@@ -1,0 +1,197 @@
+# HV pre-charge: exact RC exponential, completion time τ·ln(1/(1−k)), closed-form resistor
+# energy and energy balance, step-size independence, and each sequence fault.
+
+import herbie.precharge {
+    PrechargeConfig, PrechargeState, PrechargeResult,
+    prechargeConfigOk, prechargeOpen, prechargeTimeConstant, prechargeFinalVoltage,
+    prechargeStart, prechargeStep
+}
+
+function near(a: f64, b: f64, eps: f64) -> bool {
+    return a >= b - eps and a <= b + eps
+}
+
+function baseConfig() -> PrechargeConfig {
+    # 50 Ω into 1 mF: τ = 50 ms, 95 % at τ·ln 20 ≈ 149.8 ms.
+    return PrechargeConfig {
+        prechargeResistance: 50.0, dcLinkCapacitance: 0.001, loadResistance: 0.0,
+        completionRatio: 0.95, minimumTime: 0.02, timeout: 0.5,
+        resistorEnergyRating: 200.0, mainPathResistance: 0.05, maxClosingCurrent: 500.0
+    }
+}
+
+function runToEnd(c: PrechargeConfig, vp: f64, dt: f64) -> PrechargeState {
+    let mut s: PrechargeState = prechargeStart(prechargeOpen(), c)
+    let mut guard: i32 = 0
+    while s.phase == 1 and guard < 10000000 {
+        let r: PrechargeResult = prechargeStep(s, c, vp, dt)
+        s = r.state
+        guard = guard + 1
+    }
+    return s
+}
+
+function testNominalSequence() -> i32 {
+    let c: PrechargeConfig = baseConfig()
+    let vp: f64 = 400.0
+    if not prechargeConfigOk(c) or not near(prechargeTimeConstant(c), 0.05, 1.0e-15) {
+        return 1
+    }
+    let dt: f64 = 0.001
+    let s: PrechargeState = runToEnd(c, vp, dt)
+    if s.phase != 2 or s.fault != 0 {
+        println("FAIL nominal precharge did not close")
+        println(s.fault)
+        return 2
+    }
+    let t95: f64 = 0.05 * log(20.0)
+    if s.elapsed < t95 or s.elapsed > t95 + dt + 1.0e-12 {
+        println("FAIL completion time")
+        println(s.elapsed)
+        return 3
+    }
+    let vc: f64 = s.capacitorVoltage
+    if not near(vc, vp * (1.0 - exp(-s.elapsed / 0.05)), 1.0e-9) {
+        return 4
+    }
+    # E_R = C(Vp·Vc − ½Vc²) from a discharged link; source energy = E_R + ½CVc².
+    let expectedE: f64 = 0.001 * (vp * vc - 0.5 * vc * vc)
+    if not near(s.resistorEnergy, expectedE, 1.0e-9 * expectedE) {
+        println("FAIL resistor energy")
+        println(s.resistorEnergy)
+        println(expectedE)
+        return 5
+    }
+    let source: f64 = vp * 0.001 * vc
+    if not near(source, s.resistorEnergy + 0.5 * 0.001 * vc * vc, 1.0e-9 * source) {
+        return 6
+    }
+    # First-step current is the exact exponential decay of the Vp/R inrush.
+    let first: PrechargeResult = prechargeStep(prechargeStart(prechargeOpen(), c), c, vp, 1.0e-4)
+    if not near(first.resistorCurrent, vp / 50.0 * exp(-1.0e-4 / 0.05), 1.0e-12) {
+        return 7
+    }
+    # A closed sequence ignores further steps.
+    let after: PrechargeResult = prechargeStep(s, c, vp, dt)
+    if after.state.capacitorVoltage != s.capacitorVoltage or after.resistorCurrent != 0.0 {
+        return 8
+    }
+    return 0
+}
+
+# Exact exponential and closed-form energy: coarse and fine steps agree at the same time.
+function testStepIndependence() -> i32 {
+    let mut c: PrechargeConfig = baseConfig()
+    c = PrechargeConfig {
+        prechargeResistance: c.prechargeResistance, dcLinkCapacitance: c.dcLinkCapacitance,
+        loadResistance: 2000.0, completionRatio: 0.999, minimumTime: 0.0, timeout: 10.0,
+        resistorEnergyRating: 1.0e6, mainPathResistance: c.mainPathResistance, maxClosingCurrent: c.maxClosingCurrent
+    }
+    let vp: f64 = 380.0
+    let mut coarse: PrechargeState = prechargeStart(prechargeOpen(), c)
+    for i in 0 to 10 {
+        coarse = prechargeStep(coarse, c, vp, 0.01).state
+    }
+    let mut fine: PrechargeState = prechargeStart(prechargeOpen(), c)
+    for i in 0 to 10000 {
+        fine = prechargeStep(fine, c, vp, 1.0e-5).state
+    }
+    if coarse.phase != 1 or fine.phase != 1 {
+        return 1
+    }
+    if not near(coarse.capacitorVoltage, fine.capacitorVoltage, 1.0e-9) {
+        println("FAIL step independence voltage")
+        return 2
+    }
+    if not near(coarse.resistorEnergy, fine.resistorEnergy, 1.0e-9 * fine.resistorEnergy) {
+        println("FAIL step independence energy")
+        println(coarse.resistorEnergy)
+        println(fine.resistorEnergy)
+        return 3
+    }
+    # With a bleed load the link charges toward the Thévenin voltage with τ = (R‖Rl)·C.
+    let vth: f64 = prechargeFinalVoltage(c, vp)
+    let tau: f64 = prechargeTimeConstant(c)
+    if not near(fine.capacitorVoltage, vth * (1.0 - exp(-0.1 / tau)), 1.0e-9) {
+        return 4
+    }
+    return 0
+}
+
+function testFaults() -> i32 {
+    let vp: f64 = 400.0
+    let b: PrechargeConfig = baseConfig()
+    # Bleed load 500 Ω: Vth = 0.909·Vp never reaches 95 % → timeout.
+    let leak: PrechargeConfig = PrechargeConfig {
+        prechargeResistance: 50.0, dcLinkCapacitance: 0.001, loadResistance: 500.0,
+        completionRatio: 0.95, minimumTime: 0.02, timeout: 0.5,
+        resistorEnergyRating: 1000.0, mainPathResistance: 0.05, maxClosingCurrent: 500.0
+    }
+    let sLeak: PrechargeState = runToEnd(leak, vp, 0.001)
+    if sLeak.phase != 3 or sLeak.fault != 3 or sLeak.elapsed < 0.5 {
+        println("FAIL leak timeout")
+        return 1
+    }
+    # Missing capacitor (1 µF): τ = 50 µs completes well inside the 20 ms minimum → fault 2.
+    let noCap: PrechargeConfig = PrechargeConfig {
+        prechargeResistance: 50.0, dcLinkCapacitance: 1.0e-6, loadResistance: 0.0,
+        completionRatio: 0.95, minimumTime: 0.02, timeout: 0.5,
+        resistorEnergyRating: 200.0, mainPathResistance: 0.05, maxClosingCurrent: 500.0
+    }
+    if runToEnd(noCap, vp, 1.0e-5).fault != 2 {
+        return 2
+    }
+    # Resistor rated 50 J; reaching 95 % dissipates C(Vp·Vc − ½Vc²) ≈ 79.8 J → fault 4 before completion.
+    let weakR: PrechargeConfig = PrechargeConfig {
+        prechargeResistance: 50.0, dcLinkCapacitance: 0.001, loadResistance: 0.0,
+        completionRatio: 0.95, minimumTime: 0.02, timeout: 0.5,
+        resistorEnergyRating: 50.0, mainPathResistance: 0.05, maxClosingCurrent: 500.0
+    }
+    let sWeak: PrechargeState = runToEnd(weakR, vp, 0.001)
+    if sWeak.fault != 4 or sWeak.resistorEnergy <= 50.0 or sWeak.capacitorVoltage >= 0.95 * vp {
+        return 3
+    }
+    # Residual 5 % = 20 V across 50 mΩ is 400 A > 300 A closing limit → fault 5.
+    let hardClose: PrechargeConfig = PrechargeConfig {
+        prechargeResistance: 50.0, dcLinkCapacitance: 0.001, loadResistance: 0.0,
+        completionRatio: 0.95, minimumTime: 0.02, timeout: 0.5,
+        resistorEnergyRating: 200.0, mainPathResistance: 0.05, maxClosingCurrent: 300.0
+    }
+    if runToEnd(hardClose, vp, 0.001).fault != 5 {
+        return 4
+    }
+    # Invalid configuration latches fault 1 without stepping.
+    let bad: PrechargeConfig = PrechargeConfig {
+        prechargeResistance: 0.0, dcLinkCapacitance: b.dcLinkCapacitance, loadResistance: 0.0,
+        completionRatio: b.completionRatio, minimumTime: b.minimumTime, timeout: b.timeout,
+        resistorEnergyRating: b.resistorEnergyRating, mainPathResistance: b.mainPathResistance,
+        maxClosingCurrent: b.maxClosingCurrent
+    }
+    let sBad: PrechargeState = prechargeStart(prechargeOpen(), bad)
+    if sBad.phase != 3 or sBad.fault != 1 {
+        return 5
+    }
+    # A latched fault cannot be restarted.
+    let again: PrechargeState = prechargeStart(sLeak, b)
+    if again.phase != 3 or again.fault != 3 {
+        return 6
+    }
+    return 0
+}
+
+function main() -> i32 {
+    let a: i32 = testNominalSequence()
+    if a != 0 {
+        return 10 + a
+    }
+    let b: i32 = testStepIndependence()
+    if b != 0 {
+        return 20 + b
+    }
+    let c: i32 = testFaults()
+    if c != 0 {
+        return 30 + c
+    }
+    println("PASS precharge: RC completion, resistor energy, step independence, sequence faults")
+    return 0
+}

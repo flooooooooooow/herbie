@@ -106,6 +106,7 @@ flow run tests/meanvalue_engine.flow
 flow run examples/meanvalue_engine_demo.flow
 flow run tests/battery_pack.flow
 flow run examples/battery_pack_demo.flow
+flow run tests/precharge.flow
 flow run tests/electric_drive.flow
 flow run examples/pmsm_foc_demo.flow
 flow run tests/thermo_fluid.flow
@@ -176,7 +177,7 @@ The standalone browser has no third-party runtime CDN requirement: official Thre
 
 ## Design rules
 
-Physics stays in Flow, not a concealed Python/MATLAB backend. SI units are used throughout the initial API. Callers validate masses, geometry, material properties, positive `dt`, and solver stability limits before entering the real-time loop. State is explicit and updates are bounded by fixed arithmetic work; no file or network operations are performed within step functions. Model assumptions, analytical baselines and test results must be versioned together.
+Physics stays in Flow. There is no concealed Python/MATLAB backend. SI units are used throughout the initial API. Callers validate masses, geometry, material properties, positive `dt`, and solver stability limits before entering the real-time loop. State is explicit and updates are bounded by fixed arithmetic work; no file or network operations are performed within step functions. Model assumptions, analytical baselines and test results must be versioned together.
 
 Herbie does **not** certify any model, component, controller, vehicle or manufacturing process. Do not use these kernels to approve a physical design or drive safety-critical hardware without independently validated models, target-specific timing qualification, fault handling, and the applicable engineering safety process.
 
