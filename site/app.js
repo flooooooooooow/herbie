@@ -54,7 +54,7 @@ function setPreset(kind){
  if(!s)return;
  for(const id of ["throttle","brake","steer","spring","damper","antiroll","roughness","mu","grade"])$(id).value=s[id];
  readControls();reset(s.speed);
- for(const b of document.querySelectorAll("[data-preset]"))b.classList.toggle("active",b.dataset.preset===kind);
+ for(const b of document.querySelectorAll("[data-preset]")){const active=b.dataset.preset===kind;b.classList.toggle("active",active);b.setAttribute("aria-pressed",String(active));}
 }
 function setFocus(part){
  focus=part;
@@ -213,7 +213,7 @@ function frame(timestamp){
 }
 for(const id of sliderIds)$(id).addEventListener("input",readControls);
 for(const button of document.querySelectorAll("[data-preset]"))button.addEventListener("click",()=>setPreset(button.dataset.preset));
-for(const button of document.querySelectorAll("[data-view]"))button.addEventListener("click",()=>setFocus(button.dataset.view));
+for(const button of document.querySelectorAll("[data-view]"))button.addEventListener("click",()=>{setFocus(button.dataset.view);if(document.querySelector('[data-workspace="vehicle"]').hidden)location.hash="lab";});
 for(const button of document.querySelectorAll("[data-corner]"))button.addEventListener("click",()=>setFocus(button.dataset.corner));
 function updateRunStatus(status=running?"running":"paused"){
  const el=$("solver-status");

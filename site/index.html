@@ -47,7 +47,7 @@
       <div class="viewport" aria-label="3D car visualization and independent four-wheel suspension">
         <div id="viewport3d"></div>
         <div class="scene-overlay scene-label"><div class="eyebrow">VEHICLE VIEW</div><strong>Full vehicle assembly</strong><span>Drag to orbit · scroll to zoom · select a suspension corner</span></div>
-        <div class="scene-overlay scene-modes"><button type="button" data-view="overview" class="active">ISO</button><button type="button" data-view="side">SIDE</button><button type="button" data-view="top">TOP</button><button type="button" data-view="fl">FL</button><button type="button" data-view="fr">FR</button><button type="button" data-view="rl">RL</button><button type="button" data-view="rr">RR</button></div>
+        <div class="scene-overlay scene-modes"><button type="button" data-view="overview" class="active">ISO</button><button type="button" data-view="side">SIDE</button><button type="button" data-view="top">TOP</button><button type="button" data-view="fl" aria-label="Front left">FL</button><button type="button" data-view="fr" aria-label="Front right">FR</button><button type="button" data-view="rl" aria-label="Rear left">RL</button><button type="button" data-view="rr" aria-label="Rear right">RR</button></div>
         <div class="scene-overlay scene-options"><label class="toggle-label"><input id="cutaway" type="checkbox" checked> Cutaway shell</label><label class="toggle-label"><input id="forces" type="checkbox" checked> Contact forces</label></div>
         <div class="viewport-footer"><span><span class="cyan-circle"></span> TRANSLATIONAL + ROTATIONAL RIDE RESPONSE</span><span>7 DISPLACEMENTS · 14 FIRST-ORDER STATES</span></div>
         <div class="render-error" id="render-error" hidden role="status"></div>
@@ -90,7 +90,7 @@
         <label for="mu">Tyre / road friction <output id="mu-value">0.85 μ</output></label><input type="range" id="mu" min="15" max="130" value="85">
         <label for="grade">Road inclination <output id="grade-value">0°</output></label><input type="range" id="grade" min="-8" max="8" value="0">
       </div>
-      <div class="scenario-block"><h3>ENGINEERING SCENARIOS</h3><div class="scenario-buttons"><button data-preset="rough" type="button" class="active">Uneven road</button><button data-preset="brake" type="button">Hard braking</button><button data-preset="corner" type="button">Cornering</button><button data-preset="launch" type="button">Acceleration</button><button data-preset="rest" type="button">Equilibrium</button></div></div>
+      <div class="scenario-block"><h3>ENGINEERING SCENARIOS</h3><div class="scenario-buttons"><button data-preset="rough" type="button" aria-pressed="true" class="active">Uneven road</button><button data-preset="brake" type="button" aria-pressed="false">Hard braking</button><button data-preset="corner" type="button" aria-pressed="false">Cornering</button><button data-preset="launch" type="button" aria-pressed="false">Acceleration</button><button data-preset="rest" type="button" aria-pressed="false">Equilibrium</button></div></div>
     </aside></div></div>
     <div class="workspace" data-workspace="manufacturing" hidden><div class="document-title"><span>Manufacturing analysis</span><small>Dimensional engineering / Bore–shaft fit</small></div>
   <section class="manufacturing-section" id="manufacturing">
