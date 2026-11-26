@@ -1,0 +1,433 @@
+# @module herbie.graphgen
+# Block semantics, reference interpreter and Flow code generation for herbie.graph.
+# Each graph node carries one block: input, rational constant, rational gain, sum,
+# product or output. The emitter writes a reviewable Flow module whose step function
+# evaluates the blocks in graph schedule order, plus two header lines that carry the
+# canonical graph (graphSerialize) and block table, so generated code parses back to
+# the identical graph (graph → code → graph) and re-emits byte-identical text.
+# Parameters are rationals num/den so code and interpreter compute the same f64 bits.
+# Feedback through unit delays, continuous states and solver selection are out of scope.
+
+import "stdlib/string.flow"
+import herbie.graph {
+    GraphNode, GraphEdge, GraphView, GraphSchedule,
+    graphValidate, graphFindNode, graphSchedule, graphSerialize, graphDeserialize
+}
+
+export const GEN_OP_INPUT: i32 = 1
+export const GEN_OP_CONST: i32 = 2
+export const GEN_OP_GAIN: i32 = 3
+export const GEN_OP_SUM: i32 = 4
+export const GEN_OP_PRODUCT: i32 = 5
+export const GEN_OP_OUTPUT: i32 = 6
+
+export struct GraphBlock {
+    id: i32,
+    op: i32,
+    # Rational parameter for constants and gains (den > 0); 0/1 otherwise.
+    num: i32,
+    den: i32,
+    # Input or output slot index; 0 for other blocks.
+    port: i32
+}
+
+export struct GraphBlockView {
+    blocks: ptr<GraphBlock>,
+    count: i32
+}
+
+export struct GenWriter {
+    buf: ptr<u8>,
+    cap: i32,
+    len: i32,
+    overflow: bool
+}
+
+function genInDegree(g: GraphView, id: i32) -> i32 {
+    let mut k: i32 = 0
+    for e in 0 to g.edgeCount {
+        if g.edges[e].toId == id {
+            k = k + 1
+        }
+    }
+    return k
+}
+
+function genFindBlock(b: GraphBlockView, id: i32) -> i32 {
+    for i in 0 to b.count {
+        if b.blocks[i].id == id {
+            return i
+        }
+    }
+    return -1
+}
+
+# 0 ok; graph faults 1–5 pass through from graphValidate; 6 block table does not match the
+# nodes one-to-one; 7 wrong input count for the op (input/const: 0, gain/output: 1,
+# sum/product: ≥ 1); 8 sum inputs with different unit tags; 9 den ≤ 0 or unknown op;
+# 10 port negative or duplicated among inputs or among outputs.
+export function graphBlocksValidate(g: GraphView, b: GraphBlockView) -> i32 {
+    let gv: i32 = graphValidate(g)
+    if gv != 0 {
+        return gv
+    }
+    if b.count != g.nodeCount {
+        return 6
+    }
+    for i in 0 to b.count {
+        let blk: GraphBlock = b.blocks[i]
+        if graphFindNode(g.nodes, g.nodeCount, blk.id) < 0 {
+            return 6
+        }
+        for j in i + 1 to b.count {
+            if b.blocks[j].id == blk.id {
+                return 6
+            }
+        }
+        if blk.op < GEN_OP_INPUT or blk.op > GEN_OP_OUTPUT or blk.den <= 0 {
+            return 9
+        }
+        let k: i32 = genInDegree(g, blk.id)
+        if (blk.op == GEN_OP_INPUT or blk.op == GEN_OP_CONST) and k != 0 {
+            return 7
+        }
+        if (blk.op == GEN_OP_GAIN or blk.op == GEN_OP_OUTPUT) and k != 1 {
+            return 7
+        }
+        if (blk.op == GEN_OP_SUM or blk.op == GEN_OP_PRODUCT) and k < 1 {
+            return 7
+        }
+        if blk.op == GEN_OP_SUM {
+            let mut tag: i32 = -1
+            for e in 0 to g.edgeCount {
+                if g.edges[e].toId == blk.id {
+                    if tag >= 0 and g.edges[e].unitTag != tag {
+                        return 8
+                    }
+                    tag = g.edges[e].unitTag
+                }
+            }
+        }
+        if blk.op == GEN_OP_INPUT or blk.op == GEN_OP_OUTPUT {
+            if blk.port < 0 {
+                return 10
+            }
+            for j in i + 1 to b.count {
+                if b.blocks[j].op == blk.op and b.blocks[j].port == blk.port {
+                    return 10
+                }
+            }
+        }
+    }
+    return 0
+}
+
+function genRational(blk: GraphBlock) -> f64 {
+    return (blk.num as f64) / (blk.den as f64)
+}
+
+# Reference interpreter: evaluates blocks in schedule order. `order` and `scratch` follow
+# graphSchedule (nodeCount and 3·nodeCount i32s); `values` holds nodeCount f64s.
+export function graphEvaluate(
+    g: GraphView,
+    b: GraphBlockView,
+    inputs: ptr<f64>,
+    outputs: ptr<f64>,
+    order: ptr<i32>,
+    scratch: ptr<i32>,
+    values: ptr<f64>
+) -> i32 {
+    let v: i32 = graphBlocksValidate(g, b)
+    if v != 0 {
+        return v
+    }
+    let sched: GraphSchedule = graphSchedule(g, order, scratch)
+    if not sched.ok {
+        return sched.fault
+    }
+    for k in 0 to sched.count {
+        let id: i32 = order[k]
+        let blk: GraphBlock = b.blocks[genFindBlock(b, id)]
+        let slot: i32 = graphFindNode(g.nodes, g.nodeCount, id)
+        let mut acc: f64 = 0.0
+        let mut first: bool = true
+        if blk.op == GEN_OP_INPUT {
+            acc = inputs[blk.port]
+        } elif blk.op == GEN_OP_CONST {
+            acc = genRational(blk)
+        } else {
+            for e in 0 to g.edgeCount {
+                if g.edges[e].toId == id {
+                    let x: f64 = values[graphFindNode(g.nodes, g.nodeCount, g.edges[e].fromId)]
+                    if first {
+                        acc = x
+                        first = false
+                    } elif blk.op == GEN_OP_PRODUCT {
+                        acc = acc * x
+                    } else {
+                        acc = acc + x
+                    }
+                }
+            }
+            if blk.op == GEN_OP_GAIN {
+                acc = genRational(blk) * acc
+            }
+        }
+        values[slot] = acc
+        if blk.op == GEN_OP_OUTPUT {
+            outputs[blk.port] = acc
+        }
+    }
+    return 0
+}
+
+export function genWriterPutByte(w: ptr<GenWriter>, c: u8) -> void {
+    if w[0].len >= w[0].cap - 1 {
+        w[0].overflow = true
+        return
+    }
+    w[0].buf[w[0].len] = c
+    w[0].len = w[0].len + 1
+    w[0].buf[w[0].len] = 0 as u8
+}
+
+export function genWriterPut(w: ptr<GenWriter>, s: string) -> void {
+    let p: ptr<u8> = s as ptr<u8>
+    let mut i: i32 = 0
+    while p[i] != (0 as u8) {
+        genWriterPutByte(w, p[i])
+        i = i + 1
+    }
+}
+
+export function genWriterPutInt(w: ptr<GenWriter>, v: i32) -> void {
+    let mut tmp: array<u8, 16> = [0 as u8; 16]
+    let n: i32 = str_format_i32(&tmp[0], 16, v)
+    if n < 0 {
+        w[0].overflow = true
+        return
+    }
+    for i in 0 to n {
+        genWriterPutByte(w, tmp[i])
+    }
+}
+
+function genPutSignal(w: ptr<GenWriter>, id: i32) -> void {
+    genWriterPut(w, "s")
+    genWriterPutInt(w, id)
+}
+
+function genPutRational(w: ptr<GenWriter>, blk: GraphBlock) -> void {
+    genWriterPut(w, "(")
+    genWriterPutInt(w, blk.num)
+    genWriterPut(w, ".0 / ")
+    genWriterPutInt(w, blk.den)
+    genWriterPut(w, ".0)")
+}
+
+# Emit a Flow module named `moduleName` with `export function <fnName>(inputs, outputs)`.
+# Returns the byte length written to w (NUL-terminated), or −fault / −11 on overflow.
+export function graphEmitFlow(
+    g: GraphView,
+    b: GraphBlockView,
+    moduleName: string,
+    fnName: string,
+    w: ptr<GenWriter>,
+    order: ptr<i32>,
+    scratch: ptr<i32>,
+    serial: ptr<i32>,
+    serialCap: i32
+) -> i32 {
+    let v: i32 = graphBlocksValidate(g, b)
+    if v != 0 {
+        return -v
+    }
+    let sched: GraphSchedule = graphSchedule(g, order, scratch)
+    if not sched.ok {
+        return -sched.fault
+    }
+    let ns: i32 = graphSerialize(g, serial, serialCap)
+    if ns < 0 {
+        return -11
+    }
+    genWriterPut(w, "# @module ")
+    genWriterPut(w, moduleName)
+    genWriterPut(w, "\n# Generated by herbie.graphgen from a herbie block graph. Regenerate; do not edit.\n")
+    genWriterPut(w, "# herbie-graph v1:")
+    for i in 0 to ns {
+        genWriterPut(w, " ")
+        genWriterPutInt(w, serial[i])
+    }
+    genWriterPut(w, "\n# herbie-blocks v1: ")
+    genWriterPutInt(w, b.count)
+    for i in 0 to b.count {
+        let blk: GraphBlock = b.blocks[i]
+        genWriterPut(w, " ")
+        genWriterPutInt(w, blk.id)
+        genWriterPut(w, " ")
+        genWriterPutInt(w, blk.op)
+        genWriterPut(w, " ")
+        genWriterPutInt(w, blk.num)
+        genWriterPut(w, " ")
+        genWriterPutInt(w, blk.den)
+        genWriterPut(w, " ")
+        genWriterPutInt(w, blk.port)
+    }
+    genWriterPut(w, "\n\nexport function ")
+    genWriterPut(w, fnName)
+    genWriterPut(w, "(inputs: ptr<f64>, outputs: ptr<f64>) -> void {\n")
+    for k in 0 to sched.count {
+        let id: i32 = order[k]
+        let blk: GraphBlock = b.blocks[genFindBlock(b, id)]
+        genWriterPut(w, "    let ")
+        genPutSignal(w, id)
+        genWriterPut(w, ": f64 = ")
+        if blk.op == GEN_OP_INPUT {
+            genWriterPut(w, "inputs[")
+            genWriterPutInt(w, blk.port)
+            genWriterPut(w, "]")
+        } elif blk.op == GEN_OP_CONST {
+            genPutRational(w, blk)
+        } else {
+            if blk.op == GEN_OP_GAIN {
+                genPutRational(w, blk)
+                genWriterPut(w, " * ")
+            }
+            let mut first: bool = true
+            for e in 0 to g.edgeCount {
+                if g.edges[e].toId == id {
+                    if not first {
+                        if blk.op == GEN_OP_PRODUCT {
+                            genWriterPut(w, " * ")
+                        } else {
+                            genWriterPut(w, " + ")
+                        }
+                    }
+                    genPutSignal(w, g.edges[e].fromId)
+                    first = false
+                }
+            }
+        }
+        genWriterPut(w, "\n")
+        if blk.op == GEN_OP_OUTPUT {
+            genWriterPut(w, "    outputs[")
+            genWriterPutInt(w, blk.port)
+            genWriterPut(w, "] = ")
+            genPutSignal(w, id)
+            genWriterPut(w, "\n")
+        }
+    }
+    genWriterPut(w, "}\n")
+    if w[0].overflow {
+        return -11
+    }
+    return w[0].len
+}
+
+function genStrLen(s: string) -> i32 {
+    let p: ptr<u8> = s as ptr<u8>
+    let mut n: i32 = 0
+    while p[n] != (0 as u8) {
+        n = n + 1
+    }
+    return n
+}
+
+function genFindLine(text: string, prefix: string) -> i32 {
+    let p: ptr<u8> = text as ptr<u8>
+    let q: ptr<u8> = prefix as ptr<u8>
+    let n: i32 = genStrLen(text)
+    let m: i32 = genStrLen(prefix)
+    let mut i: i32 = 0
+    while i + m <= n {
+        if i == 0 or p[i - 1] == (10 as u8) {
+            let mut k: i32 = 0
+            while k < m and p[i + k] == q[k] {
+                k = k + 1
+            }
+            if k == m {
+                return i + m
+            }
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+# Parse the header of generated code back into nodes, edges and blocks (caller buffers).
+# Returns true only when both header lines parse fully and the graph and blocks validate.
+export function graphParseGenerated(
+    text: string,
+    serial: ptr<i32>,
+    serialCap: i32,
+    nodes: ptr<GraphNode>,
+    maxNodes: i32,
+    edges: ptr<GraphEdge>,
+    maxEdges: i32,
+    outView: ptr<GraphView>,
+    blocks: ptr<GraphBlock>,
+    maxBlocks: i32,
+    outBlocks: ptr<GraphBlockView>
+) -> bool {
+    let mut pos: i32 = genFindLine(text, "# herbie-graph v1:")
+    if pos < 0 or serialCap < 2 {
+        return false
+    }
+    let p: ptr<u8> = text as ptr<u8>
+    let mut count: i32 = 0
+    let mut need: i32 = 2
+    while count < need {
+        if count >= serialCap or p[pos] == (10 as u8) {
+            return false
+        }
+        let r: ParseI64 = str_parse_i64_at(text, pos)
+        if not r.ok {
+            return false
+        }
+        serial[count] = r.value as i32
+        count = count + 1
+        pos = r.end
+        if count == 2 {
+            need = 2 + 3 * serial[0] + 3 * serial[1]
+            if serial[0] <= 0 or serial[1] < 0 or need > serialCap {
+                return false
+            }
+        }
+    }
+    if p[pos] != (10 as u8) {
+        return false
+    }
+    if not graphDeserialize(serial, count, nodes, maxNodes, edges, maxEdges, outView) {
+        return false
+    }
+    pos = genFindLine(text, "# herbie-blocks v1:")
+    if pos < 0 {
+        return false
+    }
+    let rc: ParseI64 = str_parse_i64_at(text, pos)
+    if not rc.ok or rc.value <= 0 or rc.value > (maxBlocks as i64) {
+        return false
+    }
+    pos = rc.end
+    let bc: i32 = rc.value as i32
+    for i in 0 to bc {
+        let mut f: array<i32, 5> = [0, 0, 0, 0, 0]
+        for j in 0 to 5 {
+            if p[pos] == (10 as u8) or p[pos] == (0 as u8) {
+                return false
+            }
+            let r: ParseI64 = str_parse_i64_at(text, pos)
+            if not r.ok {
+                return false
+            }
+            f[j] = r.value as i32
+            pos = r.end
+        }
+        blocks[i] = GraphBlock { id: f[0], op: f[1], num: f[2], den: f[3], port: f[4] }
+    }
+    if p[pos] != (10 as u8) {
+        return false
+    }
+    outBlocks[0] = GraphBlockView { blocks: blocks, count: bc }
+    return graphBlocksValidate(outView[0], outBlocks[0]) == 0
+}

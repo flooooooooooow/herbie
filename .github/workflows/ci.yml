@@ -139,6 +139,8 @@ jobs:
         run: flow run tests/block_graph.flow
       - name: Run block-graph demonstration
         run: flow run examples/block_graph_demo.flow
+      - name: Verify block graph Flow code generation round trip
+        run: flow run tests/graph_codegen.flow
       - name: Run vehicle demo
         run: flow run examples/quarter_car_demo.flow
       - name: Run manufacturing demo
