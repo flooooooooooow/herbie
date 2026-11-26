@@ -24,6 +24,7 @@ src/
   driveline.flow     Pendulum, torsional shaft, differential, clutch
   motors.flow        Coupled armature/rotor DC motor
   drive.flow         Clarke/Park, salient PMSM, averaged inverter, FOC
+  pwm.flow           Switched two-level SVPWM inverter, carrier compare, PWM timebase gate
   battery.flow       Thevenin RC battery and SOC
   pack.flow          Ns×Np pack, BMS limits, heating/thermal, SOH input
   maps.flow          Clamped bilinear lookup for calibrated models
