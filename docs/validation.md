@@ -86,14 +86,22 @@ Visual authoring UI, Flow module codegen, graph↔code round-trip text and nativ
 - MAD outlier gate removes planted spike; golden-section recovers slope=2
 - CSV fixture `tests/scenarios/torque_surface.csv` recovers T=20+30x+80y after outlier reject
 
-DOE planners, multi-map fitting with regularization catalogs, and full uncertainty-of-fit reporting remain open under [#17](https://github.com/flooooooooooow/herbie/issues/17).
+`tests/calibration_uncertainty.flow` checks ridge fitting and fit uncertainty in `herbie.calibrate`:
+
+- Ridge with λ = 0 reproduces the OLS report; on a centred orthogonal design the slopes follow the closed form Sxz/(Sxx + λ) with an unpenalised intercept and shrink monotonically; a collinear x = y design is singular for OLS and solvable with λ > 0
+- Student-t 95 % critical values match published quantiles (table for ν ≤ 30, Cornish-Fisher expansion above)
+- A replicated 2² factorial with interaction-pattern residuals gives the exact σ̂² = 8d²/5, SE = σ̂/√8, zero cross-covariance, the ridge sandwich Var(b) = σ̂²·8/(8 + λ)², and closed-form confidence and prediction standard errors
+- Validation rows do not change σ̂ or the covariance (no leakage); three training rows leave no residual degrees of freedom and are rejected
+- 2000 seeded noisy fits: 95 % intervals for the slope and for a new observation each cover the truth in 95.25 % and 95.2 % of trials
+
+DOE planners, multi-map fitting with regularization catalogs, physical-constraint fitting and interpolation error bounds remain open under [#17](https://github.com/flooooooooooow/herbie/issues/17).
 
 ## Thermo-fluid / cooling loop (issue #16)
 
 `tests/thermo_fluid.flow` checks:
 
 - Hagen–Poiseuille Δp, orifice √(2Δp/ρ) with sign, linear pump shutoff
-- Analytic pump–pipe operating point (Q and Δp match)
+- Analytic pump-pipe operating point (Q and Δp match)
 - Hydraulic volume integration; balanced ε-NTU = NTU/(1+NTU); closed-loop T = Tamb + Q/UA
 - Coolant node transient converges to the steady radiator balance
 
