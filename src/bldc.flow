@@ -1,0 +1,199 @@
+# @module herbie.bldc
+# Brushless DC motor with trapezoidal back-EMF and Hall-sensor six-step commutation.
+#
+# Phase back-EMF e_x = ke·ω·f(θe − φx) with φ = 0°, 120°, 240° and the trapezoid f:
+# rising 0 → 1 over 0–30°, flat 1 over 30–150°, falling 1 → −1 over 150–210°, flat −1
+# over 210–330°, rising −1 → 0 over 330–360°. Hall sensors are aligned to the commutation
+# points: H_A is high for θe ∈ [30°, 210°), H_B for [150°, 330°), H_C for [270°, 90°).
+# In each 60° sector two phases conduct (120° conduction), both inside their EMF flat
+# tops. With the PWM-averaged line voltage d·Vdc across the conducting pair:
+#   d·Vdc = 2R·i + 2L·di/dt + (e_h − e_l),  T = ke·(f_h − f_l)·i,  J·ω̇ = T − b·ω − T_load.
+# Commutation is ideal: the loop current carries over to the next pair and the floating
+# phase carries no current (no commutation transient or freewheeling-diode interval).
+# L is the per-phase inductance L_s − M. ω is mechanical; θe = p·θm.
+
+export struct BldcParameters {
+    phaseResistance: f64,
+    phaseInductance: f64,
+    # Per-phase back-EMF constant at the flat top, V per mechanical rad/s (equals N·m/A per phase).
+    backEmfConstant: f64,
+    polePairs: f64,
+    rotorInertia: f64,
+    viscousDamping: f64
+}
+
+export struct BldcState {
+    current: f64,
+    mechanicalSpeed: f64,
+    electricalAngle: f64
+}
+
+export struct BldcSector {
+    # Conducting high and low phases (0 = a, 1 = b, 2 = c); sector −1 for an invalid Hall code.
+    sector: i32,
+    highPhase: i32,
+    lowPhase: i32
+}
+
+export struct BldcResult {
+    state: BldcState,
+    torque: f64,
+    sector: i32,
+    fault: i32
+}
+
+const BLDC_PI: f64 = 3.141592653589793
+
+function bldcWrap(theta: f64) -> f64 {
+    let twoPi: f64 = 2.0 * BLDC_PI
+    let mut t: f64 = theta
+    while t >= twoPi {
+        t = t - twoPi
+    }
+    while t < 0.0 {
+        t = t + twoPi
+    }
+    return t
+}
+
+# Normalised trapezoidal back-EMF shape for one phase at electrical angle θ.
+export function bldcEmfShape(theta: f64) -> f64 {
+    let d: f64 = bldcWrap(theta) * 180.0 / BLDC_PI
+    if d < 30.0 {
+        return d / 30.0
+    }
+    if d < 150.0 {
+        return 1.0
+    }
+    if d < 210.0 {
+        return 1.0 - (d - 150.0) / 30.0
+    }
+    if d < 330.0 {
+        return -1.0
+    }
+    return -1.0 + (d - 330.0) / 30.0
+}
+
+export function bldcPhaseShape(theta: f64, phase: i32) -> f64 {
+    return bldcEmfShape(theta - (phase as f64) * 2.0 * BLDC_PI / 3.0)
+}
+
+function bldcIn(d: f64, lo: f64, hi: f64) -> bool {
+    if lo < hi {
+        return d >= lo and d < hi
+    }
+    return d >= lo or d < hi
+}
+
+# Hall code bit2 = H_A, bit1 = H_B, bit0 = H_C.
+export function bldcHallCode(theta: f64) -> i32 {
+    let d: f64 = bldcWrap(theta) * 180.0 / BLDC_PI
+    let mut code: i32 = 0
+    if bldcIn(d, 30.0, 210.0) {
+        code = code + 4
+    }
+    if bldcIn(d, 150.0, 330.0) {
+        code = code + 2
+    }
+    if bldcIn(d, 270.0, 90.0) {
+        code = code + 1
+    }
+    return code
+}
+
+# Six-step table: sector 0 starts at 30° (a+, b−) and advances every 60°.
+export function bldcSectorFromHall(code: i32) -> BldcSector {
+    if code == 5 {
+        return BldcSector { sector: 0, highPhase: 0, lowPhase: 1 }
+    }
+    if code == 4 {
+        return BldcSector { sector: 1, highPhase: 0, lowPhase: 2 }
+    }
+    if code == 6 {
+        return BldcSector { sector: 2, highPhase: 1, lowPhase: 2 }
+    }
+    if code == 2 {
+        return BldcSector { sector: 3, highPhase: 1, lowPhase: 0 }
+    }
+    if code == 3 {
+        return BldcSector { sector: 4, highPhase: 2, lowPhase: 0 }
+    }
+    if code == 1 {
+        return BldcSector { sector: 5, highPhase: 2, lowPhase: 1 }
+    }
+    return BldcSector { sector: -1, highPhase: -1, lowPhase: -1 }
+}
+
+export function bldcParametersOk(p: BldcParameters) -> bool {
+    return p.phaseResistance > 0.0 and p.phaseInductance > 0.0 and p.backEmfConstant > 0.0
+        and p.polePairs > 0.0 and p.rotorInertia > 0.0 and p.viscousDamping >= 0.0
+}
+
+struct BldcDeriv {
+    di: f64,
+    dw: f64,
+    dth: f64
+}
+
+function bldcDeriv(s: BldcState, p: BldcParameters, sec: BldcSector, lineVoltage: f64, load: f64) -> BldcDeriv {
+    let fh: f64 = bldcPhaseShape(s.electricalAngle, sec.highPhase)
+    let fl: f64 = bldcPhaseShape(s.electricalAngle, sec.lowPhase)
+    let emf: f64 = p.backEmfConstant * s.mechanicalSpeed * (fh - fl)
+    let torque: f64 = p.backEmfConstant * (fh - fl) * s.current
+    return BldcDeriv {
+        di: (lineVoltage - 2.0 * p.phaseResistance * s.current - emf) / (2.0 * p.phaseInductance),
+        dw: (torque - p.viscousDamping * s.mechanicalSpeed - load) / p.rotorInertia,
+        dth: p.polePairs * s.mechanicalSpeed
+    }
+}
+
+function bldcAdd(s: BldcState, d: BldcDeriv, h: f64) -> BldcState {
+    return BldcState {
+        current: s.current + h * d.di,
+        mechanicalSpeed: s.mechanicalSpeed + h * d.dw,
+        electricalAngle: s.electricalAngle + h * d.dth
+    }
+}
+
+# One RK4 step with the sector read from the Hall code at the start of the step (held
+# for the step). duty ∈ [−1, 1]; negative duty reverses the applied line voltage.
+export function bldcStep(
+    s: BldcState,
+    p: BldcParameters,
+    dcLinkVoltage: f64,
+    duty: f64,
+    loadTorque: f64,
+    dt: f64
+) -> BldcResult {
+    if dt <= 0.0 or not bldcParametersOk(p) or dcLinkVoltage <= 0.0 or duty < -1.0 or duty > 1.0 {
+        return BldcResult { state: s, torque: 0.0 / 0.0, sector: -1, fault: 1 }
+    }
+    let sec: BldcSector = bldcSectorFromHall(bldcHallCode(s.electricalAngle))
+    if sec.sector < 0 {
+        return BldcResult { state: s, torque: 0.0 / 0.0, sector: -1, fault: 2 }
+    }
+    let v: f64 = duty * dcLinkVoltage
+    let k1: BldcDeriv = bldcDeriv(s, p, sec, v, loadTorque)
+    let k2: BldcDeriv = bldcDeriv(bldcAdd(s, k1, 0.5 * dt), p, sec, v, loadTorque)
+    let k3: BldcDeriv = bldcDeriv(bldcAdd(s, k2, 0.5 * dt), p, sec, v, loadTorque)
+    let k4: BldcDeriv = bldcDeriv(bldcAdd(s, k3, dt), p, sec, v, loadTorque)
+    let w: f64 = dt / 6.0
+    let next: BldcState = BldcState {
+        current: s.current + w * (k1.di + 2.0 * k2.di + 2.0 * k3.di + k4.di),
+        mechanicalSpeed: s.mechanicalSpeed + w * (k1.dw + 2.0 * k2.dw + 2.0 * k3.dw + k4.dw),
+        electricalAngle: bldcWrap(s.electricalAngle + w * (k1.dth + 2.0 * k2.dth + 2.0 * k3.dth + k4.dth))
+    }
+    let fh: f64 = bldcPhaseShape(next.electricalAngle, sec.highPhase)
+    let fl: f64 = bldcPhaseShape(next.electricalAngle, sec.lowPhase)
+    return BldcResult { state: next, torque: p.backEmfConstant * (fh - fl) * next.current, sector: sec.sector, fault: 0 }
+}
+
+# Steady speed with the commutated flat-top model: ω = (d·Vdc − 2R·T/(2ke)) / (2ke + b·2R/(2ke)).
+export function bldcSteadySpeed(p: BldcParameters, dcLinkVoltage: f64, duty: f64, loadTorque: f64) -> f64 {
+    if not bldcParametersOk(p) {
+        return 0.0 / 0.0
+    }
+    let k2: f64 = 2.0 * p.backEmfConstant
+    let r2: f64 = 2.0 * p.phaseResistance
+    return (duty * dcLinkVoltage - r2 * loadTorque / k2) / (k2 + p.viscousDamping * r2 / k2)
+}
