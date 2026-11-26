@@ -127,7 +127,14 @@ Dead time, device voltage drops, conduction/switching loss maps, DC-link ripple,
 - Discharge current limit, ohmic heating raising temperature, over-temp contactor open
 - Passive balance ΔSOC drains the higher-SOC cell; no invented ageing curves
 
-Coolant network, pre-charge, Kalman SOC/SOH estimators, cycle degradation and chemistry identification remain open under [#14](https://github.com/flooooooooooow/herbie/issues/14).
+`tests/precharge.flow` checks the HV pre-charge sequence in `herbie.precharge`:
+
+- 50 Ω into 1 mF from 400 V closes the main contactor at τ·ln 20 ≈ 149.8 ms (within one step), with Vc on the exact exponential and first-step current Vp/R·e^{−dt/τ}
+- Closed-form pre-charge resistor energy equals C(Vp·Vc − ½Vc²) and the source energy Vp·C·Vc balances resistor plus stored energy
+- With a 2 kΩ bleed load, 10 ms and 10 μs steps agree on Vc and resistor energy to 10⁻⁹ (exact exponential, Thévenin τ = (R‖Rl)·C)
+- Faults: bleed load holding Vth below 95 % times out; a missing capacitor completes faster than the 20 ms minimum; an under-rated resistor exceeds its pulse energy; a residual ΔV that would drive more than the main-contactor closing limit; invalid configuration; latched faults cannot restart
+
+Pack/harness resistance during pre-charge, contactor bounce and weld detection, and coupling to `herbie.pack` limits remain open. Coolant network, Kalman SOC/SOH estimators, cycle degradation and chemistry identification remain open under [#14](https://github.com/flooooooooooow/herbie/issues/14).
 
 ## Mean-value mapped engine (issue #13)
 

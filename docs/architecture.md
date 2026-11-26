@@ -27,6 +27,7 @@ src/
   pwm.flow           Switched two-level SVPWM inverter, carrier compare, PWM timebase gate
   battery.flow       Thevenin RC battery and SOC
   pack.flow          Ns×Np pack, BMS limits, heating/thermal, SOH input
+  precharge.flow     HV DC-link pre-charge, contactor sequence and pre-charge faults
   maps.flow          Clamped bilinear lookup for calibrated models
   engine.flow        Torque-map crank dynamics and fuel flow
   meanvalue.flow     Multi-map mean-value engine + intake manifold

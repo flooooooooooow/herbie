@@ -106,6 +106,7 @@ flow run tests/meanvalue_engine.flow
 flow run examples/meanvalue_engine_demo.flow
 flow run tests/battery_pack.flow
 flow run examples/battery_pack_demo.flow
+flow run tests/precharge.flow
 flow run tests/electric_drive.flow
 flow run examples/pmsm_foc_demo.flow
 flow run tests/switching_pwm.flow

@@ -1,0 +1,124 @@
+# @module herbie.precharge
+# HV pre-charge of an inverter DC-link capacitor and the contactor sequence around it.
+# Circuit while pre-charging: pack voltage Vp → pre-charge resistor R → DC-link C, with an
+# optional bleed/leakage load Rl across C. Thévenin form: Vth = Vp·Rl/(R+Rl),
+# Rth = R·Rl/(R+Rl), τ = Rth·C; each step uses the exact constant-input exponential, and the
+# pre-charge resistor energy is integrated in closed form over the step. Pack and harness
+# resistance are taken as negligible against R (mΩ vs Ω); the pack voltage is supplied by the
+# caller (for example from herbie.pack's OCV map) and held constant within a step.
+#
+# Sequence: 0 open → 1 pre-charging (negative main + pre-charge contactor) → 2 closed
+# (positive main closed, pre-charge contactor opened) or 3 fault (latched).
+
+export struct PrechargeConfig {
+    prechargeResistance: f64,
+    dcLinkCapacitance: f64,
+    # Bleed/leakage resistance across the DC link; ≤ 0 means none (open circuit).
+    loadResistance: f64,
+    # Close the main contactor once Vc ≥ completionRatio·Vp (typically 0.95).
+    completionRatio: f64,
+    # Completion faster than this means the capacitor is missing or open-circuit.
+    minimumTime: f64,
+    # Completion slower than this means a short, a heavy load or a failed resistor.
+    timeout: f64,
+    # Single-pulse energy rating of the pre-charge resistor (J).
+    resistorEnergyRating: f64,
+    # Main contactor closing current limit for the residual ΔV across main path resistance.
+    mainPathResistance: f64,
+    maxClosingCurrent: f64
+}
+
+export struct PrechargeState {
+    phase: i32,
+    capacitorVoltage: f64,
+    elapsed: f64,
+    resistorEnergy: f64,
+    # 0 none; 1 invalid config; 2 too fast (no capacitance); 3 timeout; 4 resistor energy;
+    # 5 main contactor closing current above limit.
+    fault: i32
+}
+
+export struct PrechargeResult {
+    state: PrechargeState,
+    resistorCurrent: f64,
+    resistorPower: f64
+}
+
+export function prechargeConfigOk(c: PrechargeConfig) -> bool {
+    return c.prechargeResistance > 0.0 and c.dcLinkCapacitance > 0.0
+        and c.completionRatio > 0.0 and c.completionRatio < 1.0
+        and c.minimumTime >= 0.0 and c.timeout > c.minimumTime
+        and c.resistorEnergyRating > 0.0 and c.mainPathResistance > 0.0 and c.maxClosingCurrent > 0.0
+}
+
+export function prechargeOpen() -> PrechargeState {
+    return PrechargeState { phase: 0, capacitorVoltage: 0.0, elapsed: 0.0, resistorEnergy: 0.0, fault: 0 }
+}
+
+# Time constant of the pre-charge path (including any bleed load).
+export function prechargeTimeConstant(c: PrechargeConfig) -> f64 {
+    if c.loadResistance > 0.0 {
+        let rth: f64 = c.prechargeResistance * c.loadResistance / (c.prechargeResistance + c.loadResistance)
+        return rth * c.dcLinkCapacitance
+    }
+    return c.prechargeResistance * c.dcLinkCapacitance
+}
+
+# Final DC-link voltage reachable through the pre-charge resistor.
+export function prechargeFinalVoltage(c: PrechargeConfig, packVoltage: f64) -> f64 {
+    if c.loadResistance > 0.0 {
+        return packVoltage * c.loadResistance / (c.prechargeResistance + c.loadResistance)
+    }
+    return packVoltage
+}
+
+# Command the sequence to start from open with a discharged (or partially charged) link.
+export function prechargeStart(s: PrechargeState, c: PrechargeConfig) -> PrechargeState {
+    if not prechargeConfigOk(c) {
+        return PrechargeState {
+            phase: 3, capacitorVoltage: s.capacitorVoltage, elapsed: 0.0, resistorEnergy: 0.0, fault: 1
+        }
+    }
+    if s.phase != 0 {
+        return s
+    }
+    return PrechargeState {
+        phase: 1, capacitorVoltage: s.capacitorVoltage, elapsed: 0.0, resistorEnergy: 0.0, fault: 0
+    }
+}
+
+export function prechargeStep(s: PrechargeState, c: PrechargeConfig, packVoltage: f64, dt: f64) -> PrechargeResult {
+    if s.phase != 1 or dt <= 0.0 {
+        return PrechargeResult { state: s, resistorCurrent: 0.0, resistorPower: 0.0 }
+    }
+    let tau: f64 = prechargeTimeConstant(c)
+    let vth: f64 = prechargeFinalVoltage(c, packVoltage)
+    let r: f64 = c.prechargeResistance
+    let decay: f64 = exp(-dt / tau)
+    let vc1: f64 = vth + (s.capacitorVoltage - vth) * decay
+    # Vp − Vc(t) = a + b·e^{−t/τ}; ∫(Vp − Vc)²/R dt in closed form over [0, dt].
+    let a: f64 = packVoltage - vth
+    let b: f64 = vth - s.capacitorVoltage
+    let e2: f64 = decay * decay
+    let energy: f64 = (a * a * dt + 2.0 * a * b * tau * (1.0 - decay) + 0.5 * b * b * tau * (1.0 - e2)) / r
+    let t1: f64 = s.elapsed + dt
+    let e1: f64 = s.resistorEnergy + energy
+    let i1: f64 = (packVoltage - vc1) / r
+    let mut next: PrechargeState = PrechargeState {
+        phase: 1, capacitorVoltage: vc1, elapsed: t1, resistorEnergy: e1, fault: 0
+    }
+    if e1 > c.resistorEnergyRating {
+        next = PrechargeState { phase: 3, capacitorVoltage: vc1, elapsed: t1, resistorEnergy: e1, fault: 4 }
+    } elif vc1 >= c.completionRatio * packVoltage {
+        if t1 < c.minimumTime {
+            next = PrechargeState { phase: 3, capacitorVoltage: vc1, elapsed: t1, resistorEnergy: e1, fault: 2 }
+        } elif (packVoltage - vc1) / c.mainPathResistance > c.maxClosingCurrent {
+            next = PrechargeState { phase: 3, capacitorVoltage: vc1, elapsed: t1, resistorEnergy: e1, fault: 5 }
+        } else {
+            next = PrechargeState { phase: 2, capacitorVoltage: vc1, elapsed: t1, resistorEnergy: e1, fault: 0 }
+        }
+    } elif t1 >= c.timeout {
+        next = PrechargeState { phase: 3, capacitorVoltage: vc1, elapsed: t1, resistorEnergy: e1, fault: 3 }
+    }
+    return PrechargeResult { state: next, resistorCurrent: i1, resistorPower: i1 * i1 * r }
+}
