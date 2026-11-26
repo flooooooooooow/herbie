@@ -107,7 +107,16 @@ Compressible flow, cavitation, valve maps, hydraulic actuators and DAE fluid net
 - PM and reluctance torque formulas; locked-rotor ohmic currents; steady vd/vq drop
 - Averaged inverter |v_dq| clip at Vdc/√3; FOC tracks id/iq at matched rate and at 1 kHz / 10 kHz multirate
 
-Switching PWM, BLDC six-step, induction machines, observers, device loss maps and thermal saturation remain open under [#12](https://github.com/flooooooooooow/herbie/issues/12).
+`tests/switching_pwm.flow` checks the switched two-level inverter in `herbie.pwm`:
+
+- The eight switching states: zero vectors 000/111 and six active vectors of magnitude 2/3·Vdc, phase voltages summing to zero, and the lossless-bridge identity Vdc·i_dc = Σ v_x i_x
+- Carrier SVPWM (min-max zero-sequence injection) stays linear on the whole Vdc/√3 circle and flags saturation 5% above it
+- Volt-second balance: the switched phase voltage averaged over one centre-aligned carrier period equals the commanded αβ vector within the duty-quantisation bound (4/3)·Vdc/m
+- Control/PWM/plant timebase gate: control must update on carrier boundaries (integer carrier/control ratio) and the plant must resolve the carrier with an integer m ≥ 20 steps per period
+- Locked rotor driven through the switched bridge settles to the ohmic vd/R, vq/R currents within (4/3·Vdc/m)/R, with non-zero per-period ripple below 2/3·Vdc/(Lq·f_carrier)
+- FOC at 10 kHz synchronised to a 10 kHz carrier with a 2 MHz plant and a spinning rotor: switched mean currents agree with the averaged-inverter run within 1 A
+
+Dead time, device voltage drops, conduction/switching loss maps, DC-link ripple, BLDC six-step, induction machines, observers and thermal saturation remain open under [#12](https://github.com/flooooooooooow/herbie/issues/12).
 
 ## Battery pack / BMS / thermal (issue #14)
 

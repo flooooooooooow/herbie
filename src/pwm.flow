@@ -1,0 +1,194 @@
+# @module herbie.pwm
+# Two-level three-phase voltage-source inverter: carrier-based SVPWM duties (min-max
+# zero-sequence injection), centre-aligned triangular carrier comparison, the eight
+# switching states and switched pole-to-phase voltages, plus a control/PWM/plant
+# timebase gate. The switched model is the counterpart of herbie.drive's averaged
+# inverter: over one carrier period its phase volt-seconds equal the commanded average.
+# Dead time, device drops, conduction/switching losses and DC-link ripple are out of
+# scope here; the DC link is an ideal stiff source.
+
+import herbie.drive { ClarkeABC, AlphaBeta, clarkeAlphaBetaToAbc }
+
+export struct PhaseDuties {
+    a: f64,
+    b: f64,
+    c: f64,
+    # True when the request exceeded the linear SVPWM hexagon and a duty was clamped.
+    saturated: bool
+}
+
+export struct PhaseSwitches {
+    # true = upper device on (pole at +Vdc), false = lower device on (pole at 0).
+    a: bool,
+    b: bool,
+    c: bool
+}
+
+export struct PwmTimebase {
+    controlHz: f64,
+    carrierHz: f64,
+    plantHz: f64,
+    # Plant sub-steps per carrier period and carrier periods per control update.
+    stepsPerCarrier: i32,
+    carriersPerControl: i32,
+    # 0 ok; 1 non-positive rate; 2 carrier not an integer multiple of control;
+    # 3 plant not an integer multiple of carrier; 4 fewer than 20 plant steps per carrier.
+    fault: i32
+}
+
+function pwmClamp01(x: f64) -> f64 {
+    if x < 0.0 {
+        return 0.0
+    }
+    if x > 1.0 {
+        return 1.0
+    }
+    return x
+}
+
+function pwmMax3(a: f64, b: f64, c: f64) -> f64 {
+    let mut m: f64 = a
+    if b > m {
+        m = b
+    }
+    if c > m {
+        m = c
+    }
+    return m
+}
+
+function pwmMin3(a: f64, b: f64, c: f64) -> f64 {
+    let mut m: f64 = a
+    if b < m {
+        m = b
+    }
+    if c < m {
+        m = c
+    }
+    return m
+}
+
+function pwmRatio(num: f64, den: f64) -> i32 {
+    let r: f64 = num / den
+    let k: i32 = (r + 0.5) as i32
+    let back: f64 = (k as f64) * den
+    let tol: f64 = 1.0e-9 * num
+    if k < 1 or back < num - tol or back > num + tol {
+        return 0
+    }
+    return k
+}
+
+# Carrier SVPWM: phase references from inverse Clarke, common-mode offset −(max+min)/2,
+# duty = ½ + v/Vdc. Linear for |v_αβ| ≤ Vdc/√3 (the inscribed circle of the hexagon).
+export function svpwmDuties(reference: AlphaBeta, dcLinkVoltage: f64) -> PhaseDuties {
+    if dcLinkVoltage <= 0.0 {
+        return PhaseDuties { a: 0.0 / 0.0, b: 0.0 / 0.0, c: 0.0 / 0.0, saturated: true }
+    }
+    let abc: ClarkeABC = clarkeAlphaBetaToAbc(reference)
+    let offset: f64 = -0.5 * (pwmMax3(abc.a, abc.b, abc.c) + pwmMin3(abc.a, abc.b, abc.c))
+    let da: f64 = 0.5 + (abc.a + offset) / dcLinkVoltage
+    let db: f64 = 0.5 + (abc.b + offset) / dcLinkVoltage
+    let dc: f64 = 0.5 + (abc.c + offset) / dcLinkVoltage
+    let tol: f64 = 1.0e-12
+    let sat: bool = da < -tol or da > 1.0 + tol or db < -tol or db > 1.0 + tol or dc < -tol or dc > 1.0 + tol
+    return PhaseDuties { a: pwmClamp01(da), b: pwmClamp01(db), c: pwmClamp01(dc), saturated: sat }
+}
+
+# Centre-aligned triangular carrier in [0, 1], sampled at the midpoint of plant sub-step
+# `subStep` (0-based, wrapped) of `stepsPerPeriod`. Comparing duty > carrier yields an on
+# interval centred in the period whose length is the duty quantised to 1/stepsPerPeriod.
+export function pwmCarrierAt(subStep: i32, stepsPerPeriod: i32) -> f64 {
+    if stepsPerPeriod <= 0 {
+        return 0.0 / 0.0
+    }
+    let k: i32 = subStep % stepsPerPeriod
+    let phase: f64 = ((k as f64) + 0.5) / (stepsPerPeriod as f64)
+    let x: f64 = 2.0 * phase - 1.0
+    if x < 0.0 {
+        return -x
+    }
+    return x
+}
+
+export function pwmCompare(duties: PhaseDuties, carrier: f64) -> PhaseSwitches {
+    return PhaseSwitches { a: duties.a > carrier, b: duties.b > carrier, c: duties.c > carrier }
+}
+
+# Switching state index 0..7 with bit0 = phase a, bit1 = b, bit2 = c (0 and 7 are zero vectors).
+export function pwmSwitchState(index: i32) -> PhaseSwitches {
+    return PhaseSwitches { a: index % 2 == 1, b: (index / 2) % 2 == 1, c: (index / 4) % 2 == 1 }
+}
+
+# Load phase-to-neutral voltages of a balanced star load (isolated neutral):
+# v_an = Vdc (2Sa − Sb − Sc)/3 and cyclically.
+export function pwmPhaseVoltages(sw: PhaseSwitches, dcLinkVoltage: f64) -> ClarkeABC {
+    let mut sa: f64 = 0.0
+    let mut sb: f64 = 0.0
+    let mut sc: f64 = 0.0
+    if sw.a {
+        sa = 1.0
+    }
+    if sw.b {
+        sb = 1.0
+    }
+    if sw.c {
+        sc = 1.0
+    }
+    let k: f64 = dcLinkVoltage / 3.0
+    return ClarkeABC {
+        a: k * (2.0 * sa - sb - sc),
+        b: k * (2.0 * sb - sa - sc),
+        c: k * (2.0 * sc - sa - sb)
+    }
+}
+
+# Instantaneous DC-link current drawn by the bridge: i_dc = Sa·ia + Sb·ib + Sc·ic.
+export function pwmDcLinkCurrent(sw: PhaseSwitches, phaseCurrents: ClarkeABC) -> f64 {
+    let mut i: f64 = 0.0
+    if sw.a {
+        i = i + phaseCurrents.a
+    }
+    if sw.b {
+        i = i + phaseCurrents.b
+    }
+    if sw.c {
+        i = i + phaseCurrents.c
+    }
+    return i
+}
+
+# Control updates must land on carrier period boundaries and the plant must resolve the
+# carrier: carrierHz = n·controlHz and plantHz = m·carrierHz with integer n ≥ 1, m ≥ 20.
+export function pwmTimebase(controlHz: f64, carrierHz: f64, plantHz: f64) -> PwmTimebase {
+    if controlHz <= 0.0 or carrierHz <= 0.0 or plantHz <= 0.0 {
+        return PwmTimebase {
+            controlHz: controlHz, carrierHz: carrierHz, plantHz: plantHz,
+            stepsPerCarrier: 0, carriersPerControl: 0, fault: 1
+        }
+    }
+    let n: i32 = pwmRatio(carrierHz, controlHz)
+    if n == 0 {
+        return PwmTimebase {
+            controlHz: controlHz, carrierHz: carrierHz, plantHz: plantHz,
+            stepsPerCarrier: 0, carriersPerControl: 0, fault: 2
+        }
+    }
+    let m: i32 = pwmRatio(plantHz, carrierHz)
+    if m == 0 {
+        return PwmTimebase {
+            controlHz: controlHz, carrierHz: carrierHz, plantHz: plantHz,
+            stepsPerCarrier: 0, carriersPerControl: n, fault: 3
+        }
+    }
+    if m < 20 {
+        return PwmTimebase {
+            controlHz: controlHz, carrierHz: carrierHz, plantHz: plantHz,
+            stepsPerCarrier: m, carriersPerControl: n, fault: 4
+        }
+    }
+    return PwmTimebase {
+        controlHz: controlHz, carrierHz: carrierHz, plantHz: plantHz,
+        stepsPerCarrier: m, carriersPerControl: n, fault: 0
+    }
+}
