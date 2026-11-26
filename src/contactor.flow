@@ -1,0 +1,212 @@
+# @module herbie.contactor
+# HV contactor closing bounce and weld detection.
+#
+# Closing: after the coil command the contacts first touch at closeDelay. They then stay
+# closed for `dwell`, fly open for t0, touch for `dwell`, fly open for t0·e, and so on,
+# where e is the coefficient of restitution (flight time scales with rebound speed, so
+# successive flights form a geometric series). Bouncing stops when the next flight would
+# be shorter than minFlight or after maxBounces flights.
+#
+# Opening and welding: after the open command the contacts part at openDelay. A healthy
+# contact lets the DC link discharge through the bleed resistor Rb (τ = Rb·C); a weld of
+# resistance Rw keeps the link at the Thévenin voltage Vp·Rb/(Rb + Rw) with
+# τ = (Rb‖Rw)·C. The weld monitor watches the voltage across the open contactor
+# ΔV = Vp − V_link and passes once it exceeds a threshold, or latches a weld fault if the
+# window expires first.
+
+export struct ContactorMechanics {
+    closeDelay: f64,
+    dwell: f64,
+    firstFlight: f64,
+    restitution: f64,
+    minFlight: f64,
+    maxBounces: i32
+}
+
+export struct BounceMonitor {
+    elapsed: f64,
+    everClosed: bool,
+    lastClosed: bool,
+    # Closed → open transitions after first touch, and the time of the last open → closed one.
+    bounces: i32,
+    lastCloseTime: f64,
+    closedFor: f64,
+    settled: bool
+}
+
+export struct WeldCheckConfig {
+    packVoltage: f64,
+    bleedResistance: f64,
+    linkCapacitance: f64,
+    openDelay: f64,
+    # Pass when ΔV across the commanded-open contactor exceeds this voltage.
+    threshold: f64,
+    # Weld fault if the threshold is not reached this long after the open command.
+    window: f64
+}
+
+export struct WeldMonitor {
+    elapsed: f64,
+    # 0 checking; 1 passed (contact opened); 2 weld fault.
+    status: i32,
+    passTime: f64
+}
+
+export function contactorMechanicsOk(m: ContactorMechanics) -> bool {
+    return m.closeDelay >= 0.0 and m.dwell > 0.0 and m.firstFlight >= 0.0
+        and m.restitution >= 0.0 and m.restitution < 1.0 and m.minFlight > 0.0 and m.maxBounces >= 0
+}
+
+# Number of flights before the contact stays closed.
+export function contactorBounceCount(m: ContactorMechanics) -> i32 {
+    if not contactorMechanicsOk(m) {
+        return -1
+    }
+    let mut k: i32 = 0
+    let mut flight: f64 = m.firstFlight
+    while k < m.maxBounces and flight >= m.minFlight {
+        k = k + 1
+        flight = flight * m.restitution
+    }
+    return k
+}
+
+# Time from the coil command to the final, permanent touch.
+export function contactorSettleTime(m: ContactorMechanics) -> f64 {
+    let n: i32 = contactorBounceCount(m)
+    if n < 0 {
+        return 0.0 / 0.0
+    }
+    let mut t: f64 = m.closeDelay
+    let mut flight: f64 = m.firstFlight
+    for k in 0 to n {
+        t = t + m.dwell + flight
+        flight = flight * m.restitution
+    }
+    return t
+}
+
+# Contact state at time t after the close command.
+export function contactorClosedAt(m: ContactorMechanics, t: f64) -> bool {
+    if not contactorMechanicsOk(m) or t < m.closeDelay {
+        return false
+    }
+    let n: i32 = contactorBounceCount(m)
+    let mut start: f64 = m.closeDelay
+    let mut flight: f64 = m.firstFlight
+    for k in 0 to n {
+        if t < start + m.dwell {
+            return true
+        }
+        if t < start + m.dwell + flight {
+            return false
+        }
+        start = start + m.dwell + flight
+        flight = flight * m.restitution
+    }
+    return true
+}
+
+export function bounceMonitorReset() -> BounceMonitor {
+    return BounceMonitor {
+        elapsed: 0.0, everClosed: false, lastClosed: false, bounces: 0,
+        lastCloseTime: 0.0 / 0.0, closedFor: 0.0, settled: false
+    }
+}
+
+# Feed one sample of the auxiliary contact taken at the end of a dt interval. The contact
+# is reported settled once it has stayed closed for debounceTime.
+export function bounceMonitorStep(mon: ptr<BounceMonitor>, closed: bool, dt: f64, debounceTime: f64) -> void {
+    let m: BounceMonitor = mon[0]
+    let t: f64 = m.elapsed + dt
+    let mut next: BounceMonitor = m
+    next.elapsed = t
+    if closed {
+        if not m.lastClosed {
+            next.lastCloseTime = t
+            next.closedFor = 0.0
+        } else {
+            next.closedFor = m.closedFor + dt
+        }
+        next.everClosed = true
+        if next.closedFor >= debounceTime {
+            next.settled = true
+        }
+    } else {
+        if m.lastClosed and m.everClosed {
+            next.bounces = m.bounces + 1
+        }
+        next.closedFor = 0.0
+        next.settled = false
+    }
+    next.lastClosed = closed
+    mon[0] = next
+}
+
+export function weldCheckConfigOk(c: WeldCheckConfig) -> bool {
+    return c.packVoltage > 0.0 and c.bleedResistance > 0.0 and c.linkCapacitance > 0.0
+        and c.openDelay >= 0.0 and c.threshold > 0.0 and c.threshold < c.packVoltage and c.window > c.openDelay
+}
+
+# Exact DC-link step while the contactor is commanded open. `contactsParted` false means
+# the link is still connected (pre-delay); weldResistance ≤ 0 means a healthy open contact.
+export function weldLinkVoltageStep(
+    linkVoltage: f64,
+    c: WeldCheckConfig,
+    contactsParted: bool,
+    weldResistance: f64,
+    dt: f64
+) -> f64 {
+    if dt <= 0.0 or not weldCheckConfigOk(c) {
+        return 0.0 / 0.0
+    }
+    if not contactsParted {
+        return c.packVoltage
+    }
+    let rb: f64 = c.bleedResistance
+    if weldResistance <= 0.0 {
+        return linkVoltage * exp(-dt / (rb * c.linkCapacitance))
+    }
+    let rw: f64 = weldResistance
+    let vth: f64 = c.packVoltage * rb / (rb + rw)
+    let tau: f64 = rb * rw / (rb + rw) * c.linkCapacitance
+    return vth + (linkVoltage - vth) * exp(-dt / tau)
+}
+
+export function weldMonitorReset() -> WeldMonitor {
+    return WeldMonitor { elapsed: 0.0, status: 0, passTime: 0.0 / 0.0 }
+}
+
+export function weldMonitorStep(mon: ptr<WeldMonitor>, c: WeldCheckConfig, measuredDeltaV: f64, dt: f64) -> void {
+    let m: WeldMonitor = mon[0]
+    if m.status != 0 {
+        return
+    }
+    let t: f64 = m.elapsed + dt
+    let mut next: WeldMonitor = WeldMonitor { elapsed: t, status: 0, passTime: m.passTime }
+    if measuredDeltaV > c.threshold {
+        next.status = 1
+        next.passTime = t
+    } elif t >= c.window {
+        next.status = 2
+    }
+    mon[0] = next
+}
+
+# Time after the open command at which a healthy contact passes: openDelay − τ·ln(1 − thr/Vp).
+export function weldExpectedPassTime(c: WeldCheckConfig) -> f64 {
+    if not weldCheckConfigOk(c) {
+        return 0.0 / 0.0
+    }
+    let tau: f64 = c.bleedResistance * c.linkCapacitance
+    return c.openDelay - tau * log(1.0 - c.threshold / c.packVoltage)
+}
+
+# Welds below this resistance are detected: their steady ΔV∞ = Vp·Rw/(Rb + Rw) stays under
+# the threshold. A weld above it lets ΔV cross the threshold and passes as open.
+export function weldDetectionResistanceLimit(c: WeldCheckConfig) -> f64 {
+    if not weldCheckConfigOk(c) {
+        return 0.0 / 0.0
+    }
+    return c.bleedResistance * c.threshold / (c.packVoltage - c.threshold)
+}

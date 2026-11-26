@@ -93,7 +93,7 @@ DOE planners, multi-map fitting with regularization catalogs, and full uncertain
 `tests/thermo_fluid.flow` checks:
 
 - Hagen–Poiseuille Δp, orifice √(2Δp/ρ) with sign, linear pump shutoff
-- Analytic pump–pipe operating point (Q and Δp match)
+- Analytic pump-pipe operating point (Q and Δp match)
 - Hydraulic volume integration; balanced ε-NTU = NTU/(1+NTU); closed-loop T = Tamb + Q/UA
 - Coolant node transient converges to the steady radiator balance
 
@@ -141,6 +141,17 @@ Turbo, crank-angle combustion and ECU faults remain open under [#13](https://git
 - Coulomb clutch ±capacity·engagement and NaN on invalid engagement
 
 Quaternions, 6-DOF joints, torque converters and full multibody coupling remain open under [#15](https://github.com/flooooooooooow/herbie/issues/15).
+
+## Contactor bounce and weld detection (issue #14)
+
+`tests/contactor.flow` checks `herbie.contactor`:
+
+- Closing bounce as a geometric restitution series: with a 2 ms first flight, e = 0.5 and a 0.1 ms minimum flight there are five flights and the contact settles at 24.875 ms; a bounce cap of two settles at 23.4 ms; e ≥ 1 is rejected
+- A 10 μs sampled auxiliary-contact monitor counts all five bounces, reports the final touch within one sample and only reports settled after the debounce time; 0.5 ms sampling undercounts, so the monitor rate must resolve the minimum flight
+- Weld detection on opening with a 1 kΩ bleed and 500 μF link: a healthy contact passes the 60 V threshold at openDelay − τ·ln(1 − thr/Vp) within one sample; a 1 mΩ hard weld and a 100 Ω resistive weld latch a fault at the window
+- The detection limit Rb·thr/(Vp − thr) = 176.5 Ω: welds below it are caught, a 300 Ω weld passes as open; the link discharge is the exact exponential (step-size independent)
+
+Contact erosion and arcing energy, coil supply dropout, and coupling to the pre-charge sequence and pack limits remain open.
 
 ## Native seven-DOF full-car ride (issue #4)
 

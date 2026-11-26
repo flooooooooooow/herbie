@@ -1,0 +1,180 @@
+# Contactor closing bounce (geometric restitution series, sampled bounce monitor and
+# settle time) and weld detection (exact link discharge, analytic pass time, hard and
+# resistive welds, the detection resistance limit).
+
+import herbie.contactor {
+    ContactorMechanics, BounceMonitor, WeldCheckConfig, WeldMonitor,
+    contactorMechanicsOk, contactorBounceCount, contactorSettleTime, contactorClosedAt,
+    bounceMonitorReset, bounceMonitorStep,
+    weldCheckConfigOk, weldLinkVoltageStep, weldMonitorReset, weldMonitorStep,
+    weldExpectedPassTime, weldDetectionResistanceLimit
+}
+
+function near(a: f64, b: f64, eps: f64) -> bool {
+    return a >= b - eps and a <= b + eps
+}
+
+function mech(maxBounces: i32) -> ContactorMechanics {
+    # 20 ms close delay, 0.2 ms dwell, 2 ms first flight, e = 0.5, 0.1 ms minimum flight.
+    return ContactorMechanics {
+        closeDelay: 0.02, dwell: 0.0002, firstFlight: 0.002, restitution: 0.5, minFlight: 0.0001, maxBounces: maxBounces
+    }
+}
+
+function runMonitor(m: ContactorMechanics, dt: f64, steps: i32, debounce: f64) -> BounceMonitor {
+    let mut mon: array<BounceMonitor, 1> = [bounceMonitorReset()]
+    for k in 0 to steps {
+        let t: f64 = ((k + 1) as f64) * dt
+        bounceMonitorStep(&mon[0], contactorClosedAt(m, t), dt, debounce)
+    }
+    return mon[0]
+}
+
+function testBounce() -> i32 {
+    let m: ContactorMechanics = mech(10)
+    if not contactorMechanicsOk(m) {
+        return 1
+    }
+    # Flights 2, 1, 0.5, 0.25, 0.125 ms; the next (0.0625 ms) is below the minimum.
+    if contactorBounceCount(m) != 5 {
+        println("FAIL bounce count")
+        return 2
+    }
+    let settle: f64 = 0.02 + 5.0 * 0.0002 + 0.003875
+    if not near(contactorSettleTime(m), settle, 1.0e-15) {
+        println("FAIL settle time")
+        return 3
+    }
+    if contactorClosedAt(m, 0.0199) or not contactorClosedAt(m, 0.0201) or contactorClosedAt(m, 0.0212) {
+        return 4
+    }
+    if not contactorClosedAt(m, settle + 1.0e-9) or not contactorClosedAt(m, 1.0) {
+        return 5
+    }
+    # 10 μs sampling resolves every flight: 5 bounces, last touch within one sample.
+    let dt: f64 = 0.00001
+    let mon: BounceMonitor = runMonitor(m, dt, 4000, 0.001)
+    if mon.bounces != 5 {
+        println("FAIL monitored bounces")
+        println(mon.bounces)
+        return 6
+    }
+    if mon.lastCloseTime < settle - 1.0e-12 or mon.lastCloseTime > settle + dt + 1.0e-12 or not mon.settled {
+        println("FAIL monitored settle")
+        return 7
+    }
+    # Not settled until it has stayed closed for the debounce time.
+    let early: BounceMonitor = runMonitor(m, dt, 2550, 0.001)
+    if early.settled {
+        return 8
+    }
+    # 0.5 ms sampling cannot see flights shorter than a sample: it undercounts.
+    let coarse: BounceMonitor = runMonitor(m, 0.0005, 80, 0.001)
+    if coarse.bounces >= 5 {
+        return 9
+    }
+    # Bounce cap: two flights, settle at 20 + 0.4 + 3 ms.
+    let capped: ContactorMechanics = mech(2)
+    if contactorBounceCount(capped) != 2 or not near(contactorSettleTime(capped), 0.0234, 1.0e-15) {
+        return 10
+    }
+    let bad: ContactorMechanics = ContactorMechanics {
+        closeDelay: 0.02, dwell: 0.0002, firstFlight: 0.002, restitution: 1.0, minFlight: 0.0001, maxBounces: 10
+    }
+    if contactorMechanicsOk(bad) or contactorBounceCount(bad) != -1 {
+        return 11
+    }
+    return 0
+}
+
+function weldConfig() -> WeldCheckConfig {
+    # 400 V pack, 1 kΩ bleed, 500 μF link (τ = 0.5 s), 30 ms opening, 60 V threshold, 0.5 s window.
+    return WeldCheckConfig {
+        packVoltage: 400.0, bleedResistance: 1000.0, linkCapacitance: 0.0005,
+        openDelay: 0.03, threshold: 60.0, window: 0.5
+    }
+}
+
+function runWeld(c: WeldCheckConfig, weldResistance: f64, dt: f64) -> WeldMonitor {
+    let mut mon: array<WeldMonitor, 1> = [weldMonitorReset()]
+    let mut v: f64 = c.packVoltage
+    let mut t: f64 = 0.0
+    let mut guard: i32 = 0
+    while mon[0].status == 0 and guard < 10000000 {
+        let parted: bool = t >= c.openDelay - 1.0e-12
+        v = weldLinkVoltageStep(v, c, parted, weldResistance, dt)
+        t = t + dt
+        weldMonitorStep(&mon[0], c, c.packVoltage - v, dt)
+        guard = guard + 1
+    }
+    return mon[0]
+}
+
+function testWeld() -> i32 {
+    let c: WeldCheckConfig = weldConfig()
+    if not weldCheckConfigOk(c) {
+        return 1
+    }
+    let expected: f64 = 0.03 - 0.5 * log(1.0 - 60.0 / 400.0)
+    if not near(weldExpectedPassTime(c), expected, 1.0e-15) {
+        return 2
+    }
+    let dt: f64 = 0.0001
+    let healthy: WeldMonitor = runWeld(c, 0.0, dt)
+    if healthy.status != 1 or healthy.passTime < expected - 1.0e-9 or healthy.passTime > expected + dt + 1.0e-9 {
+        println("FAIL healthy open")
+        println(healthy.passTime)
+        return 3
+    }
+    # Hard weld (1 mΩ) and a resistive weld (100 Ω, ΔV∞ = 36.4 V) both latch a weld fault.
+    let hard: WeldMonitor = runWeld(c, 0.001, dt)
+    if hard.status != 2 or hard.elapsed < 0.5 - 1.0e-9 {
+        println("FAIL hard weld")
+        return 4
+    }
+    if runWeld(c, 100.0, dt).status != 2 {
+        println("FAIL resistive weld")
+        return 5
+    }
+    # Detection limit Rb·thr/(Vp − thr) = 176.47 Ω: just below is flagged, 300 Ω passes as open.
+    let limit: f64 = weldDetectionResistanceLimit(c)
+    if not near(limit, 1000.0 * 60.0 / 340.0, 1.0e-12) {
+        return 6
+    }
+    if runWeld(c, 0.95 * limit, dt).status != 2 {
+        return 7
+    }
+    if runWeld(c, 300.0, dt).status != 1 {
+        return 8
+    }
+    # Exact exponential: one 0.2 s step equals 2000 steps of 0.1 ms.
+    let mut fine: f64 = 400.0
+    for k in 0 to 2000 {
+        fine = weldLinkVoltageStep(fine, c, true, 300.0, 0.0001)
+    }
+    let coarse: f64 = weldLinkVoltageStep(400.0, c, true, 300.0, 0.2)
+    if not near(fine, coarse, 1.0e-9) {
+        return 9
+    }
+    let bad: WeldCheckConfig = WeldCheckConfig {
+        packVoltage: 400.0, bleedResistance: 1000.0, linkCapacitance: 0.0005, openDelay: 0.03, threshold: 500.0, window: 0.5
+    }
+    let x: f64 = weldExpectedPassTime(bad)
+    if weldCheckConfigOk(bad) or x == x {
+        return 10
+    }
+    return 0
+}
+
+function main() -> i32 {
+    let a: i32 = testBounce()
+    if a != 0 {
+        return 10 + a
+    }
+    let b: i32 = testWeld()
+    if b != 0 {
+        return 30 + b
+    }
+    println("PASS contactor: bounce series, sampled monitor, weld detection and limits")
+    return 0
+}
