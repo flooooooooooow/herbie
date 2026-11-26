@@ -93,7 +93,7 @@ DOE planners, multi-map fitting with regularization catalogs, and full uncertain
 `tests/thermo_fluid.flow` checks:
 
 - Hagen–Poiseuille Δp, orifice √(2Δp/ρ) with sign, linear pump shutoff
-- Analytic pump–pipe operating point (Q and Δp match)
+- Analytic pump-pipe operating point (Q and Δp match)
 - Hydraulic volume integration; balanced ε-NTU = NTU/(1+NTU); closed-loop T = Tamb + Q/UA
 - Coolant node transient converges to the steady radiator balance
 
@@ -152,6 +152,17 @@ Quaternions, 6-DOF joints, torque converters and full multibody coupling remain 
 - Damped energy falls below 2% of the initial value in 4 s; nonpositive `dt` rejected
 
 Nonlinear tires, brakes/ABS, driveline, kinematic hardpoint validation and rig calibration remain open under [#4](https://github.com/flooooooooooow/herbie/issues/4).
+
+## Valve-controlled hydraulic cylinder (issue #16)
+
+`tests/hydraulic_cylinder.flow` checks `herbie.hydraulics`:
+
+- Four-way spool metering edges equal the `herbie.fluids` orifice law for both spool directions, close at u = 0 and saturate beyond full spool travel
+- A through-rod cylinder at half spool against 2 kN settles to the analytic speed Cd·a·√(2Δp_edge/ρ)/A with Δp_edge = (p_S − p_T − F/A)/2 (0.06293 m/s, within 10⁻⁴ relative), p_A − p_B = F/A and equal edge drops
+- With the valve closed the trapped oil rings at 2π·√(m/k), k = β(A_A²/V_A + A_B²/V_B) (10.61 ms, within 0.2 %), and a 1 kN load deflects it by −F/k within 1 %
+- End stops hold the piston at the stroke limit with zero velocity while chamber A rises to supply and B drains to tank; an overrunning 40 kN load starves chamber A, which is clamped at vapour pressure and flagged
+
+Two-phase cavitation, temperature-dependent bulk modulus and entrained air, seal friction (Stribeck), proportional-valve dynamics and pressure-relief valves remain open.
 
 ## Global 2D truss FEM (issue #5)
 

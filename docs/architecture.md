@@ -33,6 +33,7 @@ src/
   fullcar.flow       Seven-DOF heave/pitch/roll + four-wheel ride
   powertrain.flow    Longitudinal point-mass motion
   structures.flow    Elastic stress and introductory fatigue
+  hydraulics.flow    Valve-controlled double-acting hydraulic cylinder
   truss.flow         Local 2D truss element stiffness and force
   fem.flow           Global 2D truss FEM assembly, dense/CG solves
   uncertainty.flow   First-order covariance propagation

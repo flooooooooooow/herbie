@@ -73,6 +73,7 @@ See [linear circuit transients](docs/circuit-transients.md) for the API, equatio
 ```sh
 flow run tests/engineering_smoke.flow
 flow run tests/vehicle_energy.flow
+flow run tests/hydraulic_cylinder.flow
 flow run tests/truss_uncertainty.flow
 flow run tests/electromechanics.flow
 flow run tests/engine_battery.flow
@@ -176,7 +177,7 @@ The standalone browser has no third-party runtime CDN requirement: official Thre
 
 ## Design rules
 
-Physics stays in Flow, not a concealed Python/MATLAB backend. SI units are used throughout the initial API. Callers validate masses, geometry, material properties, positive `dt`, and solver stability limits before entering the real-time loop. State is explicit and updates are bounded by fixed arithmetic work; no file or network operations are performed within step functions. Model assumptions, analytical baselines and test results must be versioned together.
+Physics stays in Flow. There is no concealed Python/MATLAB backend. SI units are used throughout the initial API. Callers validate masses, geometry, material properties, positive `dt`, and solver stability limits before entering the real-time loop. State is explicit and updates are bounded by fixed arithmetic work; no file or network operations are performed within step functions. Model assumptions, analytical baselines and test results must be versioned together.
 
 Herbie does **not** certify any model, component, controller, vehicle or manufacturing process. Do not use these kernels to approve a physical design or drive safety-critical hardware without independently validated models, target-specific timing qualification, fault handling, and the applicable engineering safety process.
 

@@ -1,0 +1,200 @@
+# @module herbie.hydraulics
+# Valve-controlled double-acting hydraulic cylinder.
+#
+# A critically centred four-way spool valve with normalised spool position u ∈ [−1, 1]
+# opens P→A and B→T for u > 0 and P→B and A→T for u < 0, each metering edge an orifice
+# Q = Cd·a·sign(Δp)·√(2|Δp|/ρ) from herbie.fluids with a = maxArea·|u|. Chamber pressures
+# follow the lumped compressibility law dp/dt = β/V(x)·(Q_in − A·ẋ), with
+# V_A = V_A0 + A_A·x and V_B = V_B0 + A_B·(stroke − x). The piston obeys
+# m·ẍ = p_A·A_A − p_B·A_B − b·ẋ − F_load, with inelastic end stops at 0 and stroke.
+# Integration is fixed-step RK4. Chamber pressures are clamped at the vapour pressure and
+# the clamp is reported (a cavitation flag, not a two-phase model). SI units throughout.
+
+import herbie.fluids { FluidProperties, OrificeParameters, fluidPropertiesOk, orificeVolumeFlow }
+
+export struct CylinderParameters {
+    areaA: f64,
+    areaB: f64,
+    stroke: f64,
+    deadVolumeA: f64,
+    deadVolumeB: f64,
+    movingMass: f64,
+    viscousFriction: f64,
+    bulkModulus: f64
+}
+
+export struct ServoValve {
+    dischargeCoefficient: f64,
+    maxArea: f64,
+    supplyPressure: f64,
+    tankPressure: f64
+}
+
+export struct CylinderState {
+    position: f64,
+    velocity: f64,
+    pressureA: f64,
+    pressureB: f64
+}
+
+export struct CylinderResult {
+    state: CylinderState,
+    flowA: f64,
+    flowB: f64,
+    # 0 ok; 1 invalid input; 2 at an end stop; 3 a chamber pressure was clamped (cavitation).
+    status: i32
+}
+
+struct CylDeriv {
+    dx: f64,
+    dv: f64,
+    dpA: f64,
+    dpB: f64,
+    qA: f64,
+    qB: f64
+}
+
+export function cylinderParametersOk(c: CylinderParameters) -> bool {
+    return c.areaA > 0.0 and c.areaB > 0.0 and c.stroke > 0.0 and c.deadVolumeA > 0.0 and c.deadVolumeB > 0.0
+        and c.movingMass > 0.0 and c.viscousFriction >= 0.0 and c.bulkModulus > 0.0
+}
+
+export function servoValveOk(v: ServoValve) -> bool {
+    return v.dischargeCoefficient > 0.0 and v.maxArea > 0.0 and v.supplyPressure > v.tankPressure and v.tankPressure >= 0.0
+}
+
+function hyClampSpool(u: f64) -> f64 {
+    if u > 1.0 {
+        return 1.0
+    }
+    if u < -1.0 {
+        return -1.0
+    }
+    return u
+}
+
+function hyEdge(v: ServoValve, fluid: FluidProperties, opening: f64, dp: f64) -> f64 {
+    if opening <= 0.0 {
+        return 0.0
+    }
+    return orificeVolumeFlow(OrificeParameters { dischargeCoefficient: v.dischargeCoefficient, area: v.maxArea * opening }, fluid, dp)
+}
+
+# Net flows into chambers A and B from the valve at spool u and chamber pressures.
+export function servoValveFlows(v: ServoValve, fluid: FluidProperties, spool: f64, pressureA: f64, pressureB: f64, out: ptr<f64>) -> void {
+    let u: f64 = hyClampSpool(spool)
+    let mut qA: f64 = 0.0
+    let mut qB: f64 = 0.0
+    if u > 0.0 {
+        qA = hyEdge(v, fluid, u, v.supplyPressure - pressureA)
+        qB = -hyEdge(v, fluid, u, pressureB - v.tankPressure)
+    } elif u < 0.0 {
+        qB = hyEdge(v, fluid, -u, v.supplyPressure - pressureB)
+        qA = -hyEdge(v, fluid, -u, pressureA - v.tankPressure)
+    }
+    out[0] = qA
+    out[1] = qB
+}
+
+function hyDeriv(
+    s: CylinderState, c: CylinderParameters, v: ServoValve, fluid: FluidProperties, spool: f64, load: f64
+) -> CylDeriv {
+    let mut q: array<f64, 2> = [0.0, 0.0]
+    servoValveFlows(v, fluid, spool, s.pressureA, s.pressureB, &q[0])
+    let va: f64 = c.deadVolumeA + c.areaA * s.position
+    let vb: f64 = c.deadVolumeB + c.areaB * (c.stroke - s.position)
+    let force: f64 = s.pressureA * c.areaA - s.pressureB * c.areaB - c.viscousFriction * s.velocity - load
+    return CylDeriv {
+        dx: s.velocity,
+        dv: force / c.movingMass,
+        dpA: c.bulkModulus / va * (q[0] - c.areaA * s.velocity),
+        dpB: c.bulkModulus / vb * (q[1] + c.areaB * s.velocity),
+        qA: q[0],
+        qB: q[1]
+    }
+}
+
+function hyAdd(s: CylinderState, d: CylDeriv, h: f64) -> CylinderState {
+    return CylinderState {
+        position: s.position + h * d.dx,
+        velocity: s.velocity + h * d.dv,
+        pressureA: s.pressureA + h * d.dpA,
+        pressureB: s.pressureB + h * d.dpB
+    }
+}
+
+export function cylinderStep(
+    s: CylinderState,
+    c: CylinderParameters,
+    valve: ServoValve,
+    fluid: FluidProperties,
+    vapourPressure: f64,
+    spool: f64,
+    loadForce: f64,
+    dt: f64
+) -> CylinderResult {
+    if dt <= 0.0 or not cylinderParametersOk(c) or not servoValveOk(valve) or not fluidPropertiesOk(fluid) or vapourPressure < 0.0 {
+        return CylinderResult { state: s, flowA: 0.0 / 0.0, flowB: 0.0 / 0.0, status: 1 }
+    }
+    let k1: CylDeriv = hyDeriv(s, c, valve, fluid, spool, loadForce)
+    let k2: CylDeriv = hyDeriv(hyAdd(s, k1, 0.5 * dt), c, valve, fluid, spool, loadForce)
+    let k3: CylDeriv = hyDeriv(hyAdd(s, k2, 0.5 * dt), c, valve, fluid, spool, loadForce)
+    let k4: CylDeriv = hyDeriv(hyAdd(s, k3, dt), c, valve, fluid, spool, loadForce)
+    let w: f64 = dt / 6.0
+    let mut next: CylinderState = CylinderState {
+        position: s.position + w * (k1.dx + 2.0 * k2.dx + 2.0 * k3.dx + k4.dx),
+        velocity: s.velocity + w * (k1.dv + 2.0 * k2.dv + 2.0 * k3.dv + k4.dv),
+        pressureA: s.pressureA + w * (k1.dpA + 2.0 * k2.dpA + 2.0 * k3.dpA + k4.dpA),
+        pressureB: s.pressureB + w * (k1.dpB + 2.0 * k2.dpB + 2.0 * k3.dpB + k4.dpB)
+    }
+    let qA: f64 = (k1.qA + 2.0 * k2.qA + 2.0 * k3.qA + k4.qA) / 6.0
+    let qB: f64 = (k1.qB + 2.0 * k2.qB + 2.0 * k3.qB + k4.qB) / 6.0
+    let mut status: i32 = 0
+    if next.position <= 0.0 {
+        next.position = 0.0
+        if next.velocity < 0.0 {
+            next.velocity = 0.0
+        }
+        status = 2
+    }
+    if next.position >= c.stroke {
+        next.position = c.stroke
+        if next.velocity > 0.0 {
+            next.velocity = 0.0
+        }
+        status = 2
+    }
+    if next.pressureA < vapourPressure {
+        next.pressureA = vapourPressure
+        status = 3
+    }
+    if next.pressureB < vapourPressure {
+        next.pressureB = vapourPressure
+        status = 3
+    }
+    return CylinderResult { state: next, flowA: qA, flowB: qB, status: status }
+}
+
+# Hydraulic spring stiffness of the trapped oil at position x: β·(A_A²/V_A + A_B²/V_B).
+export function cylinderHydraulicStiffness(c: CylinderParameters, position: f64) -> f64 {
+    if not cylinderParametersOk(c) {
+        return 0.0 / 0.0
+    }
+    let va: f64 = c.deadVolumeA + c.areaA * position
+    let vb: f64 = c.deadVolumeB + c.areaB * (c.stroke - position)
+    return c.bulkModulus * (c.areaA * c.areaA / va + c.areaB * c.areaB / vb)
+}
+
+# Steady extension speed of a symmetric cylinder (A_A = A_B) with matched metering edges
+# at spool u > 0 against load F: p_A − p_B = F/A and equal edge drops give
+# Δp_edge = (p_S − p_T − F/A)/2 and v = Cd·a·√(2Δp_edge/ρ)/A.
+export function cylinderSymmetricSteadySpeed(c: CylinderParameters, v: ServoValve, fluid: FluidProperties, spool: f64, loadForce: f64) -> f64 {
+    if not cylinderParametersOk(c) or not servoValveOk(v) or c.areaA != c.areaB or spool <= 0.0 {
+        return 0.0 / 0.0
+    }
+    let dpEdge: f64 = 0.5 * (v.supplyPressure - v.tankPressure - loadForce / c.areaA)
+    if dpEdge <= 0.0 {
+        return 0.0
+    }
+    return v.dischargeCoefficient * v.maxArea * hyClampSpool(spool) * sqrt(2.0 * dpEdge / fluid.density) / c.areaA
+}
