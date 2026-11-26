@@ -18,6 +18,8 @@ src/
   netlist.flow       Versioned SPICE-subset import/export (optional I/O)
   xml.flow           Strict XML subset reader and canonical writer
   fmi2.flow          FMI 2.0 modelDescription rules and export
+  zip.flow           ZIP reader, RFC 1951 inflate, CRC-32, stored writer
+  fmu.flow           FMI 2.0 FMU archive checks and packing
   dae.flow           Dense index-1 DAE MNA transient (BE/TRAP companions)
   ideal_sw.flow      Dense DC MNA with zero-Ron ideal switches
   transient.flow     Shared Flow-backend linear RLC transient facade
@@ -56,7 +58,8 @@ tests/
   netlist.flow
   ngspice_crossval.flow
   fmi2_model_description.flow
-  fmi2/                FMI 2.0.4 XSD and Reference FMU descriptions
+  fmi2/                FMI 2.0.4 XSD, Reference FMU descriptions and FMUs
+  fmu_archive.flow
   dae_mna.flow
   ideal_switch.flow
   ngspice_fixtures.flow

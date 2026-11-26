@@ -1,0 +1,549 @@
+# FMI 2.0 FMU archives: CRC-32 and RFC 1951 inflate vectors, the two vendored Reference
+# FMUs (v0.0.42 release, tests/fmi2/fmu) pass every section 2.3 check with all 28 entries
+# extracted and CRC-checked, a stored repack of BouncingBall is deterministic and
+# content-identical, and each archive fault has a failing case. The repack is written to
+# /tmp/herbie-fmu-BouncingBall.fmu for the CI unzip and Python zipfile cross-checks.
+
+import "stdlib/io.flow"
+import herbie.zip {
+    ZipEntry, ZipArchive, ZipWriter, InflateResult, ZIP_OK, ZIP_ERR_CRC,
+    zipCrc32, zipInflate, zipOpen, zipFind, zipExtract, zipWriterAddNamed, zipWriterFinish
+}
+import herbie.xml { XmlDoc, XmlElement, XmlAttribute, XmlWriter, xmlDocInit, xmlWrite, xmlFindAttr, xmlAttrValueIs, xmlStrLen }
+import herbie.fmi2 {
+    Fmi2VarInfo, Fmi2ModelInfo, Fmi2RealVariable, FMI2_OK, FMI2_ERR_VERSION,
+    FMI2_INDEPENDENT, FMI2_OUTPUT, FMI2_LOCAL, FMI2_PARAMETER, FMI2_CONTINUOUS, FMI2_FIXED,
+    FMI2_INITIAL_NONE, FMI2_EXACT, fmi2BuildRealModel
+}
+import herbie.fmu {
+    FmuWorkspace, FmuReport, FmuFile,
+    FMU_OK, FMU_ERR_ZIP, FMU_ERR_SPLIT, FMU_ERR_METHOD, FMU_ERR_ENCRYPTED, FMU_ERR_VERSION,
+    FMU_ERR_DATA_DESCRIPTOR, FMU_ERR_LINK, FMU_ERR_PATH, FMU_ERR_DUPLICATE, FMU_ERR_ENTRY_DATA,
+    FMU_ERR_NO_MODEL_DESCRIPTION, FMU_ERR_MODEL_DESCRIPTION, FMU_ERR_NO_IMPLEMENTATION,
+    FMU_ERR_SOURCE_MISSING, FMU_ERR_CAPACITY,
+    fmuEmptyReport, fmuCheck, fmuPack
+}
+
+extern {
+    function calloc(n: i64, size: i64) -> ptr<void>
+}
+
+const BIG: i64 = 2097152
+const MAX_ENTRIES: i32 = 64
+# Bytes per calloc slot for struct tables; larger than any of the C structs used here.
+const SLOT: i64 = 128
+
+struct Bench {
+    ws: FmuWorkspace,
+    zipEntries: ptr<ZipEntry>,
+    writerEntries: ptr<ZipEntry>,
+    names: ptr<u8>,
+    out: ptr<u8>,
+    files: ptr<u8>
+}
+
+function newBench() -> Bench {
+    let entries: ptr<ZipEntry> = calloc(MAX_ENTRIES as i64, SLOT) as ptr<ZipEntry>
+    let elems: ptr<XmlElement> = calloc(1024, SLOT) as ptr<XmlElement>
+    let attrs: ptr<XmlAttribute> = calloc(2048, SLOT) as ptr<XmlAttribute>
+    let pool: ptr<u8> = calloc(65536, 1) as ptr<u8>
+    let doc: ptr<XmlDoc> = calloc(1, SLOT) as ptr<XmlDoc>
+    doc[0] = xmlDocInit(elems, 1024, attrs, 2048, pool, 65536)
+    let ws: FmuWorkspace = FmuWorkspace {
+        entries: entries, maxEntries: MAX_ENTRIES,
+        scratch: calloc(BIG, 1) as ptr<u8>, scratchCap: BIG,
+        md: calloc(65536, 1) as ptr<u8>, mdCap: 65536,
+        doc: doc, info: calloc(128, SLOT) as ptr<Fmi2VarInfo>, maxVars: 128
+    }
+    return Bench {
+        ws: ws,
+        zipEntries: calloc(MAX_ENTRIES as i64, SLOT) as ptr<ZipEntry>,
+        writerEntries: calloc(MAX_ENTRIES as i64, SLOT) as ptr<ZipEntry>,
+        names: calloc(8192, 1) as ptr<u8>,
+        out: calloc(BIG, 1) as ptr<u8>,
+        files: calloc(BIG, 1) as ptr<u8>
+    }
+}
+
+function newWriter(b: Bench) -> ZipWriter {
+    return ZipWriter { buf: b.out, cap: BIG, len: 0, overflow: false, entries: b.writerEntries, maxEntries: MAX_ENTRIES, count: 0, names: b.names, namesCap: 8192, namesLen: 0 }
+}
+
+function testCrc() -> i32 {
+    if zipCrc32("123456789" as ptr<u8>, 9) != 3421780262 {
+        return 1
+    }
+    if zipCrc32("" as ptr<u8>, 0) != 0 {
+        return 2
+    }
+    let fox: string = "The quick brown fox jumps over the lazy dog"
+    if zipCrc32(fox as ptr<u8>, 43) != 1095738169 {
+        return 3
+    }
+    return 0
+}
+
+# Vectors from Python zlib (raw deflate, wbits = -15): level 0 for the stored block and
+# strategy Z_FIXED for the fixed-Huffman block, both of the same 102-byte text with CRC
+# 0x3B0F58E8. The run of 'a' decodes through overlapping back-references.
+function testInflateVectors() -> i32 {
+    let mut stored: array<u8, 107> = [1 as u8, 102 as u8, 0 as u8, 153 as u8, 255 as u8, 72 as u8, 101 as u8, 114 as u8, 98 as u8, 105 as u8, 101 as u8, 32 as u8, 70 as u8, 77 as u8, 85 as u8, 32 as u8, 97 as u8, 114 as u8, 99 as u8, 104 as u8, 105 as u8, 118 as u8, 101 as u8, 32 as u8, 116 as u8, 101 as u8, 115 as u8, 116 as u8, 58 as u8, 32 as u8, 97 as u8, 98 as u8, 99 as u8, 97 as u8, 98 as u8, 99 as u8, 97 as u8, 98 as u8, 99 as u8, 97 as u8, 98 as u8, 99 as u8, 97 as u8, 98 as u8, 99 as u8, 97 as u8, 98 as u8, 99 as u8, 32 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 97 as u8, 32 as u8, 120 as u8, 121 as u8, 122 as u8, 46 as u8, 10 as u8]
+    let mut fixed: array<u8, 41> = [243 as u8, 72 as u8, 45 as u8, 74 as u8, 202 as u8, 76 as u8, 85 as u8, 112 as u8, 243 as u8, 13 as u8, 85 as u8, 72 as u8, 44 as u8, 74 as u8, 206 as u8, 200 as u8, 44 as u8, 75 as u8, 85 as u8, 40 as u8, 73 as u8, 45 as u8, 46 as u8, 177 as u8, 82 as u8, 72 as u8, 76 as u8, 74 as u8, 70 as u8, 67 as u8, 10 as u8, 137 as u8, 100 as u8, 0 as u8, 133 as u8, 138 as u8, 202 as u8, 42 as u8, 61 as u8, 46 as u8, 0 as u8]
+    let mut out: array<u8, 256> = [0 as u8; 256]
+    let a: InflateResult = zipInflate(&stored[0], 107, &out[0], 256)
+    if a.error != 0 or a.written != 102 or a.consumed != 107 or zipCrc32(&out[0], 102) != 990861544 {
+        return 1
+    }
+    let mut out2: array<u8, 256> = [0 as u8; 256]
+    let b: InflateResult = zipInflate(&fixed[0], 41, &out2[0], 256)
+    if b.error != 0 or b.written != 102 or b.consumed != 41 {
+        return 2
+    }
+    for i in 0 to 102 {
+        if out[i] != out2[i] {
+            return 3
+        }
+    }
+    # Faults: reserved block type 3, LEN/NLEN mismatch, truncated input, output too
+    # small, and a back-reference before the start of the output (zlib reports
+    # "invalid distance too far back" for the same three bytes).
+    let mut bad3: array<u8, 1> = [7 as u8]
+    if zipInflate(&bad3[0], 1, &out[0], 256).error != 3 {
+        return 4
+    }
+    let mut badLen: array<u8, 5> = [1 as u8, 5 as u8, 0 as u8, 0 as u8, 0 as u8]
+    if zipInflate(&badLen[0], 5, &out[0], 256).error != 4 {
+        return 5
+    }
+    if zipInflate(&fixed[0], 20, &out[0], 256).error != 1 {
+        return 6
+    }
+    if zipInflate(&fixed[0], 41, &out[0], 50).error != 2 {
+        return 7
+    }
+    let mut far: array<u8, 3> = [3 as u8, 2 as u8, 0 as u8]
+    if zipInflate(&far[0], 3, &out[0], 256).error != 7 {
+        return 8
+    }
+    return 0
+}
+
+function readFile(path: string, into: ptr<u8>, cap: i64) -> i64 {
+    let f: FileRead = io_read_file(path)
+    if not f.ok or f.len > cap {
+        return -1
+    }
+    let p: ptr<u8> = f.data as ptr<u8>
+    let mut i: i64 = 0
+    while i < f.len {
+        into[i] = p[i]
+        i = i + 1
+    }
+    return f.len
+}
+
+# Counts from Python zipfile on the same files: 28 entries; 5 binaries per interface,
+# ModelExchange and CoSimulation both declared; SourceFiles lists all.c per interface.
+function testReferenceFmus(b: Bench) -> i32 {
+    let mut paths: array<string, 2> = ["tests/fmi2/fmu/BouncingBall.fmu", "tests/fmi2/fmu/Dahlquist.fmu"]
+    let mut names: array<string, 2> = ["BouncingBall", "Dahlquist"]
+    for i in 0 to 2 {
+        let n: i64 = readFile(paths[i], b.files, BIG)
+        if n < 0 {
+            return 10 * i + 1
+        }
+        let mut r: array<FmuReport, 1> = [fmuEmptyReport()]
+        let code: i32 = fmuCheck(b.files, n, b.ws, &r[0])
+        if code != FMU_OK {
+            print("  fmu fault ")
+            print(code)
+            print(" entry ")
+            print(r[0].entry)
+            print(" zip ")
+            print(r[0].zipCode)
+            println("")
+            return 10 * i + 2
+        }
+        if r[0].entries != 28 or r[0].binaries != 10 or r[0].sourcesListed != 2 or r[0].sourcesPresent != 2 or not r[0].modelExchange or not r[0].coSimulation {
+            return 10 * i + 3
+        }
+        if not xmlAttrValueIs(b.ws.doc[0], xmlFindAttr(b.ws.doc[0], 0, "modelName"), names[i]) {
+            return 10 * i + 4
+        }
+    }
+    return 0
+}
+
+# Repack every file of BouncingBall.fmu (directories dropped) as a stored archive.
+function repack(b: Bench, w: ptr<ZipWriter>, fileList: ptr<FmuFile>, r: ptr<FmuReport>) -> i32 {
+    let orig: ptr<u8> = calloc(BIG, 1) as ptr<u8>
+    let n: i64 = readFile("tests/fmi2/fmu/BouncingBall.fmu", orig, BIG)
+    let mut za: array<ZipArchive, 1> = [ZipArchive { data: orig, len: n, entries: b.zipEntries, maxEntries: MAX_ENTRIES, count: 0, error: 0, errorEntry: -1 }]
+    if zipOpen(&za[0], orig, n) != ZIP_OK {
+        return -1
+    }
+    let z: ZipArchive = za[0]
+    let md: i32 = zipFind(z, "modelDescription.xml")
+    let mut used: i64 = 0
+    let mut count: i32 = 0
+    let mut mdAt: i64 = 0
+    let mut mdLen: i64 = 0
+    for i in 0 to z.count {
+        let e: ZipEntry = z.entries[i]
+        let mut wr: array<i64, 1> = [0]
+        if zipExtract(z, i, &b.files[used], BIG - used, &wr[0]) != ZIP_OK {
+            return -2
+        }
+        let isDir: bool = z.data[(e.name as i64) + (e.nameLen as i64) - 1] == (47 as u8)
+        if i == md {
+            mdAt = used
+            mdLen = wr[0]
+        } elif not isDir {
+            fileList[count] = FmuFile { name: &z.data[e.name as i64], nameLen: e.nameLen, data: &b.files[used], len: wr[0] }
+            count = count + 1
+        }
+        used = used + wr[0]
+    }
+    return fmuPack(w, &b.files[mdAt], mdLen, fileList, count, b.ws, r)
+}
+
+function testRepack(b: Bench) -> i32 {
+    let fileList: ptr<FmuFile> = calloc(MAX_ENTRIES as i64, SLOT) as ptr<FmuFile>
+    let mut w: array<ZipWriter, 1> = [newWriter(b)]
+    let mut r: array<FmuReport, 1> = [fmuEmptyReport()]
+    if repack(b, &w[0], fileList, &r[0]) != FMU_OK {
+        return 1
+    }
+    # 18 files: modelDescription.xml plus 17 others; the 10 directory entries are dropped.
+    if r[0].entries != 18 or r[0].binaries != 10 or r[0].sourcesPresent != 2 {
+        return 2
+    }
+    let len1: i64 = w[0].len
+    let copy: ptr<u8> = calloc(BIG, 1) as ptr<u8>
+    let mut i: i64 = 0
+    while i < len1 {
+        copy[i] = w[0].buf[i]
+        i = i + 1
+    }
+    if not io_write_bytes("/tmp/herbie-fmu-BouncingBall.fmu", copy, len1) {
+        return 3
+    }
+    # Every repacked file has the original's name, size and CRC-32.
+    let orig: ptr<u8> = calloc(BIG, 1) as ptr<u8>
+    let n: i64 = readFile("tests/fmi2/fmu/BouncingBall.fmu", orig, BIG)
+    let origEntries: ptr<ZipEntry> = calloc(MAX_ENTRIES as i64, SLOT) as ptr<ZipEntry>
+    let mut zo: array<ZipArchive, 1> = [ZipArchive { data: orig, len: n, entries: origEntries, maxEntries: MAX_ENTRIES, count: 0, error: 0, errorEntry: -1 }]
+    let newEntries: ptr<ZipEntry> = calloc(MAX_ENTRIES as i64, SLOT) as ptr<ZipEntry>
+    let mut zn: array<ZipArchive, 1> = [ZipArchive { data: copy, len: len1, entries: newEntries, maxEntries: MAX_ENTRIES, count: 0, error: 0, errorEntry: -1 }]
+    if zipOpen(&zo[0], orig, n) != ZIP_OK or zipOpen(&zn[0], copy, len1) != ZIP_OK {
+        return 4
+    }
+    let mut matched: i32 = 0
+    for k in 0 to zn[0].count {
+        let e: ZipEntry = zn[0].entries[k]
+        for j in 0 to zo[0].count {
+            let o: ZipEntry = zo[0].entries[j]
+            if o.nameLen == e.nameLen {
+                let mut same: bool = true
+                for c in 0 to e.nameLen {
+                    if orig[(o.name as i64) + (c as i64)] != copy[(e.name as i64) + (c as i64)] {
+                        same = false
+                    }
+                }
+                if same and o.crc == e.crc and o.size == e.size {
+                    matched = matched + 1
+                }
+            }
+        }
+    }
+    if matched != 18 {
+        return 5
+    }
+    # The writer is deterministic.
+    let mut w2: array<ZipWriter, 1> = [newWriter(b)]
+    let mut r2: array<FmuReport, 1> = [fmuEmptyReport()]
+    if repack(b, &w2[0], fileList, &r2[0]) != FMU_OK or w2[0].len != len1 {
+        return 6
+    }
+    let mut j: i64 = 0
+    while j < len1 {
+        if w2[0].buf[j] != copy[j] {
+            return 7
+        }
+        j = j + 1
+    }
+    return 0
+}
+
+function u16At(p: ptr<u8>, at: i64) -> i64 {
+    return (p[at] as i64) + (p[at + 1] as i64) * 256
+}
+
+function u32At(p: ptr<u8>, at: i64) -> i64 {
+    return u16At(p, at) + u16At(p, at + 2) * 65536
+}
+
+function put16(p: ptr<u8>, at: i64, v: i64) -> void {
+    p[at] = (v % 256) as u8
+    p[at + 1] = ((v / 256) % 256) as u8
+}
+
+function put32(p: ptr<u8>, at: i64, v: i64) -> void {
+    put16(p, at, v % 65536)
+    put16(p, at + 2, v / 65536)
+}
+
+# Offset of central-directory record idx in a stored archive buf[0 .. len).
+function centralAt(p: ptr<u8>, len: i64, idx: i32) -> i64 {
+    let eocd: i64 = len - 22
+    let mut at: i64 = u32At(p, eocd + 16)
+    for k in 0 to idx {
+        at = at + 46 + u16At(p, at + 28) + u16At(p, at + 30) + u16At(p, at + 32)
+    }
+    return at
+}
+
+# A two-file stored archive: modelDescription.xml and one more file.
+function build2(b: Bench, md: ptr<u8>, mdLen: i64, second: string, third: string) -> i64 {
+    let mut w: array<ZipWriter, 1> = [newWriter(b)]
+    let body: string = "int dahlquist;\n"
+    if mdLen > 0 {
+        let _a: bool = zipWriterAddNamed(&w[0], "modelDescription.xml", md, mdLen)
+    }
+    if xmlStrLen(second) > 0 {
+        let _b: bool = zipWriterAddNamed(&w[0], second, body as ptr<u8>, 15)
+    }
+    if xmlStrLen(third) > 0 {
+        let _c: bool = zipWriterAddNamed(&w[0], third, body as ptr<u8>, 15)
+    }
+    if not zipWriterFinish(&w[0]) {
+        return -1
+    }
+    return w[0].len
+}
+
+function checkCode(b: Bench, len: i64) -> i32 {
+    let mut r: array<FmuReport, 1> = [fmuEmptyReport()]
+    return fmuCheck(b.out, len, b.ws, &r[0])
+}
+
+function testArchiveFaults(b: Bench) -> i32 {
+    let md: ptr<u8> = calloc(65536, 1) as ptr<u8>
+    let mdLen: i64 = readFile("tests/fmi2/reference/Dahlquist/modelDescription.xml", md, 65536)
+    if mdLen <= 0 {
+        return 1
+    }
+    let mut n: i64 = build2(b, md, mdLen, "sources/all.c", "")
+    if checkCode(b, n) != FMU_OK {
+        return 2
+    }
+    # A binary for the declared modelIdentifier is an implementation on its own.
+    n = build2(b, md, mdLen, "binaries/linux64/Dahlquist.so", "")
+    if checkCode(b, n) != FMU_OK {
+        return 3
+    }
+    # all.c is listed in SourceFiles; a binary for another identifier, or one without a
+    # platform directory, does not count.
+    n = build2(b, md, mdLen, "binaries/linux64/Other.so", "")
+    if checkCode(b, n) != FMU_ERR_SOURCE_MISSING {
+        return 4
+    }
+    n = build2(b, md, mdLen, "binaries/Dahlquist.so", "")
+    if checkCode(b, n) != FMU_ERR_SOURCE_MISSING {
+        return 5
+    }
+    n = build2(b, md, 0, "sources/all.c", "")
+    if checkCode(b, n) != FMU_ERR_NO_MODEL_DESCRIPTION {
+        return 6
+    }
+    let bad: string = "<?xml version='1.0'?><fmiModelDescription fmiVersion='3.0' modelName='m' guid='g'/>"
+    n = build2(b, bad as ptr<u8>, xmlStrLen(bad) as i64, "sources/all.c", "")
+    let mut r: array<FmuReport, 1> = [fmuEmptyReport()]
+    if fmuCheck(b.out, n, b.ws, &r[0]) != FMU_ERR_MODEL_DESCRIPTION or r[0].fmi2Code != FMI2_ERR_VERSION {
+        return 7
+    }
+    n = build2(b, md, mdLen, "sources\\all.c", "")
+    if checkCode(b, n) != FMU_ERR_PATH {
+        return 8
+    }
+    n = build2(b, md, mdLen, "../all.c", "")
+    if checkCode(b, n) != FMU_ERR_PATH {
+        return 9
+    }
+    n = build2(b, md, mdLen, "/sources/all.c", "")
+    if checkCode(b, n) != FMU_ERR_PATH {
+        return 10
+    }
+    n = build2(b, md, mdLen, "sources//all.c", "")
+    if checkCode(b, n) != FMU_ERR_PATH {
+        return 11
+    }
+    n = build2(b, md, mdLen, "sources/all.c", "sources/all.c")
+    if checkCode(b, n) != FMU_ERR_DUPLICATE {
+        return 12
+    }
+    # Byte patches on the valid archive; entry 1 is sources/all.c.
+    n = build2(b, md, mdLen, "sources/all.c", "")
+    let p: ptr<u8> = b.out
+    let c1: i64 = centralAt(p, n, 1)
+    let l1: i64 = u32At(p, c1 + 42)
+    put16(p, c1 + 10, 12)
+    put16(p, l1 + 8, 12)
+    if checkCode(b, n) != FMU_ERR_METHOD {
+        return 13
+    }
+    put16(p, c1 + 10, 0)
+    put16(p, l1 + 8, 0)
+    put16(p, c1 + 8, 1)
+    put16(p, l1 + 6, 1)
+    if checkCode(b, n) != FMU_ERR_ENCRYPTED {
+        return 14
+    }
+    put16(p, c1 + 8, 8)
+    put16(p, l1 + 6, 8)
+    if checkCode(b, n) != FMU_ERR_DATA_DESCRIPTOR {
+        return 15
+    }
+    put16(p, c1 + 8, 0)
+    put16(p, l1 + 6, 0)
+    put16(p, c1 + 6, 45)
+    if checkCode(b, n) != FMU_ERR_VERSION {
+        return 16
+    }
+    put16(p, c1 + 6, 10)
+    # Unix host, mode 0120777: a symbolic link.
+    put16(p, c1 + 4, 3 * 256 + 20)
+    put32(p, c1 + 38, 2700017664)
+    if checkCode(b, n) != FMU_ERR_LINK {
+        return 17
+    }
+    # The same host with a regular-file mode 0100644 is fine.
+    put32(p, c1 + 38, 2175008768)
+    if checkCode(b, n) != FMU_OK {
+        return 18
+    }
+    let crc: i64 = u32At(p, c1 + 16)
+    put32(p, c1 + 16, (crc + 1) % 4294967296)
+    let mut rc: array<FmuReport, 1> = [fmuEmptyReport()]
+    if fmuCheck(b.out, n, b.ws, &rc[0]) != FMU_ERR_ENTRY_DATA or rc[0].zipCode != ZIP_ERR_CRC or rc[0].entry != 1 {
+        return 19
+    }
+    put32(p, c1 + 16, crc)
+    put16(p, n - 22 + 4, 1)
+    if checkCode(b, n) != FMU_ERR_SPLIT {
+        return 20
+    }
+    put16(p, n - 22 + 4, 0)
+    put16(p, n - 22 + 10, 65535)
+    if checkCode(b, n) != FMU_ERR_VERSION {
+        return 21
+    }
+    put16(p, n - 22 + 10, 2)
+    if checkCode(b, n) != FMU_OK {
+        return 22
+    }
+    let junk: string = "this is not a zip archive at all, just text"
+    for k in 0 to 43 {
+        p[k] = (junk as ptr<u8>)[k]
+    }
+    if checkCode(b, 43) != FMU_ERR_ZIP {
+        return 23
+    }
+    # Scratch smaller than an entry.
+    n = build2(b, md, mdLen, "sources/all.c", "")
+    let mut small: FmuWorkspace = b.ws
+    small.scratchCap = 64
+    let mut rs: array<FmuReport, 1> = [fmuEmptyReport()]
+    if fmuCheck(b.out, n, small, &rs[0]) != FMU_ERR_CAPACITY {
+        return 24
+    }
+    return 0
+}
+
+# A Herbie model description has no SourceFiles and Herbie has no fmi2 binaries yet, so
+# packaging it with documentation only is refused for lack of an implementation.
+function testHerbieModelRefused(b: Bench) -> i32 {
+    let mut vars: array<Fmi2RealVariable, 4> = [
+        Fmi2RealVariable { name: "time", description: "", causality: FMI2_INDEPENDENT, variability: FMI2_CONTINUOUS, initial: FMI2_INITIAL_NONE, start: "", derivative: 0, unit: "" },
+        Fmi2RealVariable { name: "x", description: "", causality: FMI2_OUTPUT, variability: FMI2_CONTINUOUS, initial: FMI2_EXACT, start: "1", derivative: 0, unit: "" },
+        Fmi2RealVariable { name: "der(x)", description: "", causality: FMI2_LOCAL, variability: FMI2_CONTINUOUS, initial: FMI2_INITIAL_NONE, start: "", derivative: 2, unit: "" },
+        Fmi2RealVariable { name: "k", description: "", causality: FMI2_PARAMETER, variability: FMI2_FIXED, initial: FMI2_INITIAL_NONE, start: "1", derivative: 0, unit: "" }
+    ]
+    let info: Fmi2ModelInfo = Fmi2ModelInfo { modelName: "herbie.decay", guid: "{0d1a3c5e-7f90-4b2d-8e6f-1a2b3c4d5e6f}", description: "", generationTool: "herbie.fmi2", modelIdentifier: "herbie_decay", modelExchange: false, coSimulation: true, numberOfEventIndicators: 0, startTime: "", stopTime: "", stepSize: "" }
+    let elems: ptr<XmlElement> = calloc(128, SLOT) as ptr<XmlElement>
+    let attrs: ptr<XmlAttribute> = calloc(256, SLOT) as ptr<XmlAttribute>
+    let pool: ptr<u8> = calloc(8192, 1) as ptr<u8>
+    let mut d: array<XmlDoc, 1> = [xmlDocInit(elems, 128, attrs, 256, pool, 8192)]
+    let scratch: ptr<Fmi2VarInfo> = calloc(4, SLOT) as ptr<Fmi2VarInfo>
+    let mut idx: array<i32, 4> = [0; 4]
+    if fmi2BuildRealModel(&d[0], info, &vars[0], 4, scratch, &idx[0]) != FMI2_OK {
+        return 1
+    }
+    let text: ptr<u8> = calloc(8192, 1) as ptr<u8>
+    let mut xw: array<XmlWriter, 1> = [XmlWriter { buf: text, cap: 8192, len: 0, overflow: false }]
+    if not xmlWrite(d[0], &xw[0]) {
+        return 2
+    }
+    let doc: string = "<html><body>herbie.decay</body></html>"
+    let mut files: array<FmuFile, 1> = [FmuFile { name: "documentation/index.html" as ptr<u8>, nameLen: 24, data: doc as ptr<u8>, len: xmlStrLen(doc) as i64 }]
+    let mut w: array<ZipWriter, 1> = [newWriter(b)]
+    let mut r: array<FmuReport, 1> = [fmuEmptyReport()]
+    if fmuPack(&w[0], text, xw[0].len as i64, &files[0], 1, b.ws, &r[0]) != FMU_ERR_NO_IMPLEMENTATION {
+        return 3
+    }
+    # A writer too small for the archive reports capacity.
+    let mut tiny: array<ZipWriter, 1> = [newWriter(b)]
+    tiny[0].cap = 100
+    if fmuPack(&tiny[0], text, xw[0].len as i64, &files[0], 1, b.ws, &r[0]) != FMU_ERR_CAPACITY {
+        return 4
+    }
+    return 0
+}
+
+function main() -> i32 {
+    let b: Bench = newBench()
+    let mut code: i32 = testCrc()
+    if code != 0 {
+        print("FAIL CRC-32 ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testInflateVectors()
+    if code != 0 {
+        print("FAIL inflate vectors ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testReferenceFmus(b)
+    if code != 0 {
+        print("FAIL reference FMUs ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testRepack(b)
+    if code != 0 {
+        print("FAIL repack ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testArchiveFaults(b)
+    if code != 0 {
+        print("FAIL archive faults ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testHerbieModelRefused(b)
+    if code != 0 {
+        print("FAIL Herbie model packaging ")
+        print(code)
+        println("")
+        return code
+    }
+    println("PASS FMU archive checks, inflate, repack and fault cases")
+    return 0
+}
