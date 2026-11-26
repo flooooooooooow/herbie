@@ -1,0 +1,317 @@
+# @module herbie.fmu
+# FMI 2.0 FMU archive checks (section 2.3) and packaging on top of herbie.zip, herbie.xml
+# and herbie.fmi2.
+#
+# fmuCheck opens an archive and checks: ZIP methods 0 or 8 only, general purpose bit 3
+# only with deflate, version needed to extract at most 2.0, no encryption, no split or
+# spanned archive, no symbolic links, forward-slash relative paths without "..", unique
+# names, every entry's data intact (size and CRC-32), a root modelDescription.xml that
+# passes herbie.xml and fmi2Validate, and, for each of ModelExchange and CoSimulation, an
+# implementation: binaries/<platform>/<modelIdentifier>.{dll,so,dylib}, or every
+# SourceFiles/File present under sources/.
+# fmuPack writes a stored archive with modelDescription.xml first and then runs fmuCheck on
+# the result, so it never returns a non-conforming FMU. Herbie cannot yet generate the
+# fmi2 C sources or binaries for its own models, so packaging a Herbie model is refused
+# for lack of an implementation; the packager is exercised by repacking Reference FMUs.
+
+import herbie.zip {
+    ZipEntry, ZipArchive, ZipWriter, ZIP_OK, ZIP_ERR_MULTI_DISK, ZIP_ERR_UNSUPPORTED,
+    ZIP_STORED, ZIP_DEFLATED, zipOpen, zipFind, zipExtract, zipWriterAdd, zipWriterFinish
+}
+import herbie.xml { XmlDoc, XML_OK, xmlParse, xmlChildNamed, xmlNextSame, xmlFindAttr, xmlStrLen }
+import herbie.fmi2 { Fmi2VarInfo, Fmi2Report, FMI2_OK, fmi2Validate, fmi2EmptyReport }
+
+export const FMU_OK: i32 = 0
+export const FMU_ERR_ZIP: i32 = 1
+export const FMU_ERR_SPLIT: i32 = 2
+export const FMU_ERR_METHOD: i32 = 3
+export const FMU_ERR_ENCRYPTED: i32 = 4
+export const FMU_ERR_VERSION: i32 = 5
+export const FMU_ERR_DATA_DESCRIPTOR: i32 = 6
+export const FMU_ERR_LINK: i32 = 7
+export const FMU_ERR_PATH: i32 = 8
+export const FMU_ERR_DUPLICATE: i32 = 9
+export const FMU_ERR_ENTRY_DATA: i32 = 10
+export const FMU_ERR_NO_MODEL_DESCRIPTION: i32 = 11
+export const FMU_ERR_MODEL_DESCRIPTION: i32 = 12
+export const FMU_ERR_NO_IMPLEMENTATION: i32 = 13
+export const FMU_ERR_SOURCE_MISSING: i32 = 14
+export const FMU_ERR_CAPACITY: i32 = 15
+
+# Caller-owned working storage for fmuCheck and fmuPack.
+export struct FmuWorkspace {
+    entries: ptr<ZipEntry>,
+    maxEntries: i32,
+    # Scratch for extracting one entry; must hold the largest entry.
+    scratch: ptr<u8>,
+    scratchCap: i64,
+    # Holds modelDescription.xml while it is parsed.
+    md: ptr<u8>,
+    mdCap: i64,
+    doc: ptr<XmlDoc>,
+    info: ptr<Fmi2VarInfo>,
+    maxVars: i32
+}
+
+export struct FmuReport {
+    code: i32,
+    # Entry index tied to the fault, or -1.
+    entry: i32,
+    zipCode: i32,
+    xmlCode: i32,
+    fmi2Code: i32,
+    entries: i32,
+    modelExchange: bool,
+    coSimulation: bool,
+    # Binaries found for the declared model identifiers, summed over both interfaces.
+    binaries: i32,
+    # SourceFiles listed, summed over both interfaces, and how many were present.
+    sourcesListed: i32,
+    sourcesPresent: i32
+}
+
+export struct FmuFile {
+    name: ptr<u8>,
+    nameLen: i32,
+    data: ptr<u8>,
+    len: i64
+}
+
+export function fmuEmptyReport() -> FmuReport {
+    return FmuReport {
+        code: FMU_OK, entry: -1, zipCode: 0, xmlCode: 0, fmi2Code: 0, entries: 0,
+        modelExchange: false, coSimulation: false, binaries: 0, sourcesListed: 0, sourcesPresent: 0
+    }
+}
+
+function fmuFail(r: ptr<FmuReport>, code: i32, entry: i32) -> i32 {
+    r[0].code = code
+    r[0].entry = entry
+    return code
+}
+
+function fmuNameOk(p: ptr<u8>, n: i32) -> bool {
+    if n == 0 or p[0] == (47 as u8) {
+        return false
+    }
+    let mut segStart: i32 = 0
+    for k in 0 to n + 1 {
+        if k == n or p[k] == (47 as u8) {
+            let seg: i32 = k - segStart
+            # An empty segment is only allowed as the trailing slash of a directory.
+            if seg == 0 and k != n {
+                return false
+            }
+            if seg == 2 and p[segStart] == (46 as u8) and p[segStart + 1] == (46 as u8) {
+                return false
+            }
+            segStart = k + 1
+        } elif p[k] == (92 as u8) or p[k] == (0 as u8) {
+            return false
+        }
+    }
+    return true
+}
+
+function fmuBytesEq(a: ptr<u8>, b: ptr<u8>, n: i32) -> bool {
+    for k in 0 to n {
+        if a[k] != b[k] {
+            return false
+        }
+    }
+    return true
+}
+
+function fmuStartsWith(p: ptr<u8>, n: i32, lit: string) -> bool {
+    let m: i32 = xmlStrLen(lit)
+    return n >= m and fmuBytesEq(p, lit as ptr<u8>, m)
+}
+
+# True when entry name p[0 .. n) is binaries/<platform>/<mid>.<dll|so|dylib>.
+function fmuIsBinaryFor(p: ptr<u8>, n: i32, mid: ptr<u8>, mn: i32) -> bool {
+    if not fmuStartsWith(p, n, "binaries/") {
+        return false
+    }
+    let mut slash: i32 = -1
+    for k in 9 to n {
+        if p[k] == (47 as u8) and slash < 0 {
+            slash = k
+        }
+    }
+    if slash <= 9 {
+        return false
+    }
+    let f: i32 = slash + 1
+    let rest: i32 = n - f
+    if rest <= mn + 1 or not fmuBytesEq(&p[f], mid, mn) or p[f + mn] != (46 as u8) {
+        return false
+    }
+    let ext: ptr<u8> = &p[f + mn + 1]
+    let en: i32 = rest - mn - 1
+    return (en == 3 and fmuBytesEq(ext, "dll" as ptr<u8>, 3)) or (en == 2 and fmuBytesEq(ext, "so" as ptr<u8>, 2)) or (en == 5 and fmuBytesEq(ext, "dylib" as ptr<u8>, 5))
+}
+
+# Implementation check for one interface element (ModelExchange or CoSimulation).
+function fmuInterfaceOk(z: ZipArchive, d: XmlDoc, iface: i32, r: ptr<FmuReport>) -> i32 {
+    let ma: i32 = xmlFindAttr(d, iface, "modelIdentifier")
+    let mid: ptr<u8> = &d.pool[d.attrs[ma].value]
+    let mn: i32 = d.attrs[ma].valueLen
+    let mut bins: i32 = 0
+    for i in 0 to z.count {
+        let e: ZipEntry = z.entries[i]
+        if fmuIsBinaryFor(&z.data[e.name as i64], e.nameLen, mid, mn) {
+            bins = bins + 1
+        }
+    }
+    r[0].binaries = r[0].binaries + bins
+    let mut listed: i32 = 0
+    let mut present: i32 = 0
+    let sf: i32 = xmlChildNamed(d, iface, "SourceFiles")
+    if sf >= 0 {
+        let mut f: i32 = xmlChildNamed(d, sf, "File")
+        while f >= 0 {
+            let na: i32 = xmlFindAttr(d, f, "name")
+            listed = listed + 1
+            if na >= 0 {
+                let fp: ptr<u8> = &d.pool[d.attrs[na].value]
+                let fl: i32 = d.attrs[na].valueLen
+                for i in 0 to z.count {
+                    let e: ZipEntry = z.entries[i]
+                    let p: ptr<u8> = &z.data[e.name as i64]
+                    if e.nameLen == 8 + fl and fmuStartsWith(p, e.nameLen, "sources/") and fmuBytesEq(&p[8], fp, fl) {
+                        present = present + 1
+                    }
+                }
+            }
+            f = xmlNextSame(d, f)
+        }
+    }
+    r[0].sourcesListed = r[0].sourcesListed + listed
+    r[0].sourcesPresent = r[0].sourcesPresent + present
+    if bins > 0 {
+        return FMU_OK
+    }
+    if listed == 0 {
+        return FMU_ERR_NO_IMPLEMENTATION
+    }
+    if present != listed {
+        return FMU_ERR_SOURCE_MISSING
+    }
+    return FMU_OK
+}
+
+# Check an FMU archive held in data[0 .. len). Returns FMU_OK or a fault (also in r.code).
+export function fmuCheck(data: ptr<u8>, len: i64, ws: FmuWorkspace, r: ptr<FmuReport>) -> i32 {
+    r[0] = fmuEmptyReport()
+    let mut za: array<ZipArchive, 1> = [ZipArchive { data: data, len: len, entries: ws.entries, maxEntries: ws.maxEntries, count: 0, error: 0, errorEntry: -1 }]
+    let zc: i32 = zipOpen(&za[0], data, len)
+    r[0].zipCode = zc
+    if zc == ZIP_ERR_MULTI_DISK {
+        return fmuFail(r, FMU_ERR_SPLIT, za[0].errorEntry)
+    }
+    if zc == ZIP_ERR_UNSUPPORTED {
+        return fmuFail(r, FMU_ERR_VERSION, za[0].errorEntry)
+    }
+    if zc != ZIP_OK {
+        return fmuFail(r, FMU_ERR_ZIP, za[0].errorEntry)
+    }
+    let z: ZipArchive = za[0]
+    r[0].entries = z.count
+    for i in 0 to z.count {
+        let e: ZipEntry = z.entries[i]
+        if e.method != ZIP_STORED and e.method != ZIP_DEFLATED {
+            return fmuFail(r, FMU_ERR_METHOD, i)
+        }
+        if (e.flags % 2) == 1 or ((e.flags / 64) % 2) == 1 {
+            return fmuFail(r, FMU_ERR_ENCRYPTED, i)
+        }
+        if e.versionNeeded > 20 {
+            return fmuFail(r, FMU_ERR_VERSION, i)
+        }
+        if ((e.flags / 8) % 2) == 1 and e.method != ZIP_DEFLATED {
+            return fmuFail(r, FMU_ERR_DATA_DESCRIPTOR, i)
+        }
+        if e.madeBy / 256 == 3 and ((e.externalAttributes / 65536) / 4096) % 16 == 10 {
+            return fmuFail(r, FMU_ERR_LINK, i)
+        }
+        let p: ptr<u8> = &z.data[e.name as i64]
+        if not fmuNameOk(p, e.nameLen) {
+            return fmuFail(r, FMU_ERR_PATH, i)
+        }
+        for j in 0 to i {
+            let o: ZipEntry = z.entries[j]
+            if o.nameLen == e.nameLen and fmuBytesEq(&z.data[o.name as i64], p, e.nameLen) {
+                return fmuFail(r, FMU_ERR_DUPLICATE, i)
+            }
+        }
+        if e.size > ws.scratchCap {
+            return fmuFail(r, FMU_ERR_CAPACITY, i)
+        }
+        let mut written: array<i64, 1> = [0]
+        let xc: i32 = zipExtract(z, i, ws.scratch, ws.scratchCap, &written[0])
+        if xc != ZIP_OK {
+            r[0].zipCode = xc
+            return fmuFail(r, FMU_ERR_ENTRY_DATA, i)
+        }
+    }
+    let mdi: i32 = zipFind(z, "modelDescription.xml")
+    if mdi < 0 {
+        return fmuFail(r, FMU_ERR_NO_MODEL_DESCRIPTION, -1)
+    }
+    if z.entries[mdi].size >= ws.mdCap {
+        return fmuFail(r, FMU_ERR_CAPACITY, mdi)
+    }
+    let mut mdLen: array<i64, 1> = [0]
+    let _x: i32 = zipExtract(z, mdi, ws.md, ws.mdCap, &mdLen[0])
+    ws.md[mdLen[0]] = 0 as u8
+    let xr: i32 = xmlParse(ws.doc, ws.md, mdLen[0] as i32)
+    r[0].xmlCode = xr
+    if xr != XML_OK {
+        return fmuFail(r, FMU_ERR_MODEL_DESCRIPTION, mdi)
+    }
+    let mut fr: array<Fmi2Report, 1> = [fmi2EmptyReport()]
+    let fc: i32 = fmi2Validate(ws.doc[0], ws.info, ws.maxVars, &fr[0])
+    r[0].fmi2Code = fc
+    if fc != FMI2_OK {
+        return fmuFail(r, FMU_ERR_MODEL_DESCRIPTION, mdi)
+    }
+    let d: XmlDoc = ws.doc[0]
+    let me: i32 = xmlChildNamed(d, 0, "ModelExchange")
+    let cs: i32 = xmlChildNamed(d, 0, "CoSimulation")
+    r[0].modelExchange = me >= 0
+    r[0].coSimulation = cs >= 0
+    if me >= 0 {
+        let c: i32 = fmuInterfaceOk(z, d, me, r)
+        if c != FMU_OK {
+            return fmuFail(r, c, -1)
+        }
+    }
+    if cs >= 0 {
+        let c2: i32 = fmuInterfaceOk(z, d, cs, r)
+        if c2 != FMU_OK {
+            return fmuFail(r, c2, -1)
+        }
+    }
+    return FMU_OK
+}
+
+# Write a stored FMU into w: modelDescription.xml, then files in order, then the central
+# directory; then check the result with fmuCheck. Returns FMU_OK, FMU_ERR_CAPACITY when w
+# is too small, or the fmuCheck fault of the written archive.
+export function fmuPack(w: ptr<ZipWriter>, md: ptr<u8>, mdLen: i64, files: ptr<FmuFile>, count: i32, ws: FmuWorkspace, r: ptr<FmuReport>) -> i32 {
+    r[0] = fmuEmptyReport()
+    let name: string = "modelDescription.xml"
+    if not zipWriterAdd(w, name as ptr<u8>, xmlStrLen(name), md, mdLen) {
+        return fmuFail(r, FMU_ERR_CAPACITY, -1)
+    }
+    for i in 0 to count {
+        let f: FmuFile = files[i]
+        if not zipWriterAdd(w, f.name, f.nameLen, f.data, f.len) {
+            return fmuFail(r, FMU_ERR_CAPACITY, i)
+        }
+    }
+    if not zipWriterFinish(w) {
+        return fmuFail(r, FMU_ERR_CAPACITY, -1)
+    }
+    return fmuCheck(w[0].buf, w[0].len, ws, r)
+}

@@ -62,4 +62,4 @@ The canonical rewrites and the quarter-car export are written to `/tmp/herbie-fm
 
 ## Next for #7
 
-Packaging an FMU (zip layout, `binaries/`, `sources/`), the `fmi2*` C entry points generated from a Flow model, a Co-Simulation step loop checked against these Reference FMUs, FMI 3.0, explicit unit and timestep compatibility, and the CAN/XCP, replay and SIL items of the issue.
+FMU archive checks and packing are in [fmu.md](fmu.md). Still open: the `fmi2*` C entry points generated from a Flow model, a Co-Simulation step loop checked against these Reference FMUs, FMI 3.0, explicit unit and timestep compatibility, and the CAN/XCP, replay and SIL items of the issue.

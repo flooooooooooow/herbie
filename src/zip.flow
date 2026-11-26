@@ -1,0 +1,709 @@
+# @module herbie.zip
+# ZIP container reading and writing for FMU archives, with no allocation: the caller owns
+# the archive bytes, the entry table and every output buffer.
+#
+# Reader: finds the end-of-central-directory record, lists central-directory entries,
+# cross-checks each local header and extracts stored (method 0) and deflated (method 8)
+# entries. The inflater implements RFC 1951 (stored, fixed-Huffman and dynamic-Huffman
+# blocks) in the canonical-code style of zlib's puff.c, and every extraction is checked
+# against the recorded size and CRC-32. ZIP64, multi-disk archives, encryption and other
+# methods are reported, never guessed at.
+# Writer: stored entries only, with fixed 1980-01-01 timestamps so the same input gives
+# the same bytes.
+
+export const ZIP_OK: i32 = 0
+export const ZIP_ERR_FORMAT: i32 = 1
+export const ZIP_ERR_MULTI_DISK: i32 = 2
+export const ZIP_ERR_UNSUPPORTED: i32 = 3
+export const ZIP_ERR_CAPACITY: i32 = 4
+export const ZIP_ERR_LOCAL_HEADER: i32 = 5
+export const ZIP_ERR_METHOD: i32 = 6
+export const ZIP_ERR_INFLATE: i32 = 7
+export const ZIP_ERR_SIZE: i32 = 8
+export const ZIP_ERR_CRC: i32 = 9
+export const ZIP_ERR_OUTPUT: i32 = 10
+
+export const ZIP_STORED: i32 = 0
+export const ZIP_DEFLATED: i32 = 8
+
+export struct ZipEntry {
+    # Name bytes inside the archive (central directory copy).
+    name: i32,
+    nameLen: i32,
+    madeBy: i32,
+    versionNeeded: i32,
+    flags: i32,
+    method: i32,
+    crc: i64,
+    compressedSize: i64,
+    size: i64,
+    diskStart: i32,
+    externalAttributes: i64,
+    localOffset: i64,
+    # Offset of the entry data, resolved from the local header by zipOpen.
+    dataOffset: i64
+}
+
+export struct ZipArchive {
+    data: ptr<u8>,
+    len: i64,
+    entries: ptr<ZipEntry>,
+    maxEntries: i32,
+    count: i32,
+    error: i32,
+    # Entry index where the error was found, or -1.
+    errorEntry: i32
+}
+
+export function zipEmptyEntry() -> ZipEntry {
+    return ZipEntry {
+        name: 0, nameLen: 0, madeBy: 0, versionNeeded: 0, flags: 0, method: 0, crc: 0,
+        compressedSize: 0, size: 0, diskStart: 0, externalAttributes: 0, localOffset: 0, dataOffset: 0
+    }
+}
+
+function zipU16(p: ptr<u8>, at: i64) -> i32 {
+    return (p[at] as i32) + (p[at + 1] as i32) * 256
+}
+
+function zipU32(p: ptr<u8>, at: i64) -> i64 {
+    return (p[at] as i64) + (p[at + 1] as i64) * 256 + (p[at + 2] as i64) * 65536 + (p[at + 3] as i64) * 16777216
+}
+
+# CRC-32 (IEEE 802.3, reflected polynomial 0xEDB88320) of p[0 .. n).
+export function zipCrc32(p: ptr<u8>, n: i64) -> i64 {
+    let mut table: array<u32, 256> = [0 as u32; 256]
+    for i in 0 to 256 {
+        let mut c: u32 = i as u32
+        for k in 0 to 8 {
+            if (c & (1 as u32)) != (0 as u32) {
+                c = (3988292384 as u32) ^ (c >> (1 as u32))
+            } else {
+                c = c >> (1 as u32)
+            }
+        }
+        table[i] = c
+    }
+    let mut crc: u32 = 4294967295 as u32
+    let mut i: i64 = 0
+    while i < n {
+        let idx: u32 = (crc ^ (p[i] as u32)) & (255 as u32)
+        crc = table[idx as i32] ^ (crc >> (8 as u32))
+        i = i + 1
+    }
+    return (crc ^ (4294967295 as u32)) as i64
+}
+
+function zipFail(z: ptr<ZipArchive>, code: i32, entry: i32) -> i32 {
+    z[0].error = code
+    z[0].errorEntry = entry
+    return code
+}
+
+# Open an archive: parse the central directory into z.entries and resolve each local
+# header. Returns ZIP_OK or a fault code (also left in z.error).
+export function zipOpen(z: ptr<ZipArchive>, data: ptr<u8>, len: i64) -> i32 {
+    z[0].data = data
+    z[0].len = len
+    z[0].count = 0
+    z[0].error = ZIP_OK
+    z[0].errorEntry = -1
+    if len < 22 {
+        return zipFail(z, ZIP_ERR_FORMAT, -1)
+    }
+    let mut eocd: i64 = -1
+    let mut at: i64 = len - 22
+    let mut stop: i64 = len - 22 - 65535
+    if stop < 0 {
+        stop = 0
+    }
+    while at >= stop and eocd < 0 {
+        if zipU32(data, at) == 101010256 and at + 22 + (zipU16(data, at + 20) as i64) == len {
+            eocd = at
+        }
+        at = at - 1
+    }
+    if eocd < 0 {
+        return zipFail(z, ZIP_ERR_FORMAT, -1)
+    }
+    let disk: i32 = zipU16(data, eocd + 4)
+    let cdDisk: i32 = zipU16(data, eocd + 6)
+    let onDisk: i32 = zipU16(data, eocd + 8)
+    let total: i32 = zipU16(data, eocd + 10)
+    let cdSize: i64 = zipU32(data, eocd + 12)
+    let cdOffset: i64 = zipU32(data, eocd + 16)
+    if total == 65535 or cdSize == 4294967295 or cdOffset == 4294967295 {
+        return zipFail(z, ZIP_ERR_UNSUPPORTED, -1)
+    }
+    if disk != 0 or cdDisk != 0 or onDisk != total {
+        return zipFail(z, ZIP_ERR_MULTI_DISK, -1)
+    }
+    if cdOffset + cdSize > eocd {
+        return zipFail(z, ZIP_ERR_FORMAT, -1)
+    }
+    if total > z[0].maxEntries {
+        return zipFail(z, ZIP_ERR_CAPACITY, -1)
+    }
+    let mut p: i64 = cdOffset
+    for i in 0 to total {
+        if p + 46 > cdOffset + cdSize or zipU32(data, p) != 33639248 {
+            return zipFail(z, ZIP_ERR_FORMAT, i)
+        }
+        let nameLen: i32 = zipU16(data, p + 28)
+        let extraLen: i32 = zipU16(data, p + 30)
+        let commentLen: i32 = zipU16(data, p + 32)
+        let next: i64 = p + 46 + (nameLen as i64) + (extraLen as i64) + (commentLen as i64)
+        if next > cdOffset + cdSize {
+            return zipFail(z, ZIP_ERR_FORMAT, i)
+        }
+        let e: ZipEntry = ZipEntry {
+            name: (p + 46) as i32, nameLen: nameLen,
+            madeBy: zipU16(data, p + 4), versionNeeded: zipU16(data, p + 6),
+            flags: zipU16(data, p + 8), method: zipU16(data, p + 10),
+            crc: zipU32(data, p + 16), compressedSize: zipU32(data, p + 20), size: zipU32(data, p + 24),
+            diskStart: zipU16(data, p + 34), externalAttributes: zipU32(data, p + 38),
+            localOffset: zipU32(data, p + 42), dataOffset: 0
+        }
+        if e.compressedSize == 4294967295 or e.size == 4294967295 or e.localOffset == 4294967295 {
+            return zipFail(z, ZIP_ERR_UNSUPPORTED, i)
+        }
+        if e.diskStart != 0 {
+            return zipFail(z, ZIP_ERR_MULTI_DISK, i)
+        }
+        z[0].entries[i] = e
+        z[0].count = i + 1
+        p = next
+    }
+    # Local headers: signature, same name and method, data inside the archive.
+    for i in 0 to total {
+        let e: ZipEntry = z[0].entries[i]
+        let lh: i64 = e.localOffset
+        if lh + 30 > cdOffset or zipU32(data, lh) != 67324752 {
+            return zipFail(z, ZIP_ERR_LOCAL_HEADER, i)
+        }
+        let ln: i32 = zipU16(data, lh + 26)
+        let le: i32 = zipU16(data, lh + 28)
+        if ln != e.nameLen or zipU16(data, lh + 8) != e.method or zipU16(data, lh + 6) != e.flags {
+            return zipFail(z, ZIP_ERR_LOCAL_HEADER, i)
+        }
+        for k in 0 to ln {
+            if data[lh + 30 + (k as i64)] != data[(e.name as i64) + (k as i64)] {
+                return zipFail(z, ZIP_ERR_LOCAL_HEADER, i)
+            }
+        }
+        let start: i64 = lh + 30 + (ln as i64) + (le as i64)
+        if start + e.compressedSize > cdOffset {
+            return zipFail(z, ZIP_ERR_LOCAL_HEADER, i)
+        }
+        z[0].entries[i].dataOffset = start
+    }
+    return ZIP_OK
+}
+
+# Index of the entry named `name`, or -1.
+export function zipFind(z: ZipArchive, name: string) -> i32 {
+    let q: ptr<u8> = name as ptr<u8>
+    let mut m: i32 = 0
+    while q[m] != (0 as u8) {
+        m = m + 1
+    }
+    for i in 0 to z.count {
+        let e: ZipEntry = z.entries[i]
+        if e.nameLen == m {
+            let mut same: bool = true
+            for k in 0 to m {
+                if z.data[(e.name as i64) + (k as i64)] != q[k] {
+                    same = false
+                }
+            }
+            if same {
+                return i
+            }
+        }
+    }
+    return -1
+}
+
+# ---- inflate (RFC 1951) ----
+
+struct Inflate {
+    src: ptr<u8>,
+    srcLen: i64,
+    srcPos: i64,
+    bitBuf: i64,
+    bitCount: i32,
+    dst: ptr<u8>,
+    dstCap: i64,
+    dstPos: i64,
+    error: i32
+}
+
+# 0 ok; 1 input ran out; 2 output full; 3 invalid block type; 4 stored length check;
+# 5 bad code lengths; 6 bad symbol; 7 distance before start of output.
+function infBits(s: ptr<Inflate>, need: i32) -> i32 {
+    while s[0].bitCount < need {
+        if s[0].srcPos >= s[0].srcLen {
+            s[0].error = 1
+            return 0
+        }
+        s[0].bitBuf = s[0].bitBuf | ((s[0].src[s[0].srcPos] as i64) << (s[0].bitCount as i64))
+        s[0].srcPos = s[0].srcPos + 1
+        s[0].bitCount = s[0].bitCount + 8
+    }
+    let v: i64 = s[0].bitBuf & (((1 as i64) << (need as i64)) - (1 as i64))
+    s[0].bitBuf = s[0].bitBuf >> (need as i64)
+    s[0].bitCount = s[0].bitCount - need
+    return v as i32
+}
+
+function infPut(s: ptr<Inflate>, c: u8) -> bool {
+    if s[0].dstPos >= s[0].dstCap {
+        s[0].error = 2
+        return false
+    }
+    s[0].dst[s[0].dstPos] = c
+    s[0].dstPos = s[0].dstPos + 1
+    return true
+}
+
+function infStored(s: ptr<Inflate>) -> bool {
+    s[0].bitBuf = 0
+    s[0].bitCount = 0
+    if s[0].srcPos + 4 > s[0].srcLen {
+        s[0].error = 1
+        return false
+    }
+    let len: i32 = zipU16(s[0].src, s[0].srcPos)
+    let nlen: i32 = zipU16(s[0].src, s[0].srcPos + 2)
+    s[0].srcPos = s[0].srcPos + 4
+    if len != 65535 - nlen {
+        s[0].error = 4
+        return false
+    }
+    if s[0].srcPos + (len as i64) > s[0].srcLen {
+        s[0].error = 1
+        return false
+    }
+    for k in 0 to len {
+        if not infPut(s, s[0].src[s[0].srcPos + (k as i64)]) {
+            return false
+        }
+    }
+    s[0].srcPos = s[0].srcPos + (len as i64)
+    return true
+}
+
+# Canonical Huffman table from code lengths: count[0..15], symbol[0..n). Returns 0 for a
+# complete code, > 0 for an incomplete one, < 0 for an over-subscribed one.
+function infConstruct(count: ptr<i32>, symbol: ptr<i32>, lengths: ptr<i32>, n: i32) -> i32 {
+    for len in 0 to 16 {
+        count[len] = 0
+    }
+    for k in 0 to n {
+        count[lengths[k]] = count[lengths[k]] + 1
+    }
+    if count[0] == n {
+        return 0
+    }
+    let mut left: i32 = 1
+    for len in 1 to 16 {
+        left = left * 2 - count[len]
+        if left < 0 {
+            return left
+        }
+    }
+    let mut offs: array<i32, 16> = [0; 16]
+    for len in 1 to 15 {
+        offs[len + 1] = offs[len] + count[len]
+    }
+    for k in 0 to n {
+        if lengths[k] != 0 {
+            symbol[offs[lengths[k]]] = k
+            offs[lengths[k]] = offs[lengths[k]] + 1
+        }
+    }
+    return left
+}
+
+function infDecode(s: ptr<Inflate>, count: ptr<i32>, symbol: ptr<i32>) -> i32 {
+    let mut code: i32 = 0
+    let mut first: i32 = 0
+    let mut index: i32 = 0
+    for len in 1 to 16 {
+        code = code | infBits(s, 1)
+        if s[0].error != 0 {
+            return -1
+        }
+        let c: i32 = count[len]
+        if code - c < first {
+            return symbol[index + (code - first)]
+        }
+        index = index + c
+        first = (first + c) * 2
+        code = code * 2
+    }
+    s[0].error = 6
+    return -1
+}
+
+function infCodes(s: ptr<Inflate>, lc: ptr<i32>, ls: ptr<i32>, dc: ptr<i32>, ds: ptr<i32>) -> bool {
+    let mut lbase: array<i32, 29> = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258]
+    let mut lext: array<i32, 29> = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0]
+    let mut dbase: array<i32, 30> = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577]
+    let mut dext: array<i32, 30> = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13]
+    while true {
+        let sym: i32 = infDecode(s, lc, ls)
+        if sym < 0 {
+            return false
+        }
+        if sym < 256 {
+            if not infPut(s, sym as u8) {
+                return false
+            }
+        } elif sym == 256 {
+            return true
+        } else {
+            let li: i32 = sym - 257
+            if li >= 29 {
+                s[0].error = 6
+                return false
+            }
+            let len: i32 = lbase[li] + infBits(s, lext[li])
+            let dsym: i32 = infDecode(s, dc, ds)
+            if dsym < 0 {
+                return false
+            }
+            if dsym >= 30 {
+                s[0].error = 6
+                return false
+            }
+            let dist: i64 = (dbase[dsym] + infBits(s, dext[dsym])) as i64
+            if s[0].error != 0 {
+                return false
+            }
+            if dist > s[0].dstPos {
+                s[0].error = 7
+                return false
+            }
+            for k in 0 to len {
+                if not infPut(s, s[0].dst[s[0].dstPos - dist]) {
+                    return false
+                }
+            }
+        }
+    }
+    return false
+}
+
+function infFixed(s: ptr<Inflate>) -> bool {
+    let mut lengths: array<i32, 320> = [0; 320]
+    for k in 0 to 144 {
+        lengths[k] = 8
+    }
+    for k in 144 to 256 {
+        lengths[k] = 9
+    }
+    for k in 256 to 280 {
+        lengths[k] = 7
+    }
+    for k in 280 to 288 {
+        lengths[k] = 8
+    }
+    let mut lc: array<i32, 16> = [0; 16]
+    let mut ls: array<i32, 288> = [0; 288]
+    let _l: i32 = infConstruct(&lc[0], &ls[0], &lengths[0], 288)
+    for k in 0 to 30 {
+        lengths[k] = 5
+    }
+    let mut dc: array<i32, 16> = [0; 16]
+    let mut ds: array<i32, 30> = [0; 30]
+    let _d: i32 = infConstruct(&dc[0], &ds[0], &lengths[0], 30)
+    return infCodes(s, &lc[0], &ls[0], &dc[0], &ds[0])
+}
+
+function infDynamic(s: ptr<Inflate>) -> bool {
+    let mut order: array<i32, 19> = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15]
+    let nlen: i32 = infBits(s, 5) + 257
+    let ndist: i32 = infBits(s, 5) + 1
+    let ncode: i32 = infBits(s, 4) + 4
+    if s[0].error != 0 {
+        return false
+    }
+    if nlen > 286 or ndist > 30 {
+        s[0].error = 5
+        return false
+    }
+    let mut lengths: array<i32, 320> = [0; 320]
+    for k in 0 to ncode {
+        lengths[order[k]] = infBits(s, 3)
+    }
+    if s[0].error != 0 {
+        return false
+    }
+    let mut lc: array<i32, 16> = [0; 16]
+    let mut ls: array<i32, 288> = [0; 288]
+    if infConstruct(&lc[0], &ls[0], &lengths[0], 19) != 0 {
+        s[0].error = 5
+        return false
+    }
+    let mut index: i32 = 0
+    while index < nlen + ndist {
+        let sym: i32 = infDecode(s, &lc[0], &ls[0])
+        if sym < 0 {
+            return false
+        }
+        if sym < 16 {
+            lengths[index] = sym
+            index = index + 1
+        } else {
+            let mut len: i32 = 0
+            let mut rep: i32 = 0
+            if sym == 16 {
+                if index == 0 {
+                    s[0].error = 5
+                    return false
+                }
+                len = lengths[index - 1]
+                rep = 3 + infBits(s, 2)
+            } elif sym == 17 {
+                rep = 3 + infBits(s, 3)
+            } else {
+                rep = 11 + infBits(s, 7)
+            }
+            if s[0].error != 0 {
+                return false
+            }
+            if index + rep > nlen + ndist {
+                s[0].error = 5
+                return false
+            }
+            for k in 0 to rep {
+                lengths[index] = len
+                index = index + 1
+            }
+        }
+    }
+    if lengths[256] == 0 {
+        s[0].error = 5
+        return false
+    }
+    let el: i32 = infConstruct(&lc[0], &ls[0], &lengths[0], nlen)
+    if el < 0 or (el > 0 and nlen - lc[0] != 1) {
+        s[0].error = 5
+        return false
+    }
+    let mut dc: array<i32, 16> = [0; 16]
+    let mut ds: array<i32, 30> = [0; 30]
+    let ed: i32 = infConstruct(&dc[0], &ds[0], &lengths[nlen], ndist)
+    if ed < 0 or (ed > 0 and ndist - dc[0] != 1) {
+        s[0].error = 5
+        return false
+    }
+    return infCodes(s, &lc[0], &ls[0], &dc[0], &ds[0])
+}
+
+export struct InflateResult {
+    # 0 ok, else the inflate fault (1 input ran out, 2 output full, 3 invalid block type,
+    # 4 stored length check, 5 bad code lengths, 6 bad symbol, 7 distance too far back).
+    error: i32,
+    written: i64,
+    consumed: i64
+}
+
+# Inflate a raw RFC 1951 stream src[0 .. srcLen) into dst[0 .. dstCap).
+export function zipInflate(src: ptr<u8>, srcLen: i64, dst: ptr<u8>, dstCap: i64) -> InflateResult {
+    let mut s: array<Inflate, 1> = [Inflate { src: src, srcLen: srcLen, srcPos: 0, bitBuf: 0, bitCount: 0, dst: dst, dstCap: dstCap, dstPos: 0, error: 0 }]
+    let mut last: i32 = 0
+    while last == 0 {
+        last = infBits(&s[0], 1)
+        let kind: i32 = infBits(&s[0], 2)
+        if s[0].error != 0 {
+            return InflateResult { error: s[0].error, written: s[0].dstPos, consumed: s[0].srcPos }
+        }
+        let mut ok: bool = false
+        if kind == 0 {
+            ok = infStored(&s[0])
+        } elif kind == 1 {
+            ok = infFixed(&s[0])
+        } elif kind == 2 {
+            ok = infDynamic(&s[0])
+        } else {
+            s[0].error = 3
+        }
+        if not ok {
+            if s[0].error == 0 {
+                s[0].error = 6
+            }
+            return InflateResult { error: s[0].error, written: s[0].dstPos, consumed: s[0].srcPos }
+        }
+    }
+    return InflateResult { error: 0, written: s[0].dstPos, consumed: s[0].srcPos }
+}
+
+# Extract entry i into out[0 .. cap); checks method, size and CRC-32. Returns ZIP_OK or a
+# fault code; *written receives the byte count.
+export function zipExtract(z: ZipArchive, i: i32, out: ptr<u8>, cap: i64, written: ptr<i64>) -> i32 {
+    let e: ZipEntry = z.entries[i]
+    written[0] = 0
+    if e.size > cap {
+        return ZIP_ERR_OUTPUT
+    }
+    let src: ptr<u8> = &z.data[e.dataOffset]
+    if e.method == ZIP_STORED {
+        if e.compressedSize != e.size {
+            return ZIP_ERR_SIZE
+        }
+        let mut k: i64 = 0
+        while k < e.size {
+            out[k] = src[k]
+            k = k + 1
+        }
+        written[0] = e.size
+    } elif e.method == ZIP_DEFLATED {
+        let r: InflateResult = zipInflate(src, e.compressedSize, out, cap)
+        if r.error == 2 {
+            return ZIP_ERR_SIZE
+        }
+        if r.error != 0 {
+            return ZIP_ERR_INFLATE
+        }
+        written[0] = r.written
+        if r.written != e.size {
+            return ZIP_ERR_SIZE
+        }
+    } else {
+        return ZIP_ERR_METHOD
+    }
+    if zipCrc32(out, e.size) != e.crc {
+        return ZIP_ERR_CRC
+    }
+    return ZIP_OK
+}
+
+# ---- writer (stored entries) ----
+
+export struct ZipWriter {
+    buf: ptr<u8>,
+    cap: i64,
+    len: i64,
+    overflow: bool,
+    entries: ptr<ZipEntry>,
+    maxEntries: i32,
+    count: i32,
+    # Name bytes for the central directory, kept in the caller's pool.
+    names: ptr<u8>,
+    namesCap: i32,
+    namesLen: i32
+}
+
+function zwByte(w: ptr<ZipWriter>, b: i32) -> void {
+    if w[0].len >= w[0].cap {
+        w[0].overflow = true
+        return
+    }
+    w[0].buf[w[0].len] = b as u8
+    w[0].len = w[0].len + 1
+}
+
+function zw16(w: ptr<ZipWriter>, v: i32) -> void {
+    zwByte(w, v % 256)
+    zwByte(w, (v / 256) % 256)
+}
+
+function zw32(w: ptr<ZipWriter>, v: i64) -> void {
+    zwByte(w, (v % 256) as i32)
+    zwByte(w, ((v / 256) % 256) as i32)
+    zwByte(w, ((v / 65536) % 256) as i32)
+    zwByte(w, ((v / 16777216) % 256) as i32)
+}
+
+# Append a stored entry. Returns false on overflow or a full entry table.
+export function zipWriterAdd(w: ptr<ZipWriter>, name: ptr<u8>, nameLen: i32, data: ptr<u8>, n: i64) -> bool {
+    if w[0].count >= w[0].maxEntries or w[0].namesLen + nameLen > w[0].namesCap or nameLen > 65535 or n > 4294967294 {
+        w[0].overflow = true
+        return false
+    }
+    let crc: i64 = zipCrc32(data, n)
+    let off: i64 = w[0].len
+    for k in 0 to nameLen {
+        w[0].names[w[0].namesLen + k] = name[k]
+    }
+    w[0].entries[w[0].count] = ZipEntry {
+        name: w[0].namesLen, nameLen: nameLen, madeBy: 20, versionNeeded: 10, flags: 0,
+        method: ZIP_STORED, crc: crc, compressedSize: n, size: n, diskStart: 0,
+        externalAttributes: 0, localOffset: off, dataOffset: off + 30 + (nameLen as i64)
+    }
+    w[0].namesLen = w[0].namesLen + nameLen
+    w[0].count = w[0].count + 1
+    zw32(w, 67324752)
+    zw16(w, 10)
+    zw16(w, 0)
+    zw16(w, ZIP_STORED)
+    zw16(w, 0)
+    zw16(w, 33)
+    zw32(w, crc)
+    zw32(w, n)
+    zw32(w, n)
+    zw16(w, nameLen)
+    zw16(w, 0)
+    for k in 0 to nameLen {
+        zwByte(w, name[k] as i32)
+    }
+    let mut i: i64 = 0
+    while i < n and not w[0].overflow {
+        zwByte(w, data[i] as i32)
+        i = i + 1
+    }
+    return not w[0].overflow
+}
+
+export function zipWriterAddNamed(w: ptr<ZipWriter>, name: string, data: ptr<u8>, n: i64) -> bool {
+    let q: ptr<u8> = name as ptr<u8>
+    let mut m: i32 = 0
+    while q[m] != (0 as u8) {
+        m = m + 1
+    }
+    return zipWriterAdd(w, q, m, data, n)
+}
+
+# Write the central directory and end record. Returns false on overflow.
+export function zipWriterFinish(w: ptr<ZipWriter>) -> bool {
+    if w[0].count > 65534 {
+        w[0].overflow = true
+        return false
+    }
+    let cdStart: i64 = w[0].len
+    for i in 0 to w[0].count {
+        let e: ZipEntry = w[0].entries[i]
+        zw32(w, 33639248)
+        zw16(w, e.madeBy)
+        zw16(w, e.versionNeeded)
+        zw16(w, e.flags)
+        zw16(w, e.method)
+        zw16(w, 0)
+        zw16(w, 33)
+        zw32(w, e.crc)
+        zw32(w, e.compressedSize)
+        zw32(w, e.size)
+        zw16(w, e.nameLen)
+        zw16(w, 0)
+        zw16(w, 0)
+        zw16(w, 0)
+        zw16(w, 0)
+        zw32(w, e.externalAttributes)
+        zw32(w, e.localOffset)
+        for k in 0 to e.nameLen {
+            zwByte(w, w[0].names[e.name + k] as i32)
+        }
+    }
+    let cdSize: i64 = w[0].len - cdStart
+    zw32(w, 101010256)
+    zw16(w, 0)
+    zw16(w, 0)
+    zw16(w, w[0].count)
+    zw16(w, w[0].count)
+    zw32(w, cdSize)
+    zw32(w, cdStart)
+    zw16(w, 0)
+    return not w[0].overflow
+}
