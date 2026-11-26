@@ -15,7 +15,11 @@
 #   - ModelStructure: Outputs lists exactly the outputs in index order, every Derivatives
 #     entry is a Real with `derivative`, InitialUnknowns is exactly the set of section
 #     2.2.8 in index order, and dependency lists are ascending, in range and matched by
-#     dependenciesKind.
+#     dependenciesKind;
+#   - alias sets (shared value reference) obey section 2.2.7, min ≤ start ≤ max with
+#     inheritance from the declared type, and SimpleType names and Item values are unique.
+# fmi2CheckDependencyKnowns is a separate section 2.2.8 pass: every listed dependency must
+# be a known of its mode.
 # fmi2BuildRealModel writes a modelDescription for a Real-valued Herbie model interface;
 # xmlWrite serialises it. This is the model description only: no FMU archive, binaries,
 # fmi2 C API or co-simulation master.
@@ -49,6 +53,10 @@ export const FMI2_ERR_OUTPUTS: i32 = 18
 export const FMI2_ERR_DERIVATIVES: i32 = 19
 export const FMI2_ERR_INITIAL_UNKNOWNS: i32 = 20
 export const FMI2_ERR_DEPENDENCIES: i32 = 21
+export const FMI2_ERR_ALIAS: i32 = 22
+export const FMI2_ERR_RANGE: i32 = 23
+export const FMI2_ERR_DEPENDENCY_KNOWN: i32 = 24
+export const FMI2_ERR_TYPE_DEFINITION: i32 = 25
 
 export const FMI2_PARAMETER: i32 = 0
 export const FMI2_CALCULATED_PARAMETER: i32 = 1
@@ -87,7 +95,8 @@ export struct Fmi2VarInfo {
     # 1-based index of the variable this one is the derivative of; 0 when absent.
     derivative: i32,
     isState: bool,
-    isDerivative: bool
+    isDerivative: bool,
+    valueReference: i64
 }
 
 export struct Fmi2Report {
@@ -113,7 +122,7 @@ export function fmi2EmptyVarInfo() -> Fmi2VarInfo {
     return Fmi2VarInfo {
         element: -1, typeElement: -1, baseType: 0, causality: FMI2_LOCAL,
         variability: FMI2_CONTINUOUS, initial: FMI2_INITIAL_NONE, hasStart: false,
-        derivative: 0, isState: false, isDerivative: false
+        derivative: 0, isState: false, isDerivative: false, valueReference: 0
     }
 }
 
@@ -523,6 +532,7 @@ function fmi2CheckVariable(d: XmlDoc, root: i32, sv: i32, info: ptr<Fmi2VarInfo>
     if vr < 0 or fmi2AttrUnsigned(d, vr, 4294967295) < 0 {
         return fmi2Fail(r, FMI2_ERR_VALUE_REFERENCE, sv)
     }
+    v.valueReference = fmi2AttrUnsigned(d, vr, 4294967295)
     let ca: i32 = xmlFindAttr(d, sv, "causality")
     if ca >= 0 {
         v.causality = fmi2CausalityCode(d, ca)
@@ -590,6 +600,311 @@ function fmi2CheckVariable(d: XmlDoc, root: i32, sv: i32, info: ptr<Fmi2VarInfo>
     return FMI2_OK
 }
 
+# ---- alias sets and value ranges (section 2.2.7) ----
+
+# Value-reference space: Real, Integer and Enumeration together, Boolean, String.
+function fmi2AliasGroup(baseType: i32) -> i32 {
+    if baseType == FMI2_ENUMERATION {
+        return FMI2_INTEGER
+    }
+    return baseType
+}
+
+# Lexical xs:double: optional sign, digits with optional fraction, optional exponent,
+# or INF, -INF, NaN.
+function fmi2IsXsDouble(v: ptr<u8>, n: i32) -> bool {
+    if fmi2WordIs(v, 0, n, "INF") or fmi2WordIs(v, 0, n, "-INF") or fmi2WordIs(v, 0, n, "NaN") {
+        return true
+    }
+    let mut i: i32 = 0
+    if i < n and (v[i] == (43 as u8) or v[i] == (45 as u8)) {
+        i = i + 1
+    }
+    let mut digits: i32 = 0
+    while i < n and (v[i] as i32) >= 48 and (v[i] as i32) <= 57 {
+        i = i + 1
+        digits = digits + 1
+    }
+    if i < n and v[i] == (46 as u8) {
+        i = i + 1
+        while i < n and (v[i] as i32) >= 48 and (v[i] as i32) <= 57 {
+            i = i + 1
+            digits = digits + 1
+        }
+    }
+    if digits == 0 {
+        return false
+    }
+    if i < n and (v[i] == (101 as u8) or v[i] == (69 as u8)) {
+        i = i + 1
+        if i < n and (v[i] == (43 as u8) or v[i] == (45 as u8)) {
+            i = i + 1
+        }
+        let s: i32 = i
+        while i < n and (v[i] as i32) >= 48 and (v[i] as i32) <= 57 {
+            i = i + 1
+        }
+        if i == s {
+            return false
+        }
+    }
+    return i == n
+}
+
+# Lexical xs:int: optional sign and decimal digits within 32 bits.
+function fmi2IsXsInt(v: ptr<u8>, n: i32) -> bool {
+    let mut i: i32 = 0
+    let mut neg: bool = false
+    if i < n and (v[i] == (43 as u8) or v[i] == (45 as u8)) {
+        neg = v[i] == (45 as u8)
+        i = i + 1
+    }
+    if i == n {
+        return false
+    }
+    let mut x: i64 = 0
+    while i < n {
+        let c: i32 = v[i] as i32
+        if c < 48 or c > 57 {
+            return false
+        }
+        x = x * 10 + (c - 48) as i64
+        if x > 2147483648 {
+            return false
+        }
+        i = i + 1
+    }
+    return neg or x <= 2147483647
+}
+
+export struct Fmi2Number {
+    present: bool,
+    ok: bool,
+    value: f64
+}
+
+# Numeric value of attribute `name` on element e, read as xs:double for Real and xs:int
+# for Integer and Enumeration. Absent attributes give present = false.
+function fmi2NumberAttr(d: XmlDoc, e: i32, name: string, baseType: i32) -> Fmi2Number {
+    if e < 0 {
+        return Fmi2Number { present: false, ok: true, value: 0.0 }
+    }
+    let a: i32 = xmlFindAttr(d, e, name)
+    if a < 0 {
+        return Fmi2Number { present: false, ok: true, value: 0.0 }
+    }
+    let at: XmlAttribute = d.attrs[a]
+    let v: ptr<u8> = &d.pool[at.value]
+    let n: i32 = at.valueLen
+    if n > 63 {
+        return Fmi2Number { present: true, ok: false, value: 0.0 }
+    }
+    let mut lexOk: bool = fmi2IsXsInt(v, n)
+    if baseType == FMI2_REAL {
+        lexOk = fmi2IsXsDouble(v, n)
+    }
+    if not lexOk {
+        return Fmi2Number { present: true, ok: false, value: 0.0 }
+    }
+    let mut tmp: array<u8, 64> = [0 as u8; 64]
+    for i in 0 to n {
+        tmp[i] = v[i]
+    }
+    let p: ParseF64 = str_parse_f64_at((&tmp[0]) as string, 0)
+    return Fmi2Number { present: true, ok: p.ok, value: p.value }
+}
+
+# The SimpleType type element named by the variable's declaredType, or -1.
+function fmi2DeclaredTypeElement(d: XmlDoc, root: i32, te: i32) -> i32 {
+    let dt: i32 = xmlFindAttr(d, te, "declaredType")
+    if dt < 0 {
+        return -1
+    }
+    return fmi2FindSimpleType(d, root, dt)
+}
+
+# min ≤ max and min ≤ start ≤ max for Real, Integer and Enumeration, with min and max
+# inherited from the declared type when the variable does not set them. Also checks
+# that nominal is a number.
+function fmi2CheckRange(d: XmlDoc, root: i32, v: Fmi2VarInfo) -> bool {
+    let bt: i32 = v.baseType
+    if bt != FMI2_REAL and bt != FMI2_INTEGER and bt != FMI2_ENUMERATION {
+        return true
+    }
+    let te: i32 = v.typeElement
+    let st: i32 = fmi2DeclaredTypeElement(d, root, te)
+    let mut lo: Fmi2Number = fmi2NumberAttr(d, te, "min", bt)
+    if not lo.present {
+        lo = fmi2NumberAttr(d, st, "min", bt)
+    }
+    let mut hi: Fmi2Number = fmi2NumberAttr(d, te, "max", bt)
+    if not hi.present {
+        hi = fmi2NumberAttr(d, st, "max", bt)
+    }
+    let start: Fmi2Number = fmi2NumberAttr(d, te, "start", bt)
+    if not lo.ok or not hi.ok or not start.ok {
+        return false
+    }
+    if bt == FMI2_REAL {
+        let nom: Fmi2Number = fmi2NumberAttr(d, te, "nominal", bt)
+        if not nom.ok {
+            return false
+        }
+    }
+    if lo.present and hi.present and not (lo.value <= hi.value) {
+        return false
+    }
+    if start.present {
+        if lo.present and not (start.value >= lo.value) {
+            return false
+        }
+        if hi.present and not (start.value <= hi.value) {
+            return false
+        }
+    }
+    return true
+}
+
+# Unit of a Real variable: its own unit attribute, else its declared type's; -1 when none.
+function fmi2UnitAttr(d: XmlDoc, root: i32, v: Fmi2VarInfo) -> i32 {
+    let a: i32 = xmlFindAttr(d, v.typeElement, "unit")
+    if a >= 0 {
+        return a
+    }
+    let st: i32 = fmi2DeclaredTypeElement(d, root, v.typeElement)
+    if st < 0 {
+        return -1
+    }
+    return xmlFindAttr(d, st, "unit")
+}
+
+function fmi2BoolValue(d: XmlDoc, a: i32) -> i32 {
+    if xmlAttrValueIs(d, a, "true") or xmlAttrValueIs(d, a, "1") {
+        return 1
+    }
+    return 0
+}
+
+function fmi2StartsEqual(d: XmlDoc, a: Fmi2VarInfo, b: Fmi2VarInfo) -> bool {
+    let sa: i32 = xmlFindAttr(d, a.typeElement, "start")
+    let sb: i32 = xmlFindAttr(d, b.typeElement, "start")
+    if sa < 0 or sb < 0 {
+        return sa < 0 and sb < 0
+    }
+    if a.baseType == FMI2_BOOLEAN {
+        return fmi2BoolValue(d, sa) == fmi2BoolValue(d, sb)
+    }
+    if a.baseType == FMI2_STRING {
+        return xmlAttrValuesEqual(d, sa, sb)
+    }
+    let base: i32 = fmi2AliasGroup(a.baseType)
+    let mut bt: i32 = FMI2_INTEGER
+    if base == FMI2_REAL {
+        bt = FMI2_REAL
+    }
+    let x: Fmi2Number = fmi2NumberAttr(d, a.typeElement, "start", bt)
+    let y: Fmi2Number = fmi2NumberAttr(d, b.typeElement, "start", bt)
+    return x.ok and y.ok and x.value == y.value
+}
+
+function fmi2Settable(v: Fmi2VarInfo) -> bool {
+    return v.causality == FMI2_PARAMETER or v.causality == FMI2_INPUT
+}
+
+# Section 2.2.7 alias restrictions for two variables of the same value-reference space
+# and value reference: not both settable (parameter or input), no settable variable
+# aliased to the independent variable, at most one non-constant member with a start,
+# constants only aliased to constants with identical start values, and identical units.
+function fmi2AliasPairOk(d: XmlDoc, root: i32, a: Fmi2VarInfo, b: Fmi2VarInfo) -> bool {
+    if fmi2AliasGroup(a.baseType) != fmi2AliasGroup(b.baseType) or a.valueReference != b.valueReference {
+        return true
+    }
+    if fmi2Settable(a) and fmi2Settable(b) {
+        return false
+    }
+    if (a.causality == FMI2_INDEPENDENT and fmi2Settable(b)) or (b.causality == FMI2_INDEPENDENT and fmi2Settable(a)) {
+        return false
+    }
+    let ac: bool = a.variability == FMI2_CONSTANT
+    let bc: bool = b.variability == FMI2_CONSTANT
+    if ac != bc {
+        return false
+    }
+    if ac {
+        if not fmi2StartsEqual(d, a, b) {
+            return false
+        }
+    } elif a.hasStart and b.hasStart {
+        return false
+    }
+    if a.baseType == FMI2_REAL {
+        let ua: i32 = fmi2UnitAttr(d, root, a)
+        let ub: i32 = fmi2UnitAttr(d, root, b)
+        if ua < 0 or ub < 0 {
+            return ua < 0 and ub < 0
+        }
+        return xmlAttrValuesEqual(d, ua, ub)
+    }
+    return true
+}
+
+# SimpleType names are unique and differ from every ScalarVariable name; Item values are
+# unique within each Enumeration (fmi2Type.xsd annotations).
+function fmi2TypeDefinitionsOk(d: XmlDoc, root: i32, mv: i32, r: ptr<Fmi2Report>) -> bool {
+    let td: i32 = xmlChildNamed(d, root, "TypeDefinitions")
+    if td < 0 {
+        return true
+    }
+    let mut st: i32 = d.elems[td].firstChild
+    while st >= 0 {
+        let na: i32 = xmlFindAttr(d, st, "name")
+        let mut other: i32 = d.elems[td].firstChild
+        while other != st {
+            if xmlAttrValuesEqual(d, na, xmlFindAttr(d, other, "name")) {
+                r[0].code = FMI2_ERR_TYPE_DEFINITION
+                r[0].element = st
+                return false
+            }
+            other = d.elems[other].nextSibling
+        }
+        let mut sv: i32 = d.elems[mv].firstChild
+        while sv >= 0 {
+            let vn: i32 = xmlFindAttr(d, sv, "name")
+            if vn >= 0 and xmlAttrValuesEqual(d, na, vn) {
+                r[0].code = FMI2_ERR_TYPE_DEFINITION
+                r[0].element = st
+                return false
+            }
+            sv = d.elems[sv].nextSibling
+        }
+        let te: i32 = d.elems[st].firstChild
+        if xmlNameIs(d, te, "Enumeration") {
+            let mut it: i32 = d.elems[te].firstChild
+            while it >= 0 {
+                let iv: Fmi2Number = fmi2NumberAttr(d, it, "value", FMI2_INTEGER)
+                if not xmlNameIs(d, it, "Item") or not iv.present or not iv.ok {
+                    r[0].code = FMI2_ERR_TYPE_DEFINITION
+                    r[0].element = it
+                    return false
+                }
+                let mut prev: i32 = d.elems[te].firstChild
+                while prev != it {
+                    let pv: Fmi2Number = fmi2NumberAttr(d, prev, "value", FMI2_INTEGER)
+                    if pv.value == iv.value {
+                        r[0].code = FMI2_ERR_TYPE_DEFINITION
+                        r[0].element = it
+                        return false
+                    }
+                    prev = d.elems[prev].nextSibling
+                }
+                it = d.elems[it].nextSibling
+            }
+        }
+        st = d.elems[st].nextSibling
+    }
+    return true
+}
+
 # Validate d as an FMI 2.0 modelDescription. info must hold maxVars entries.
 export function fmi2Validate(d: XmlDoc, info: ptr<Fmi2VarInfo>, maxVars: i32, r: ptr<Fmi2Report>) -> i32 {
     r[0] = fmi2EmptyReport()
@@ -639,6 +954,9 @@ export function fmi2Validate(d: XmlDoc, info: ptr<Fmi2VarInfo>, maxVars: i32, r:
             st = d.elems[st].nextSibling
         }
     }
+    if not fmi2TypeDefinitionsOk(d, root, mv, r) {
+        return FMI2_ERR_TYPE_DEFINITION
+    }
     let n: i32 = d.elems[mv].childCount
     if n > maxVars {
         return fmi2Fail(r, FMI2_ERR_CAPACITY, mv)
@@ -683,6 +1001,16 @@ export function fmi2Validate(d: XmlDoc, info: ptr<Fmi2VarInfo>, maxVars: i32, r:
         let t: i32 = info[k].derivative
         if t > n or (t > 0 and info[t - 1].baseType != FMI2_REAL) {
             return fmi2Fail(r, FMI2_ERR_DERIVATIVE, info[k].typeElement)
+        }
+    }
+    for k in 0 to n {
+        if not fmi2CheckRange(d, root, info[k]) {
+            return fmi2Fail(r, FMI2_ERR_RANGE, info[k].typeElement)
+        }
+        for j in 0 to k {
+            if not fmi2AliasPairOk(d, root, info[j], info[k]) {
+                return fmi2Fail(r, FMI2_ERR_ALIAS, info[k].element)
+            }
         }
     }
     # ModelStructure children: Outputs, Derivatives, InitialUnknowns in that order.
@@ -762,6 +1090,73 @@ export function fmi2Validate(d: XmlDoc, info: ptr<Fmi2VarInfo>, maxVars: i32, r:
     }
     if iu >= 0 {
         return fmi2Fail(r, FMI2_ERR_INITIAL_UNKNOWNS, iu)
+    }
+    return FMI2_OK
+}
+
+function fmi2KnownOk(v: Fmi2VarInfo, initialization: bool) -> bool {
+    if v.causality == FMI2_INPUT or v.causality == FMI2_INDEPENDENT {
+        return true
+    }
+    if initialization {
+        return v.initial == FMI2_EXACT
+    }
+    return v.isState or (v.causality == FMI2_PARAMETER and v.variability == FMI2_TUNABLE)
+}
+
+function fmi2ListKnownsOk(d: XmlDoc, list: i32, info: ptr<Fmi2VarInfo>, n: i32, initialization: bool, r: ptr<Fmi2Report>) -> bool {
+    if list < 0 {
+        return true
+    }
+    let mut u: i32 = d.elems[list].firstChild
+    while u >= 0 {
+        let da: i32 = xmlFindAttr(d, u, "dependencies")
+        if da >= 0 {
+            let at: XmlAttribute = d.attrs[da]
+            let v: ptr<u8> = &d.pool[at.value]
+            let mut i: i32 = 0
+            let mut next: array<i32, 1> = [0]
+            while true {
+                while i < at.valueLen and fmi2IsSpace(v[i]) {
+                    i = i + 1
+                }
+                if i >= at.valueLen {
+                    break
+                }
+                let x: i64 = fmi2ParseUnsigned(v, i, at.valueLen, 2147483647, &next[0])
+                i = next[0]
+                if x < 1 or x > (n as i64) or not fmi2KnownOk(info[(x as i32) - 1], initialization) {
+                    r[0].code = FMI2_ERR_DEPENDENCY_KNOWN
+                    r[0].element = u
+                    return false
+                }
+            }
+        }
+        u = d.elems[u].nextSibling
+    }
+    return true
+}
+
+# Section 2.2.8 legality of each listed dependency, run after a successful fmi2Validate
+# with the same info table. Outputs and Derivatives may depend on inputs, continuous
+# states, the independent variable and tunable parameters (the p_tune argument of f_der);
+# InitialUnknowns on inputs, the independent variable and variables with initial="exact".
+# This is kept apart from fmi2Validate because the FMI 2.0 Reference FMUs list fixed
+# parameters as dependencies (see docs/fmi2.md); returns FMI2_OK or
+# FMI2_ERR_DEPENDENCY_KNOWN with r.element at the offending Unknown.
+export function fmi2CheckDependencyKnowns(d: XmlDoc, info: ptr<Fmi2VarInfo>, n: i32, r: ptr<Fmi2Report>) -> i32 {
+    let ms: i32 = xmlChildNamed(d, 0, "ModelStructure")
+    if ms < 0 {
+        return FMI2_OK
+    }
+    if not fmi2ListKnownsOk(d, xmlChildNamed(d, ms, "Outputs"), info, n, false, r) {
+        return FMI2_ERR_DEPENDENCY_KNOWN
+    }
+    if not fmi2ListKnownsOk(d, xmlChildNamed(d, ms, "Derivatives"), info, n, false, r) {
+        return FMI2_ERR_DEPENDENCY_KNOWN
+    }
+    if not fmi2ListKnownsOk(d, xmlChildNamed(d, ms, "InitialUnknowns"), info, n, true, r) {
+        return FMI2_ERR_DEPENDENCY_KNOWN
     }
     return FMI2_OK
 }

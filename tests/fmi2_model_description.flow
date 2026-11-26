@@ -12,6 +12,7 @@ import herbie.xml {
     XML_ERR_DUPLICATE_ATTRIBUTE, XML_ERR_TEXT, XML_ERR_UNSUPPORTED, XML_ERR_DECLARATION,
     XML_ERR_ROOT, XML_ERR_DEPTH, XML_ERR_ENCODING,
     xmlDocInit, xmlParse, xmlWrite, xmlTreesEqual, xmlFindAttr, xmlAttrValueIs, xmlChildNamed,
+    xmlAttrIs, xmlNameIs,
     xmlStrLen
 }
 import herbie.fmi2 {
@@ -21,11 +22,12 @@ import herbie.fmi2 {
     FMI2_ERR_ENUM_LITERAL, FMI2_ERR_COMBINATION, FMI2_ERR_INITIAL, FMI2_ERR_START,
     FMI2_ERR_INDEPENDENT, FMI2_ERR_DERIVATIVE, FMI2_ERR_DECLARED_TYPE, FMI2_ERR_UNIT,
     FMI2_ERR_OUTPUTS, FMI2_ERR_DERIVATIVES, FMI2_ERR_INITIAL_UNKNOWNS, FMI2_ERR_DEPENDENCIES,
+    FMI2_ERR_ALIAS, FMI2_ERR_RANGE, FMI2_ERR_DEPENDENCY_KNOWN, FMI2_ERR_TYPE_DEFINITION,
     FMI2_PARAMETER, FMI2_CALCULATED_PARAMETER, FMI2_INPUT, FMI2_OUTPUT, FMI2_LOCAL,
     FMI2_INDEPENDENT, FMI2_CONSTANT, FMI2_FIXED, FMI2_TUNABLE, FMI2_DISCRETE, FMI2_CONTINUOUS,
     FMI2_INITIAL_NONE, FMI2_EXACT, FMI2_APPROX, FMI2_CALCULATED,
     fmi2EmptyVarInfo, fmi2EmptyReport, fmi2Validate, fmi2VariableIndex, fmi2BuildRealModel,
-    fmi2InitialClass
+    fmi2InitialClass, fmi2CheckDependencyKnowns
 }
 
 const MAX_ELEMS: i32 = 512
@@ -60,7 +62,7 @@ function validateTextCap(s: string, maxVars: i32) -> i32 {
     if rc != XML_OK {
         return 100 + rc
     }
-    let mut info: array<Fmi2VarInfo, 16> = [Fmi2VarInfo { element: -1, typeElement: -1, baseType: 0, causality: 4, variability: 4, initial: 0, hasStart: false, derivative: 0, isState: false, isDerivative: false }; 16]
+    let mut info: array<Fmi2VarInfo, 16> = [Fmi2VarInfo { element: -1, typeElement: -1, baseType: 0, causality: 4, variability: 4, initial: 0, hasStart: false, derivative: 0, isState: false, isDerivative: false, valueReference: 0 }; 16]
     let mut r: array<Fmi2Report, 1> = [fmi2EmptyReport()]
     return fmi2Validate(d[0], &info[0], maxVars, &r[0])
 }
@@ -105,7 +107,7 @@ function checkReference(e: Expected) -> i32 {
     if xmlParse(&d[0], f.data as ptr<u8>, f.len as i32) != XML_OK {
         return 2
     }
-    let mut info: array<Fmi2VarInfo, 64> = [Fmi2VarInfo { element: -1, typeElement: -1, baseType: 0, causality: 4, variability: 4, initial: 0, hasStart: false, derivative: 0, isState: false, isDerivative: false }; 64]
+    let mut info: array<Fmi2VarInfo, 64> = [Fmi2VarInfo { element: -1, typeElement: -1, baseType: 0, causality: 4, variability: 4, initial: 0, hasStart: false, derivative: 0, isState: false, isDerivative: false, valueReference: 0 }; 64]
     let mut r: array<Fmi2Report, 1> = [fmi2EmptyReport()]
     let code: i32 = fmi2Validate(d[0], &info[0], MAX_VARS, &r[0])
     if code != FMI2_OK {
@@ -193,7 +195,7 @@ function testBouncingBallFacts() -> i32 {
     if not f.ok or xmlParse(&d[0], f.data as ptr<u8>, f.len as i32) != XML_OK {
         return 1
     }
-    let mut info: array<Fmi2VarInfo, 64> = [Fmi2VarInfo { element: -1, typeElement: -1, baseType: 0, causality: 4, variability: 4, initial: 0, hasStart: false, derivative: 0, isState: false, isDerivative: false }; 64]
+    let mut info: array<Fmi2VarInfo, 64> = [Fmi2VarInfo { element: -1, typeElement: -1, baseType: 0, causality: 4, variability: 4, initial: 0, hasStart: false, derivative: 0, isState: false, isDerivative: false, valueReference: 0 }; 64]
     let mut r: array<Fmi2Report, 1> = [fmi2EmptyReport()]
     if fmi2Validate(d[0], &info[0], MAX_VARS, &r[0]) != FMI2_OK {
         return 2
@@ -553,7 +555,7 @@ function testQuarterCarExport() -> i32 {
     let mut ats: array<XmlAttribute, 1024> = [XmlAttribute { name: 0, nameLen: 0, value: 0, valueLen: 0 }; 1024]
     let mut pool: array<u8, 32768> = [0 as u8; 32768]
     let mut d: array<XmlDoc, 1> = [xmlDocInit(&els[0], MAX_ELEMS, &ats[0], MAX_ATTRS, &pool[0], POOL_BYTES)]
-    let mut scratch: array<Fmi2VarInfo, 18> = [Fmi2VarInfo { element: -1, typeElement: -1, baseType: 0, causality: 4, variability: 4, initial: 0, hasStart: false, derivative: 0, isState: false, isDerivative: false }; 18]
+    let mut scratch: array<Fmi2VarInfo, 18> = [Fmi2VarInfo { element: -1, typeElement: -1, baseType: 0, causality: 4, variability: 4, initial: 0, hasStart: false, derivative: 0, isState: false, isDerivative: false, valueReference: 0 }; 18]
     let mut idx: array<i32, 18> = [0; 18]
     if fmi2BuildRealModel(&d[0], info, &vars[0], 18, &scratch[0], &idx[0]) != FMI2_OK {
         return 1
@@ -573,7 +575,7 @@ function testQuarterCarExport() -> i32 {
     if xmlParse(&d2[0], &out[0], w[0].len) != XML_OK or not xmlTreesEqual(d[0], d2[0]) {
         return 4
     }
-    let mut vi: array<Fmi2VarInfo, 64> = [Fmi2VarInfo { element: -1, typeElement: -1, baseType: 0, causality: 4, variability: 4, initial: 0, hasStart: false, derivative: 0, isState: false, isDerivative: false }; 64]
+    let mut vi: array<Fmi2VarInfo, 64> = [Fmi2VarInfo { element: -1, typeElement: -1, baseType: 0, causality: 4, variability: 4, initial: 0, hasStart: false, derivative: 0, isState: false, isDerivative: false, valueReference: 0 }; 64]
     let mut r: array<Fmi2Report, 1> = [fmi2EmptyReport()]
     if fmi2Validate(d2[0], &vi[0], MAX_VARS, &r[0]) != FMI2_OK {
         return 5
@@ -602,6 +604,226 @@ function testQuarterCarExport() -> i32 {
     vars[11] = quarterCarVar("sprungMass", FMI2_PARAMETER, FMI2_FIXED, FMI2_INITIAL_NONE, "400", 0, "kg")
     if fmi2BuildRealModel(&ds[0], info, &vars[0], 18, &scratch[0], &idx[0]) != FMI2_ERR_CAPACITY {
         return 10
+    }
+    return 0
+}
+
+# Validate, then run the section 2.2.8 dependency-legality check. 100 + XML code on parse
+# failure, the fmi2Validate code when it fails, else the dependency check result.
+function dependencyCodeText(s: string) -> i32 {
+    let mut els: array<XmlElement, 128> = [XmlElement { name: 0, nameLen: 0, parent: 0, depth: 0, firstAttr: 0, attrCount: 0, firstChild: 0, lastChild: 0, nextSibling: 0, childCount: 0 }; 128]
+    let mut ats: array<XmlAttribute, 256> = [XmlAttribute { name: 0, nameLen: 0, value: 0, valueLen: 0 }; 256]
+    let mut pool: array<u8, 8192> = [0 as u8; 8192]
+    let mut d: array<XmlDoc, 1> = [xmlDocInit(&els[0], 128, &ats[0], 256, &pool[0], 8192)]
+    let rc: i32 = parseText(&d[0], s)
+    if rc != XML_OK {
+        return 100 + rc
+    }
+    let mut info: array<Fmi2VarInfo, 16> = [Fmi2VarInfo { element: -1, typeElement: -1, baseType: 0, causality: 4, variability: 4, initial: 0, hasStart: false, derivative: 0, isState: false, isDerivative: false, valueReference: 0 }; 16]
+    let mut r: array<Fmi2Report, 1> = [fmi2EmptyReport()]
+    let code: i32 = fmi2Validate(d[0], &info[0], 16, &r[0])
+    if code != FMI2_OK {
+        return code
+    }
+    return fmi2CheckDependencyKnowns(d[0], &info[0], r[0].variables, &r[0])
+}
+
+function var(name: string, vr: string, attrs: string, body: string) -> string {
+    return "<ScalarVariable name='" + name + "' valueReference='" + vr + "' " + attrs + ">" + body + "</ScalarVariable>"
+}
+
+# Section 2.2.7 alias restrictions.
+function testAliasRules() -> i32 {
+    let par: string = var("p", "1", "causality='parameter' variability='fixed'", "<Real start='1'/>")
+    let calc: string = var("c", "1", "causality='calculatedParameter' variability='fixed'", "<Real/>")
+    if validateText(fmiDoc(CS, par + calc, "<InitialUnknowns><Unknown index='2'/></InitialUnknowns>")) != FMI2_OK {
+        return 1
+    }
+    let x: string = var("x", "3", "initial='exact'", "<Real start='1'/>")
+    let y: string = var("y", "3", "", "<Real/>")
+    if validateText(fmiDoc(CS, x + y, "")) != FMI2_OK {
+        return 2
+    }
+    let c1: string = var("c1", "4", "variability='constant'", "<Real start='1'/>")
+    let c2: string = var("c2", "4", "variability='constant'", "<Real start='1.0e0'/>")
+    if validateText(fmiDoc(CS, c1 + c2, "")) != FMI2_OK {
+        return 3
+    }
+    # The same number in different value-reference spaces is not an alias.
+    let b: string = var("b", "1", "causality='parameter' variability='fixed'", "<Boolean start='true'/>")
+    if validateText(fmiDoc(CS, par + b, "")) != FMI2_OK {
+        return 4
+    }
+    let par2: string = var("q", "1", "causality='parameter' variability='tunable'", "<Real start='2'/>")
+    if validateText(fmiDoc(CS, par + par2, "")) != FMI2_ERR_ALIAS {
+        return 5
+    }
+    let u: string = var("u", "1", "causality='input'", "<Real start='0'/>")
+    if validateText(fmiDoc(CS, par + u, "")) != FMI2_ERR_ALIAS {
+        return 6
+    }
+    let t: string = var("time", "0", "causality='independent'", "<Real/>")
+    let u0: string = var("u", "0", "causality='input'", "<Real start='0'/>")
+    if validateText(fmiDoc(CS, t + u0, "")) != FMI2_ERR_ALIAS {
+        return 7
+    }
+    let y4: string = var("y", "4", "", "<Real/>")
+    if validateText(fmiDoc(CS, c1 + y4, "")) != FMI2_ERR_ALIAS {
+        return 8
+    }
+    let c3: string = var("c3", "4", "variability='constant'", "<Real start='2'/>")
+    if validateText(fmiDoc(CS, c1 + c3, "")) != FMI2_ERR_ALIAS {
+        return 9
+    }
+    let x2: string = var("x2", "3", "initial='exact'", "<Real start='2'/>")
+    if validateText(fmiDoc(CS, x + x2, "")) != FMI2_ERR_ALIAS {
+        return 10
+    }
+    let units: string = "<UnitDefinitions><Unit name='m'/><Unit name='kg'/></UnitDefinitions><TypeDefinitions><SimpleType name='Len'><Real unit='m'/></SimpleType></TypeDefinitions>"
+    let ym: string = var("ym", "5", "", "<Real unit='m'/>")
+    let yk: string = var("yk", "5", "", "<Real unit='kg'/>")
+    let yn: string = var("yn", "5", "", "<Real/>")
+    let yl: string = var("yl", "5", "", "<Real declaredType='Len'/>")
+    if validateText(fmiDoc(CS + units, ym + yk, "")) != FMI2_ERR_ALIAS or validateText(fmiDoc(CS + units, ym + yn, "")) != FMI2_ERR_ALIAS {
+        return 11
+    }
+    if validateText(fmiDoc(CS + units, ym + yl, "")) != FMI2_OK {
+        return 12
+    }
+    # Integer and Enumeration share one value-reference space.
+    let mode: string = "<TypeDefinitions><SimpleType name='Mode'><Enumeration><Item name='off' value='0'/><Item name='on' value='1'/></Enumeration></SimpleType></TypeDefinitions>"
+    let ui: string = var("ui", "7", "causality='input' variability='discrete'", "<Integer start='0'/>")
+    let ue: string = var("ue", "7", "causality='input' variability='discrete'", "<Enumeration declaredType='Mode' start='0'/>")
+    if validateText(fmiDoc(CS + mode, ui + ue, "")) != FMI2_ERR_ALIAS {
+        return 13
+    }
+    return 0
+}
+
+# min ≤ start ≤ max with inheritance from the declared type, and lexical checks.
+function testRanges() -> i32 {
+    if validateText(fmiDoc(CS, sv("e", "causality='parameter' variability='tunable'", "<Real start='0.7' min='0.5' max='1'/>"), "")) != FMI2_OK {
+        return 1
+    }
+    if validateText(fmiDoc(CS, sv("e", "causality='parameter' variability='tunable'", "<Real start='0' min='-INF' max='INF' nominal='2.5E3'/>"), "")) != FMI2_OK {
+        return 2
+    }
+    if validateText(fmiDoc(CS, sv("n", "causality='output' variability='discrete' initial='exact'", "<Integer start='10' max='10'/>"), "<Outputs><Unknown index='1'/></Outputs>")) != FMI2_OK {
+        return 3
+    }
+    if validateText(fmiDoc(CS, sv("a", "", "<Real min='2' max='1'/>"), "")) != FMI2_ERR_RANGE {
+        return 4
+    }
+    if validateText(fmiDoc(CS, sv("e", "causality='parameter' variability='fixed'", "<Real start='1.5' max='1'/>"), "")) != FMI2_ERR_RANGE or validateText(fmiDoc(CS, sv("e", "causality='parameter' variability='fixed'", "<Real start='0' min='0.5'/>"), "")) != FMI2_ERR_RANGE {
+        return 5
+    }
+    if validateText(fmiDoc(CS, sv("n", "causality='output' variability='discrete' initial='exact'", "<Integer start='11' max='10'/>"), "<Outputs><Unknown index='1'/></Outputs>")) != FMI2_ERR_RANGE {
+        return 6
+    }
+    let pos: string = "<TypeDefinitions><SimpleType name='Pos'><Real min='0'/></SimpleType></TypeDefinitions>"
+    if validateText(fmiDoc(CS + pos, sv("e", "causality='parameter' variability='fixed'", "<Real declaredType='Pos' start='-1'/>"), "")) != FMI2_ERR_RANGE {
+        return 7
+    }
+    # The variable's own min overrides the declared type's.
+    if validateText(fmiDoc(CS + pos, sv("e", "causality='parameter' variability='fixed'", "<Real declaredType='Pos' min='-5' start='-1'/>"), "")) != FMI2_OK {
+        return 8
+    }
+    if validateText(fmiDoc(CS, sv("a", "", "<Real min='1,5'/>"), "")) != FMI2_ERR_RANGE or validateText(fmiDoc(CS, sv("a", "", "<Real nominal='abc'/>"), "")) != FMI2_ERR_RANGE {
+        return 9
+    }
+    if validateText(fmiDoc(CS, sv("a", "", "<Real min='inf'/>"), "")) != FMI2_ERR_RANGE or validateText(fmiDoc(CS, sv("a", "", "<Real min='1e'/>"), "")) != FMI2_ERR_RANGE {
+        return 10
+    }
+    if validateText(fmiDoc(CS, sv("n", "causality='parameter' variability='fixed'", "<Integer start='1.5'/>"), "")) != FMI2_ERR_RANGE or validateText(fmiDoc(CS, sv("n", "causality='parameter' variability='fixed'", "<Integer start='2147483648'/>"), "")) != FMI2_ERR_RANGE {
+        return 11
+    }
+    if validateText(fmiDoc(CS, sv("n", "causality='parameter' variability='fixed'", "<Integer start='-2147483648'/>"), "")) != FMI2_OK {
+        return 12
+    }
+    let mode: string = "<TypeDefinitions><SimpleType name='Mode'><Enumeration><Item name='off' value='0'/><Item name='on' value='1'/></Enumeration></SimpleType></TypeDefinitions>"
+    if validateText(fmiDoc(CS + mode, sv("m", "causality='parameter' variability='fixed'", "<Enumeration declaredType='Mode' start='3' max='1'/>"), "")) != FMI2_ERR_RANGE {
+        return 13
+    }
+    return 0
+}
+
+function testTypeDefinitions() -> i32 {
+    let dupType: string = "<TypeDefinitions><SimpleType name='T'><Real/></SimpleType><SimpleType name='T'><Integer/></SimpleType></TypeDefinitions>"
+    if validateText(fmiDoc(CS + dupType, "", "")) != FMI2_ERR_TYPE_DEFINITION {
+        return 1
+    }
+    let clash: string = "<TypeDefinitions><SimpleType name='x'><Real/></SimpleType></TypeDefinitions>"
+    if validateText(fmiDoc(CS + clash, sv("x", "", "<Real/>"), "")) != FMI2_ERR_TYPE_DEFINITION {
+        return 2
+    }
+    let dupItem: string = "<TypeDefinitions><SimpleType name='Mode'><Enumeration><Item name='a' value='1'/><Item name='b' value='1'/></Enumeration></SimpleType></TypeDefinitions>"
+    if validateText(fmiDoc(CS + dupItem, "", "")) != FMI2_ERR_TYPE_DEFINITION {
+        return 3
+    }
+    return 0
+}
+
+# Section 2.2.8 dependency legality.
+function testDependencyKnowns() -> i32 {
+    let u: string = var("u", "0", "causality='input'", "<Real start='0'/>")
+    let x: string = var("x", "1", "causality='output' initial='exact'", "<Real start='1'/>")
+    let dx: string = var("der(x)", "2", "", "<Real derivative='2'/>")
+    let pf: string = var("pf", "3", "causality='parameter' variability='fixed'", "<Real start='1'/>")
+    let pt: string = var("pt", "4", "causality='parameter' variability='tunable'", "<Real start='1'/>")
+    let y: string = var("y", "5", "causality='output'", "<Real/>")
+    let vars: string = u + x + dx + pf + pt + y
+    let ok: string = "<Outputs><Unknown index='2' dependencies=''/><Unknown index='6' dependencies='1 2 5'/></Outputs><Derivatives><Unknown index='3' dependencies='1 2 5'/></Derivatives><InitialUnknowns><Unknown index='3' dependencies='1 2 4 5'/><Unknown index='6' dependencies='1 2 4'/></InitialUnknowns>"
+    if dependencyCodeText(fmiDoc(CS, vars, ok)) != FMI2_OK {
+        return 1
+    }
+    # A fixed parameter is frozen in Event and Continuous-Time Mode.
+    let fixedDep: string = "<Outputs><Unknown index='2'/><Unknown index='6'/></Outputs><Derivatives><Unknown index='3' dependencies='4'/></Derivatives><InitialUnknowns><Unknown index='3'/><Unknown index='6'/></InitialUnknowns>"
+    if dependencyCodeText(fmiDoc(CS, vars, fixedDep)) != FMI2_ERR_DEPENDENCY_KNOWN {
+        return 2
+    }
+    # An output that is not a state is not a known for another output.
+    let outDep: string = "<Outputs><Unknown index='2'/><Unknown index='6'/></Outputs><Derivatives><Unknown index='3' dependencies='6'/></Derivatives><InitialUnknowns><Unknown index='3'/><Unknown index='6'/></InitialUnknowns>"
+    if dependencyCodeText(fmiDoc(CS, vars, outDep)) != FMI2_ERR_DEPENDENCY_KNOWN {
+        return 3
+    }
+    # In Initialization Mode a calculated variable is an unknown.
+    let initDep: string = "<Outputs><Unknown index='2'/><Unknown index='6'/></Outputs><Derivatives><Unknown index='3'/></Derivatives><InitialUnknowns><Unknown index='3' dependencies='6'/><Unknown index='6'/></InitialUnknowns>"
+    if dependencyCodeText(fmiDoc(CS, vars, initDep)) != FMI2_ERR_DEPENDENCY_KNOWN {
+        return 4
+    }
+    return 0
+}
+
+# Dependency legality on the six Reference FMU descriptions. BouncingBall lists the fixed
+# parameter g (index 6) as a dependency of der(v) in Derivatives; the other five pass.
+function testReferenceDependencyKnowns() -> i32 {
+    let mut names: array<string, 6> = ["BouncingBall", "Dahlquist", "Feedthrough", "Resource", "Stair", "VanDerPol"]
+    for i in 0 to 6 {
+        let mut els: array<XmlElement, 512> = [XmlElement { name: 0, nameLen: 0, parent: 0, depth: 0, firstAttr: 0, attrCount: 0, firstChild: 0, lastChild: 0, nextSibling: 0, childCount: 0 }; 512]
+        let mut ats: array<XmlAttribute, 1024> = [XmlAttribute { name: 0, nameLen: 0, value: 0, valueLen: 0 }; 1024]
+        let mut pool: array<u8, 32768> = [0 as u8; 32768]
+        let mut d: array<XmlDoc, 1> = [xmlDocInit(&els[0], MAX_ELEMS, &ats[0], MAX_ATTRS, &pool[0], POOL_BYTES)]
+        let f: FileRead = io_read_file("tests/fmi2/reference/" + names[i] + "/modelDescription.xml")
+        if not f.ok or xmlParse(&d[0], f.data as ptr<u8>, f.len as i32) != XML_OK {
+            return 10 * i + 1
+        }
+        let mut info: array<Fmi2VarInfo, 64> = [Fmi2VarInfo { element: -1, typeElement: -1, baseType: 0, causality: 4, variability: 4, initial: 0, hasStart: false, derivative: 0, isState: false, isDerivative: false, valueReference: 0 }; 64]
+        let mut r: array<Fmi2Report, 1> = [fmi2EmptyReport()]
+        if fmi2Validate(d[0], &info[0], MAX_VARS, &r[0]) != FMI2_OK {
+            return 10 * i + 2
+        }
+        let code: i32 = fmi2CheckDependencyKnowns(d[0], &info[0], r[0].variables, &r[0])
+        if i == 0 {
+            let u: i32 = r[0].element
+            if code != FMI2_ERR_DEPENDENCY_KNOWN or not xmlAttrIs(d[0], u, "index", "5") or not xmlAttrIs(d[0], u, "dependencies", "6") {
+                return 3
+            }
+            if not xmlNameIs(d[0], d[0].elems[u].parent, "Derivatives") {
+                return 4
+            }
+        } elif code != FMI2_OK {
+            return 10 * i + 5
+        }
     }
     return 0
 }
@@ -653,6 +875,41 @@ function main() -> i32 {
     code = testQuarterCarExport()
     if code != 0 {
         print("FAIL quarter-car export ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testAliasRules()
+    if code != 0 {
+        print("FAIL alias rules ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testRanges()
+    if code != 0 {
+        print("FAIL value ranges ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testTypeDefinitions()
+    if code != 0 {
+        print("FAIL type definitions ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testDependencyKnowns()
+    if code != 0 {
+        print("FAIL dependency legality ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testReferenceDependencyKnowns()
+    if code != 0 {
+        print("FAIL reference dependency legality ")
         print(code)
         println("")
         return code
