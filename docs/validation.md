@@ -93,7 +93,7 @@ DOE planners, multi-map fitting with regularization catalogs, and full uncertain
 `tests/thermo_fluid.flow` checks:
 
 - Hagen–Poiseuille Δp, orifice √(2Δp/ρ) with sign, linear pump shutoff
-- Analytic pump–pipe operating point (Q and Δp match)
+- Analytic pump-pipe operating point (Q and Δp match)
 - Hydraulic volume integration; balanced ε-NTU = NTU/(1+NTU); closed-loop T = Tamb + Q/UA
 - Coolant node transient converges to the steady radiator balance
 
@@ -163,6 +163,17 @@ Nonlinear tires, brakes/ABS, driveline, kinematic hardpoint validation and rig c
 - Degenerate self-loop elements rejected
 
 Beams, plates, solids, plasticity and mesh-convergence suites remain open under [#5](https://github.com/flooooooooooow/herbie/issues/5).
+
+## BLDC six-step commutation (issue #12)
+
+`tests/bldc_six_step.flow` checks `herbie.bldc`:
+
+- Trapezoidal back-EMF shape (0 at 0°, 0.5 at 15°, flat 1 from 30° to 150°, −1 from 210° to 330°)
+- Hall codes sweep 5, 4, 6, 2, 3, 1 as a Gray sequence with 000 and 111 rejected, and the conducting pair sits on opposite EMF flat tops throughout every sector
+- Locked rotor at 50 % of 48 V: i = d·Vdc/(2R) = 120 A and T = 2·ke·i = 12 N·m
+- No-load speed d·Vdc/(2ke) = 240 rad/s with forward sector order; a loaded, damped run matches the steady torque-speed line within 10⁻⁵ and the steady power balance d·Vdc·i = 2R·i² + T·ω; negative duty spins to −240 rad/s through the sectors in reverse
+
+Commutation is ideal: the commutation current transient, freewheeling-diode conduction of the floating phase, the resulting torque ripple, sensorless back-EMF zero-crossing detection and switched (rather than PWM-averaged) phase voltages remain open.
 
 ## Seeded Monte Carlo and process indices (issue #6)
 

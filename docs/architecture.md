@@ -22,6 +22,7 @@ src/
   electrical.flow    Lumped passive RC/RL/RLC
   mechanics.flow     Single-axis rotation and ideal gear
   driveline.flow     Pendulum, torsional shaft, differential, clutch
+  bldc.flow          Trapezoidal-EMF BLDC with Hall six-step commutation
   motors.flow        Coupled armature/rotor DC motor
   drive.flow         Clarke/Park, salient PMSM, averaged inverter, FOC
   battery.flow       Thevenin RC battery and SOC

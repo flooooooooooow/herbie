@@ -1,0 +1,200 @@
+# BLDC six-step: trapezoidal EMF shape, Hall Gray-code sequence, conducting pair always on
+# the flat tops, locked-rotor current and torque, no-load and loaded steady speed, steady
+# power balance, reverse rotation and invalid inputs.
+
+import herbie.bldc {
+    BldcParameters, BldcState, BldcSector, BldcResult,
+    bldcEmfShape, bldcPhaseShape, bldcHallCode, bldcSectorFromHall, bldcParametersOk, bldcStep, bldcSteadySpeed
+}
+
+function near(a: f64, b: f64, eps: f64) -> bool {
+    return a >= b - eps and a <= b + eps
+}
+
+function motor(damping: f64) -> BldcParameters {
+    return BldcParameters {
+        phaseResistance: 0.1, phaseInductance: 0.0002, backEmfConstant: 0.05,
+        polePairs: 4.0, rotorInertia: 0.0001, viscousDamping: damping
+    }
+}
+
+function deg(d: f64) -> f64 {
+    return d * 3.141592653589793 / 180.0
+}
+
+function testShapeAndHalls() -> i32 {
+    if not near(bldcEmfShape(0.0), 0.0, 1.0e-12) or not near(bldcEmfShape(deg(15.0)), 0.5, 1.0e-12)
+        or not near(bldcEmfShape(deg(90.0)), 1.0, 1.0e-12) or not near(bldcEmfShape(deg(180.0)), 0.0, 1.0e-12)
+        or not near(bldcEmfShape(deg(270.0)), -1.0, 1.0e-12) or not near(bldcEmfShape(deg(-90.0)), -1.0, 1.0e-12) {
+        println("FAIL EMF trapezoid")
+        return 1
+    }
+    let expected: array<i32, 6> = [5, 4, 6, 2, 3, 1]
+    let mut prevCode: i32 = bldcHallCode(deg(29.95))
+    let mut changes: i32 = 0
+    for i in 0 to 3600 {
+        let th: f64 = deg(30.05 + (i as f64) * 0.1)
+        let code: i32 = bldcHallCode(th)
+        if code == 0 or code == 7 {
+            return 2
+        }
+        let sec: BldcSector = bldcSectorFromHall(code)
+        if sec.sector < 0 {
+            return 3
+        }
+        # The conducting pair sits on opposite flat tops throughout its sector.
+        let gap: f64 = bldcPhaseShape(th, sec.highPhase) - bldcPhaseShape(th, sec.lowPhase)
+        if not near(gap, 2.0, 1.0e-9) {
+            println("FAIL conducting pair off flat top")
+            println(i)
+            return 4
+        }
+        let expectedSector: i32 = ((i / 600) % 6)
+        if sec.sector != expectedSector or code != expected[expectedSector] {
+            println("FAIL Hall sector order")
+            return 5
+        }
+        if code != prevCode {
+            let x: i32 = code ^ prevCode
+            if x != 1 and x != 2 and x != 4 {
+                println("FAIL Hall code is not a Gray sequence")
+                return 6
+            }
+            changes = changes + 1
+        }
+        prevCode = code
+    }
+    if changes != 6 {
+        return 7
+    }
+    if bldcSectorFromHall(0).sector != -1 or bldcSectorFromHall(7).sector != -1 {
+        return 8
+    }
+    return 0
+}
+
+function testLockedRotor() -> i32 {
+    # Locked rotor as an effectively infinite inertia, so no RK4 stage moves the rotor.
+    let p: BldcParameters = BldcParameters {
+        phaseResistance: 0.1, phaseInductance: 0.0002, backEmfConstant: 0.05,
+        polePairs: 4.0, rotorInertia: 1.0e12, viscousDamping: 0.0
+    }
+    let mut s: BldcState = BldcState { current: 0.0, mechanicalSpeed: 0.0, electricalAngle: deg(60.0) }
+    let mut torque: f64 = 0.0
+    for k in 0 to 20000 {
+        let r: BldcResult = bldcStep(s, p, 48.0, 0.5, 0.0, 0.000001)
+        s = r.state
+        torque = r.torque
+    }
+    # 20 ms = 10 τe: i = d·Vdc/(2R) = 120 A, T = 2·ke·i = 12 N·m.
+    if not near(s.current, 120.0, 0.01) or not near(torque, 12.0, 0.001) {
+        println("FAIL locked rotor")
+        println(s.current)
+        return 1
+    }
+    return 0
+}
+
+function runTo(p: BldcParameters, duty: f64, load: f64, steps: i32, sectors: ptr<i32>) -> BldcState {
+    let mut s: BldcState = BldcState { current: 0.0, mechanicalSpeed: 0.0, electricalAngle: deg(45.0) }
+    let mut last: i32 = -1
+    for k in 0 to steps {
+        let r: BldcResult = bldcStep(s, p, 48.0, duty, load, 0.000001)
+        if r.fault != 0 {
+            sectors[2] = 99
+            return s
+        }
+        if last >= 0 and r.sector != last {
+            let fwd: i32 = (last + 1) % 6
+            let rev: i32 = (last + 5) % 6
+            if r.sector == fwd {
+                sectors[0] = sectors[0] + 1
+            } elif r.sector == rev {
+                sectors[1] = sectors[1] + 1
+            } else {
+                sectors[2] = sectors[2] + 1
+            }
+        }
+        last = r.sector
+        s = r.state
+    }
+    return s
+}
+
+function testSteadySpeedAndPower() -> i32 {
+    let mut tally: array<i32, 3> = [0, 0, 0]
+    # No load: ω = d·Vdc/(2ke) = 240 rad/s.
+    let free: BldcState = runTo(motor(0.0), 0.5, 0.0, 100000, &tally[0])
+    if tally[2] != 0 or tally[1] != 0 or tally[0] < 80 {
+        println("FAIL forward commutation sequence")
+        return 1
+    }
+    if not near(free.mechanicalSpeed, 240.0, 0.01) or not near(free.current, 0.0, 0.01) {
+        println("FAIL no-load speed")
+        println(free.mechanicalSpeed)
+        return 2
+    }
+    # Loaded with damping: matches the steady torque-speed line.
+    let p: BldcParameters = motor(0.0001)
+    let mut t2: array<i32, 3> = [0, 0, 0]
+    let s: BldcState = runTo(p, 0.8, 0.5, 100000, &t2[0])
+    let w: f64 = bldcSteadySpeed(p, 48.0, 0.8, 0.5)
+    if not near(s.mechanicalSpeed, w, 1.0e-5 * w) {
+        println("FAIL loaded steady speed")
+        println(s.mechanicalSpeed)
+        println(w)
+        return 3
+    }
+    # Steady power: d·Vdc·i = 2R·i² + T·ω with T = 2·ke·i.
+    let i: f64 = s.current
+    let pin: f64 = 0.8 * 48.0 * i
+    let pout: f64 = 0.2 * i * i + 0.1 * i * s.mechanicalSpeed
+    if not near(pin, pout, 1.0e-5 * pin) {
+        println("FAIL power balance")
+        return 4
+    }
+    # Reverse command spins backwards through the sectors in reverse order.
+    let mut t3: array<i32, 3> = [0, 0, 0]
+    let rev: BldcState = runTo(motor(0.0), -0.5, 0.0, 100000, &t3[0])
+    if not near(rev.mechanicalSpeed, -240.0, 0.01) or t3[1] < 80 or t3[0] != 0 or t3[2] != 0 {
+        println("FAIL reverse")
+        return 5
+    }
+    return 0
+}
+
+function testInvalid() -> i32 {
+    let p: BldcParameters = motor(0.0)
+    let s: BldcState = BldcState { current: 0.0, mechanicalSpeed: 0.0, electricalAngle: 0.0 }
+    if bldcStep(s, p, 48.0, 1.5, 0.0, 0.000001).fault != 1 or bldcStep(s, p, 48.0, 0.5, 0.0, 0.0).fault != 1 {
+        return 1
+    }
+    let bad: BldcParameters = BldcParameters {
+        phaseResistance: 0.0, phaseInductance: 0.0002, backEmfConstant: 0.05, polePairs: 4.0, rotorInertia: 0.0001, viscousDamping: 0.0
+    }
+    if bldcParametersOk(bad) {
+        return 2
+    }
+    return 0
+}
+
+function main() -> i32 {
+    let a: i32 = testShapeAndHalls()
+    if a != 0 {
+        return 10 + a
+    }
+    let b: i32 = testLockedRotor()
+    if b != 0 {
+        return 20 + b
+    }
+    let c: i32 = testSteadySpeedAndPower()
+    if c != 0 {
+        return 30 + c
+    }
+    let d: i32 = testInvalid()
+    if d != 0 {
+        return 40 + d
+    }
+    println("PASS BLDC six-step: EMF, Halls, locked rotor, steady speed, power balance, reverse")
+    return 0
+}
