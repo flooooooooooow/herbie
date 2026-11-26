@@ -1,0 +1,192 @@
+# @module herbie.valves
+# Liquid control valves on top of herbie.fluids: tabulated or analytic opening maps,
+# stroke saturation with a closed-leakage floor, a rate- and lag-limited actuator, and a
+# cavitation/choked-flow envelope from the IEC 60534-2-1 liquid sizing relations:
+#   FF = 0.96 − 0.28·√(pv/pc), Δp_choked = FL²·(p1 − FF·pv),
+#   σ = (p1 − pv)/(p1 − p2) as the cavitation index.
+# Flow below choke is the herbie.fluids orifice law Q = Cd·A(x)·√(2Δp/ρ); at and beyond
+# choke the effective Δp is held at Δp_choked so Q plateaus. Reverse flow is not choked
+# here (the envelope is evaluated for the forward direction only). SI units throughout.
+
+import herbie.fluids { FluidProperties, OrificeParameters, fluidPropertiesOk, orificeVolumeFlow }
+
+export struct ValveMap {
+    # Strictly increasing stroke fractions in [0, 1] covering both ends, non-decreasing area.
+    stroke: ptr<f64>,
+    area: ptr<f64>,
+    count: i32
+}
+
+export struct ValveLimits {
+    dischargeCoefficient: f64,
+    # Leakage area used when the map gives less (closed valve seat leakage), m².
+    leakageArea: f64
+}
+
+export struct ValveActuator {
+    # Maximum stroke rate (fraction per second) and first-order lag time constant (s).
+    maxRate: f64,
+    timeConstant: f64
+}
+
+export struct CavitationProperties {
+    vapourPressure: f64,
+    criticalPressure: f64,
+    # Liquid pressure recovery factor FL and incipient cavitation index σ_i of the valve.
+    pressureRecovery: f64,
+    incipientIndex: f64
+}
+
+export struct ValveFlowResult {
+    volumeFlow: f64,
+    effectivePressureDrop: f64,
+    chokedPressureDrop: f64,
+    cavitationIndex: f64,
+    # 0 none; 1 incipient cavitation (σ < σ_i); 2 choked (Δp ≥ Δp_choked);
+    # 3 invalid input; 4 outlet below vapour pressure (outside the liquid validity envelope).
+    regime: i32
+}
+
+function vlClamp01(x: f64) -> f64 {
+    if x < 0.0 {
+        return 0.0
+    }
+    if x > 1.0 {
+        return 1.0
+    }
+    return x
+}
+
+export function valveMapValid(m: ValveMap) -> bool {
+    if m.count < 2 {
+        return false
+    }
+    if m.stroke[0] != 0.0 or m.stroke[m.count - 1] != 1.0 or m.area[0] < 0.0 {
+        return false
+    }
+    for i in 1 to m.count {
+        if m.stroke[i] <= m.stroke[i - 1] or m.area[i] < m.area[i - 1] {
+            return false
+        }
+    }
+    return true
+}
+
+# Piecewise-linear area at a stroke saturated to [0, 1], floored at the leakage area.
+export function valveMapArea(m: ValveMap, limits: ValveLimits, stroke: f64) -> f64 {
+    if not valveMapValid(m) or limits.leakageArea < 0.0 {
+        return 0.0 / 0.0
+    }
+    let x: f64 = vlClamp01(stroke)
+    let mut i: i32 = 0
+    while i + 2 < m.count and x > m.stroke[i + 1] {
+        i = i + 1
+    }
+    let t: f64 = (x - m.stroke[i]) / (m.stroke[i + 1] - m.stroke[i])
+    let a: f64 = m.area[i] + t * (m.area[i + 1] - m.area[i])
+    if a < limits.leakageArea {
+        return limits.leakageArea
+    }
+    return a
+}
+
+# Equal-percentage inherent characteristic A(x) = Amax·R^(x−1), rangeability R > 1.
+export function valveEqualPercentageArea(maxArea: f64, rangeability: f64, stroke: f64) -> f64 {
+    if maxArea <= 0.0 or rangeability <= 1.0 {
+        return 0.0 / 0.0
+    }
+    return maxArea * exp((vlClamp01(stroke) - 1.0) * log(rangeability))
+}
+
+# One actuator step: exact first-order lag toward the saturated command, then a slew limit.
+export function valveActuatorStep(position: f64, command: f64, act: ValveActuator, dt: f64) -> f64 {
+    if dt <= 0.0 or act.maxRate <= 0.0 or act.timeConstant < 0.0 {
+        return 0.0 / 0.0
+    }
+    let target: f64 = vlClamp01(command)
+    let mut next: f64 = target
+    if act.timeConstant > 0.0 {
+        next = target + (position - target) * exp(-dt / act.timeConstant)
+    }
+    let maxStep: f64 = act.maxRate * dt
+    if next > position + maxStep {
+        next = position + maxStep
+    }
+    if next < position - maxStep {
+        next = position - maxStep
+    }
+    return vlClamp01(next)
+}
+
+export function valveLiquidCriticalRatio(c: CavitationProperties) -> f64 {
+    if c.criticalPressure <= 0.0 or c.vapourPressure < 0.0 or c.vapourPressure >= c.criticalPressure {
+        return 0.0 / 0.0
+    }
+    return 0.96 - 0.28 * sqrt(c.vapourPressure / c.criticalPressure)
+}
+
+export function valveChokedPressureDrop(c: CavitationProperties, inletPressure: f64) -> f64 {
+    let ff: f64 = valveLiquidCriticalRatio(c)
+    if ff != ff or c.pressureRecovery <= 0.0 or c.pressureRecovery > 1.0 {
+        return 0.0 / 0.0
+    }
+    let dp: f64 = c.pressureRecovery * c.pressureRecovery * (inletPressure - ff * c.vapourPressure)
+    if dp < 0.0 {
+        return 0.0
+    }
+    return dp
+}
+
+export function valveLiquidFlow(
+    area: f64,
+    limits: ValveLimits,
+    fluid: FluidProperties,
+    cav: CavitationProperties,
+    inletPressure: f64,
+    outletPressure: f64
+) -> ValveFlowResult {
+    let nan: f64 = 0.0 / 0.0
+    let invalid: ValveFlowResult = ValveFlowResult {
+        volumeFlow: nan, effectivePressureDrop: nan, chokedPressureDrop: nan, cavitationIndex: nan, regime: 3
+    }
+    if area < 0.0 or area != area or limits.dischargeCoefficient <= 0.0 or not fluidPropertiesOk(fluid) {
+        return invalid
+    }
+    if inletPressure <= cav.vapourPressure or outletPressure < 0.0 or cav.incipientIndex < 1.0 {
+        return invalid
+    }
+    let dpChoked: f64 = valveChokedPressureDrop(cav, inletPressure)
+    if dpChoked != dpChoked {
+        return invalid
+    }
+    let dp: f64 = inletPressure - outletPressure
+    if dp <= 0.0 or area == 0.0 {
+        let mut q: f64 = 0.0
+        if area > 0.0 {
+            q = orificeVolumeFlow(OrificeParameters { dischargeCoefficient: limits.dischargeCoefficient, area: area }, fluid, dp)
+        }
+        return ValveFlowResult {
+            volumeFlow: q, effectivePressureDrop: dp, chokedPressureDrop: dpChoked,
+            cavitationIndex: 1.0e300, regime: 0
+        }
+    }
+    let sigma: f64 = (inletPressure - cav.vapourPressure) / dp
+    let mut regime: i32 = 0
+    let mut dpEff: f64 = dp
+    if sigma < cav.incipientIndex {
+        regime = 1
+    }
+    if dp >= dpChoked {
+        regime = 2
+        dpEff = dpChoked
+    }
+    if outletPressure < cav.vapourPressure {
+        regime = 4
+        dpEff = dpChoked
+    }
+    let q: f64 = orificeVolumeFlow(OrificeParameters { dischargeCoefficient: limits.dischargeCoefficient, area: area }, fluid, dpEff)
+    return ValveFlowResult {
+        volumeFlow: q, effectivePressureDrop: dpEff, chokedPressureDrop: dpChoked,
+        cavitationIndex: sigma, regime: regime
+    }
+}

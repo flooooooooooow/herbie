@@ -93,11 +93,19 @@ DOE planners, multi-map fitting with regularization catalogs, and full uncertain
 `tests/thermo_fluid.flow` checks:
 
 - Hagen–Poiseuille Δp, orifice √(2Δp/ρ) with sign, linear pump shutoff
-- Analytic pump–pipe operating point (Q and Δp match)
+- Analytic pump-pipe operating point (Q and Δp match)
 - Hydraulic volume integration; balanced ε-NTU = NTU/(1+NTU); closed-loop T = Tamb + Q/UA
 - Coolant node transient converges to the steady radiator balance
 
-Compressible flow, cavitation, valve maps, hydraulic actuators and DAE fluid networks remain open under [#16](https://github.com/flooooooooooow/herbie/issues/16).
+`tests/valve_cavitation.flow` checks valves and cavitation in `herbie.valves`:
+
+- Piecewise-linear opening map interpolation, stroke saturation to [0, 1], a closed-seat leakage floor, and rejection of non-monotone or incomplete maps
+- Equal-percentage characteristic: A(1) = Amax, A(0) = Amax/R, and equal stroke steps give equal area ratios R^Δx
+- Actuator: exact first-order lag 1 − e^(−t/τ), slew limit (2 /s reaches half stroke in 0.25 s), command saturation
+- IEC 60534-2-1 liquid envelope for 20 °C water with FL = 0.9: FF = 0.96 − 0.28·√(pv/pc), Δp_choked = FL²·(p1 − FF·pv); below choke the flow equals the herbie.fluids orifice law; σ below σ_i flags incipient cavitation; beyond choke the flow plateaus at Cd·A·√(2Δp_choked/ρ); an outlet below vapour pressure is flagged outside the liquid validity envelope
+- A 0 to 300 kPa outlet sweep is monotone, bounded by the choked flow and has no jump at the choke point; reverse Δp gives plain reverse orifice flow
+
+Compressible and gas valve flow, two-phase/flashing models, cavitation damage, hydraulic actuators and DAE fluid networks remain open under [#16](https://github.com/flooooooooooow/herbie/issues/16).
 
 ## Electric drives / FOC (issue #12)
 

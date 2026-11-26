@@ -41,6 +41,7 @@ src/
   montecarlo.flow    Seeded MC stacks, percentiles, Pp/Ppk, X̄ limits
   thermal.flow       Lumped temperature evolution
   fluids.flow        Incompressible pipe/orifice/pump, NTU HX, cooling loop
+  valves.flow        Valve opening maps, actuator, liquid cavitation and choked-flow envelope
   calibrate.flow     Train/val split, MAD outliers, affine fit, holdout RMSE
   graph.flow         Typed block graph, schedule, loop/rate checks, round-trip
   control.flow       Bounded-output PID
