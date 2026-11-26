@@ -1,0 +1,662 @@
+# FMI 2.0 modelDescription.xml conformance: the six FMI 2.0 Reference FMU descriptions
+# (tests/fmi2/reference) parse, pass the specification rules, round-trip through the
+# canonical writer to an equal tree and byte-identical re-emission; XML well-formedness
+# and FMI rule violations fail with their documented codes; and a Herbie quarter-car
+# interface is exported. Exported files land in /tmp/herbie-fmi2-*.xml so CI can check
+# them against the official FMI 2.0.4 XSD (tests/fmi2/schema) with xmllint.
+
+import "stdlib/io.flow"
+import herbie.xml {
+    XmlDoc, XmlElement, XmlAttribute, XmlWriter,
+    XML_OK, XML_ERR_CAPACITY, XML_ERR_SYNTAX, XML_ERR_END_TAG, XML_ERR_REFERENCE,
+    XML_ERR_DUPLICATE_ATTRIBUTE, XML_ERR_TEXT, XML_ERR_UNSUPPORTED, XML_ERR_DECLARATION,
+    XML_ERR_ROOT, XML_ERR_DEPTH, XML_ERR_ENCODING,
+    xmlDocInit, xmlParse, xmlWrite, xmlTreesEqual, xmlFindAttr, xmlAttrValueIs, xmlChildNamed,
+    xmlStrLen
+}
+import herbie.fmi2 {
+    Fmi2VarInfo, Fmi2Report, Fmi2ModelInfo, Fmi2RealVariable,
+    FMI2_OK, FMI2_ERR_CAPACITY, FMI2_ERR_ROOT, FMI2_ERR_VERSION, FMI2_ERR_HEADER, FMI2_ERR_INTERFACE,
+    FMI2_ERR_STRUCTURE, FMI2_ERR_TYPE_ELEMENT, FMI2_ERR_NAME, FMI2_ERR_VALUE_REFERENCE,
+    FMI2_ERR_ENUM_LITERAL, FMI2_ERR_COMBINATION, FMI2_ERR_INITIAL, FMI2_ERR_START,
+    FMI2_ERR_INDEPENDENT, FMI2_ERR_DERIVATIVE, FMI2_ERR_DECLARED_TYPE, FMI2_ERR_UNIT,
+    FMI2_ERR_OUTPUTS, FMI2_ERR_DERIVATIVES, FMI2_ERR_INITIAL_UNKNOWNS, FMI2_ERR_DEPENDENCIES,
+    FMI2_PARAMETER, FMI2_CALCULATED_PARAMETER, FMI2_INPUT, FMI2_OUTPUT, FMI2_LOCAL,
+    FMI2_INDEPENDENT, FMI2_CONSTANT, FMI2_FIXED, FMI2_TUNABLE, FMI2_DISCRETE, FMI2_CONTINUOUS,
+    FMI2_INITIAL_NONE, FMI2_EXACT, FMI2_APPROX, FMI2_CALCULATED,
+    fmi2EmptyVarInfo, fmi2EmptyReport, fmi2Validate, fmi2VariableIndex, fmi2BuildRealModel,
+    fmi2InitialClass
+}
+
+const MAX_ELEMS: i32 = 512
+const MAX_ATTRS: i32 = 1024
+const POOL_BYTES: i32 = 32768
+const TEXT_BYTES: i32 = 32768
+const MAX_VARS: i32 = 64
+
+function emptyElem() -> XmlElement {
+    return XmlElement { name: 0, nameLen: 0, parent: 0, depth: 0, firstAttr: 0, attrCount: 0, firstChild: 0, lastChild: 0, nextSibling: 0, childCount: 0 }
+}
+
+function emptyAttr() -> XmlAttribute {
+    return XmlAttribute { name: 0, nameLen: 0, value: 0, valueLen: 0 }
+}
+
+# Parse a string literal; returns the XML fault code.
+function parseText(d: ptr<XmlDoc>, s: string) -> i32 {
+    return xmlParse(d, s as ptr<u8>, xmlStrLen(s))
+}
+
+function validateText(s: string) -> i32 {
+    return validateTextCap(s, 16)
+}
+
+function validateTextCap(s: string, maxVars: i32) -> i32 {
+    let mut els: array<XmlElement, 128> = [XmlElement { name: 0, nameLen: 0, parent: 0, depth: 0, firstAttr: 0, attrCount: 0, firstChild: 0, lastChild: 0, nextSibling: 0, childCount: 0 }; 128]
+    let mut ats: array<XmlAttribute, 256> = [XmlAttribute { name: 0, nameLen: 0, value: 0, valueLen: 0 }; 256]
+    let mut pool: array<u8, 8192> = [0 as u8; 8192]
+    let mut d: array<XmlDoc, 1> = [xmlDocInit(&els[0], 128, &ats[0], 256, &pool[0], 8192)]
+    let rc: i32 = parseText(&d[0], s)
+    if rc != XML_OK {
+        return 100 + rc
+    }
+    let mut info: array<Fmi2VarInfo, 16> = [Fmi2VarInfo { element: -1, typeElement: -1, baseType: 0, causality: 4, variability: 4, initial: 0, hasStart: false, derivative: 0, isState: false, isDerivative: false }; 16]
+    let mut r: array<Fmi2Report, 1> = [fmi2EmptyReport()]
+    return fmi2Validate(d[0], &info[0], maxVars, &r[0])
+}
+
+function xmlCode(s: string) -> i32 {
+    let mut els: array<XmlElement, 128> = [XmlElement { name: 0, nameLen: 0, parent: 0, depth: 0, firstAttr: 0, attrCount: 0, firstChild: 0, lastChild: 0, nextSibling: 0, childCount: 0 }; 128]
+    let mut ats: array<XmlAttribute, 64> = [XmlAttribute { name: 0, nameLen: 0, value: 0, valueLen: 0 }; 64]
+    let mut pool: array<u8, 2048> = [0 as u8; 2048]
+    let mut d: array<XmlDoc, 1> = [xmlDocInit(&els[0], 128, &ats[0], 64, &pool[0], 2048)]
+    return parseText(&d[0], s)
+}
+
+struct Expected {
+    path: string,
+    out: string,
+    variables: i32,
+    reals: i32,
+    integers: i32,
+    booleans: i32,
+    strings: i32,
+    enumerations: i32,
+    outputs: i32,
+    derivatives: i32,
+    initialUnknowns: i32,
+    independent: i32,
+    modelExchange: bool,
+    coSimulation: bool
+}
+
+# Expected counts were taken independently with Python's xml.etree on the same files.
+# Parse, validate, compare counts, write canonically, re-parse to an equal tree and
+# check byte-identical re-emission.
+function checkReference(e: Expected) -> i32 {
+    let mut els: array<XmlElement, 512> = [XmlElement { name: 0, nameLen: 0, parent: 0, depth: 0, firstAttr: 0, attrCount: 0, firstChild: 0, lastChild: 0, nextSibling: 0, childCount: 0 }; 512]
+    let mut ats: array<XmlAttribute, 1024> = [XmlAttribute { name: 0, nameLen: 0, value: 0, valueLen: 0 }; 1024]
+    let mut pool: array<u8, 32768> = [0 as u8; 32768]
+    let mut d: array<XmlDoc, 1> = [xmlDocInit(&els[0], MAX_ELEMS, &ats[0], MAX_ATTRS, &pool[0], POOL_BYTES)]
+    let f: FileRead = io_read_file(e.path)
+    if not f.ok {
+        return 1
+    }
+    if xmlParse(&d[0], f.data as ptr<u8>, f.len as i32) != XML_OK {
+        return 2
+    }
+    let mut info: array<Fmi2VarInfo, 64> = [Fmi2VarInfo { element: -1, typeElement: -1, baseType: 0, causality: 4, variability: 4, initial: 0, hasStart: false, derivative: 0, isState: false, isDerivative: false }; 64]
+    let mut r: array<Fmi2Report, 1> = [fmi2EmptyReport()]
+    let code: i32 = fmi2Validate(d[0], &info[0], MAX_VARS, &r[0])
+    if code != FMI2_OK {
+        print("  fmi2 fault ")
+        print(code)
+        print(" at element ")
+        print(r[0].element)
+        println("")
+        return 3
+    }
+    let rep: Fmi2Report = r[0]
+    if rep.variables != e.variables or rep.reals != e.reals or rep.integers != e.integers or rep.booleans != e.booleans or rep.strings != e.strings or rep.enumerations != e.enumerations {
+        return 4
+    }
+    if rep.outputs != e.outputs or rep.derivatives != e.derivatives or rep.initialUnknowns != e.initialUnknowns {
+        return 5
+    }
+    if rep.independent != e.independent or rep.modelExchange != e.modelExchange or rep.coSimulation != e.coSimulation {
+        return 6
+    }
+    let mut out: array<u8, 32768> = [0 as u8; 32768]
+    let mut w: array<XmlWriter, 1> = [XmlWriter { buf: &out[0], cap: TEXT_BYTES, len: 0, overflow: false }]
+    if not xmlWrite(d[0], &w[0]) {
+        return 7
+    }
+    let mut els2: array<XmlElement, 512> = [XmlElement { name: 0, nameLen: 0, parent: 0, depth: 0, firstAttr: 0, attrCount: 0, firstChild: 0, lastChild: 0, nextSibling: 0, childCount: 0 }; 512]
+    let mut ats2: array<XmlAttribute, 1024> = [XmlAttribute { name: 0, nameLen: 0, value: 0, valueLen: 0 }; 1024]
+    let mut pool2: array<u8, 32768> = [0 as u8; 32768]
+    let mut d2: array<XmlDoc, 1> = [xmlDocInit(&els2[0], MAX_ELEMS, &ats2[0], MAX_ATTRS, &pool2[0], POOL_BYTES)]
+    if xmlParse(&d2[0], &out[0], w[0].len) != XML_OK {
+        return 8
+    }
+    if not xmlTreesEqual(d[0], d2[0]) {
+        return 9
+    }
+    let mut r2: array<Fmi2Report, 1> = [fmi2EmptyReport()]
+    if fmi2Validate(d2[0], &info[0], MAX_VARS, &r2[0]) != FMI2_OK {
+        return 10
+    }
+    let mut out2: array<u8, 32768> = [0 as u8; 32768]
+    let mut w2: array<XmlWriter, 1> = [XmlWriter { buf: &out2[0], cap: TEXT_BYTES, len: 0, overflow: false }]
+    if not xmlWrite(d2[0], &w2[0]) or w2[0].len != w[0].len {
+        return 11
+    }
+    for i in 0 to w[0].len {
+        if out[i] != out2[i] {
+            return 12
+        }
+    }
+    if not io_write_bytes(e.out, &out[0], w[0].len as i64) {
+        return 13
+    }
+    return 0
+}
+
+function testReferenceFmus() -> i32 {
+    let mut cases: array<Expected, 6> = [
+        Expected { path: "tests/fmi2/reference/BouncingBall/modelDescription.xml", out: "/tmp/herbie-fmi2-BouncingBall.xml", variables: 8, reals: 8, integers: 0, booleans: 0, strings: 0, enumerations: 0, outputs: 2, derivatives: 2, initialUnknowns: 2, independent: 1, modelExchange: true, coSimulation: true },
+        Expected { path: "tests/fmi2/reference/Dahlquist/modelDescription.xml", out: "/tmp/herbie-fmi2-Dahlquist.xml", variables: 4, reals: 4, integers: 0, booleans: 0, strings: 0, enumerations: 0, outputs: 1, derivatives: 1, initialUnknowns: 1, independent: 1, modelExchange: true, coSimulation: true },
+        Expected { path: "tests/fmi2/reference/Feedthrough/modelDescription.xml", out: "/tmp/herbie-fmi2-Feedthrough.xml", variables: 15, reals: 7, integers: 2, booleans: 2, strings: 2, enumerations: 2, outputs: 6, derivatives: 0, initialUnknowns: 6, independent: 1, modelExchange: true, coSimulation: true },
+        Expected { path: "tests/fmi2/reference/Resource/modelDescription.xml", out: "/tmp/herbie-fmi2-Resource.xml", variables: 2, reals: 1, integers: 1, booleans: 0, strings: 0, enumerations: 0, outputs: 1, derivatives: 0, initialUnknowns: 1, independent: 1, modelExchange: true, coSimulation: true },
+        Expected { path: "tests/fmi2/reference/Stair/modelDescription.xml", out: "/tmp/herbie-fmi2-Stair.xml", variables: 2, reals: 1, integers: 1, booleans: 0, strings: 0, enumerations: 0, outputs: 1, derivatives: 0, initialUnknowns: 0, independent: 1, modelExchange: true, coSimulation: true },
+        Expected { path: "tests/fmi2/reference/VanDerPol/modelDescription.xml", out: "/tmp/herbie-fmi2-VanDerPol.xml", variables: 6, reals: 6, integers: 0, booleans: 0, strings: 0, enumerations: 0, outputs: 2, derivatives: 2, initialUnknowns: 2, independent: 1, modelExchange: true, coSimulation: true }
+    ]
+    for i in 0 to 6 {
+        let code: i32 = checkReference(cases[i])
+        if code != 0 {
+            print("  reference case ")
+            print(i)
+            print(" step ")
+            print(code)
+            println("")
+            return 10 * i + code
+        }
+    }
+    return 0
+}
+
+function testBouncingBallFacts() -> i32 {
+    let mut els: array<XmlElement, 512> = [XmlElement { name: 0, nameLen: 0, parent: 0, depth: 0, firstAttr: 0, attrCount: 0, firstChild: 0, lastChild: 0, nextSibling: 0, childCount: 0 }; 512]
+    let mut ats: array<XmlAttribute, 1024> = [XmlAttribute { name: 0, nameLen: 0, value: 0, valueLen: 0 }; 1024]
+    let mut pool: array<u8, 32768> = [0 as u8; 32768]
+    let mut d: array<XmlDoc, 1> = [xmlDocInit(&els[0], MAX_ELEMS, &ats[0], MAX_ATTRS, &pool[0], POOL_BYTES)]
+    let f: FileRead = io_read_file("tests/fmi2/reference/BouncingBall/modelDescription.xml")
+    if not f.ok or xmlParse(&d[0], f.data as ptr<u8>, f.len as i32) != XML_OK {
+        return 1
+    }
+    let mut info: array<Fmi2VarInfo, 64> = [Fmi2VarInfo { element: -1, typeElement: -1, baseType: 0, causality: 4, variability: 4, initial: 0, hasStart: false, derivative: 0, isState: false, isDerivative: false }; 64]
+    let mut r: array<Fmi2Report, 1> = [fmi2EmptyReport()]
+    if fmi2Validate(d[0], &info[0], MAX_VARS, &r[0]) != FMI2_OK {
+        return 2
+    }
+    let h: i32 = fmi2VariableIndex(d[0], "h")
+    let derH: i32 = fmi2VariableIndex(d[0], "der(h)")
+    let g: i32 = fmi2VariableIndex(d[0], "g")
+    let vmin: i32 = fmi2VariableIndex(d[0], "v_min")
+    if h != 2 or derH != 3 or g != 6 or vmin != 8 or fmi2VariableIndex(d[0], "missing") != 0 {
+        return 3
+    }
+    # der(h) integrates into h; h and v are the continuous states.
+    if info[derH - 1].derivative != h or not info[derH - 1].isDerivative or not info[h - 1].isState {
+        return 4
+    }
+    # v_min has no causality/variability/initial attributes beyond variability="constant":
+    # causality defaults to local and initial to exact (class A).
+    let vm: Fmi2VarInfo = info[vmin - 1]
+    if vm.causality != FMI2_LOCAL or vm.variability != FMI2_CONSTANT or vm.initial != FMI2_EXACT or not vm.hasStart {
+        return 5
+    }
+    if info[derH - 1].initial != FMI2_CALCULATED or info[derH - 1].hasStart {
+        return 6
+    }
+    let gReal: i32 = info[g - 1].typeElement
+    if not xmlAttrValueIs(d[0], xmlFindAttr(d[0], gReal, "start"), "-9.81") {
+        return 7
+    }
+    if info[g - 1].causality != FMI2_PARAMETER or info[g - 1].variability != FMI2_FIXED {
+        return 8
+    }
+    return 0
+}
+
+# Table of section 2.2.7: allowed causality/variability pairs and their initial class.
+function testCombinationTable() -> i32 {
+    # rows: constant, fixed, tunable, discrete, continuous
+    # columns: parameter, calculatedParameter, input, output, local, independent
+    let mut expected: array<i32, 30> = [
+        0, 0, 0, 1, 1, 0,
+        1, 2, 0, 0, 2, 0,
+        1, 2, 0, 0, 2, 0,
+        0, 0, 4, 3, 3, 0,
+        0, 0, 4, 3, 3, 5
+    ]
+    for v in 0 to 5 {
+        for c in 0 to 6 {
+            if fmi2InitialClass(c, v) != expected[v * 6 + c] {
+                return 1 + v * 6 + c
+            }
+        }
+    }
+    return 0
+}
+
+function testXmlWellFormedness() -> i32 {
+    if xmlCode("<?xml version='1.0' encoding='utf-8' standalone='yes'?>\n<!-- c --><?pi data?><a>\n  <b/>\n</a>\n<!-- tail -->") != XML_OK {
+        return 1
+    }
+    if xmlCode("<a x=1/>") != XML_ERR_SYNTAX or xmlCode("<a") != XML_ERR_SYNTAX or xmlCode("<a x='1'y='2'/>") != XML_ERR_SYNTAX {
+        return 2
+    }
+    if xmlCode("<a x='<'/>") != XML_ERR_SYNTAX or xmlCode("<!-- a -- b --><a/>") != XML_ERR_SYNTAX {
+        return 3
+    }
+    if xmlCode("<a></b>") != XML_ERR_END_TAG or xmlCode("<a><b></a>") != XML_ERR_END_TAG or xmlCode("<a>") != XML_ERR_END_TAG or xmlCode("</a>") != XML_ERR_END_TAG {
+        return 4
+    }
+    if xmlCode("<a x='&bogus;'/>") != XML_ERR_REFERENCE or xmlCode("<a x='&#0;'/>") != XML_ERR_REFERENCE or xmlCode("<a x='&#xD800;'/>") != XML_ERR_REFERENCE or xmlCode("<a x='a & b'/>") != XML_ERR_REFERENCE or xmlCode("<a x='&#x;'/>") != XML_ERR_REFERENCE {
+        return 5
+    }
+    if xmlCode("<a x='1' x='2'/>") != XML_ERR_DUPLICATE_ATTRIBUTE {
+        return 6
+    }
+    if xmlCode("<a>hi</a>") != XML_ERR_TEXT or xmlCode("x<a/>") != XML_ERR_TEXT {
+        return 7
+    }
+    if xmlCode("<!DOCTYPE a><a/>") != XML_ERR_UNSUPPORTED or xmlCode("<a><![CDATA[x]]></a>") != XML_ERR_UNSUPPORTED {
+        return 8
+    }
+    if xmlCode("<?xml version='1.1'?><a/>") != XML_ERR_DECLARATION or xmlCode("<?xml version='1.0' encoding='ISO-8859-1'?><a/>") != XML_ERR_DECLARATION {
+        return 9
+    }
+    if xmlCode(" <?xml version='1.0'?><a/>") != XML_ERR_DECLARATION or xmlCode("<?xml encoding='UTF-8' version='1.0'?><a/>") != XML_ERR_DECLARATION {
+        return 10
+    }
+    if xmlCode("") != XML_ERR_ROOT or xmlCode("<!-- only -->") != XML_ERR_ROOT or xmlCode("<a/><b/>") != XML_ERR_ROOT {
+        return 11
+    }
+    let mut deep: string = ""
+    for i in 0 to 70 {
+        deep = deep + "<a>"
+    }
+    if xmlCode(deep) != XML_ERR_DEPTH {
+        return 12
+    }
+    let mut many: string = "<a>"
+    for i in 0 to 200 {
+        many = many + "<b/>"
+    }
+    many = many + "</a>"
+    if xmlCode(many) != XML_ERR_CAPACITY {
+        return 13
+    }
+    let mut bad: array<u8, 8> = [60 as u8, 97 as u8, 32 as u8, 120 as u8, 61 as u8, 39 as u8, 255 as u8, 0 as u8]
+    let mut els: array<XmlElement, 4> = [XmlElement { name: 0, nameLen: 0, parent: 0, depth: 0, firstAttr: 0, attrCount: 0, firstChild: 0, lastChild: 0, nextSibling: 0, childCount: 0 }; 4]
+    let mut ats: array<XmlAttribute, 4> = [XmlAttribute { name: 0, nameLen: 0, value: 0, valueLen: 0 }; 4]
+    let mut pool: array<u8, 64> = [0 as u8; 64]
+    let mut d: array<XmlDoc, 1> = [xmlDocInit(&els[0], 4, &ats[0], 4, &pool[0], 64)]
+    if xmlParse(&d[0], &bad[0], 7) != XML_ERR_ENCODING {
+        return 14
+    }
+    let mut nul: array<u8, 6> = [60 as u8, 97 as u8, 0 as u8, 47 as u8, 62 as u8, 0 as u8]
+    if xmlParse(&d[0], &nul[0], 5) != XML_ERR_ENCODING {
+        return 15
+    }
+    return 0
+}
+
+# References decode, literal whitespace in values normalises to a space, and the writer
+# escapes so the value survives a round trip.
+function testXmlReferencesRoundTrip() -> i32 {
+    let mut els: array<XmlElement, 8> = [XmlElement { name: 0, nameLen: 0, parent: 0, depth: 0, firstAttr: 0, attrCount: 0, firstChild: 0, lastChild: 0, nextSibling: 0, childCount: 0 }; 8]
+    let mut ats: array<XmlAttribute, 8> = [XmlAttribute { name: 0, nameLen: 0, value: 0, valueLen: 0 }; 8]
+    let mut pool: array<u8, 512> = [0 as u8; 512]
+    let mut d: array<XmlDoc, 1> = [xmlDocInit(&els[0], 8, &ats[0], 8, &pool[0], 512)]
+    if parseText(&d[0], "<a x='&lt;&amp;&#65;&#x42;&quot;&apos;' y=\"one\ttwo\nthree\" z='&#10;&#233;'/>") != XML_OK {
+        return 1
+    }
+    if not xmlAttrValueIs(d[0], xmlFindAttr(d[0], 0, "x"), "<&AB\"'") {
+        return 2
+    }
+    if not xmlAttrValueIs(d[0], xmlFindAttr(d[0], 0, "y"), "one two three") {
+        return 3
+    }
+    if not xmlAttrValueIs(d[0], xmlFindAttr(d[0], 0, "z"), "\n\u00e9") {
+        return 4
+    }
+    let mut out: array<u8, 512> = [0 as u8; 512]
+    let mut w: array<XmlWriter, 1> = [XmlWriter { buf: &out[0], cap: 512, len: 0, overflow: false }]
+    if not xmlWrite(d[0], &w[0]) {
+        return 5
+    }
+    let want: string = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<a x=\"&lt;&amp;AB&quot;'\" y=\"one two three\" z=\"&#10;\u00e9\"/>\n"
+    let wp: ptr<u8> = want as ptr<u8>
+    if w[0].len != xmlStrLen(want) {
+        return 6
+    }
+    for i in 0 to w[0].len {
+        if out[i] != wp[i] {
+            return 7
+        }
+    }
+    let mut els2: array<XmlElement, 8> = [XmlElement { name: 0, nameLen: 0, parent: 0, depth: 0, firstAttr: 0, attrCount: 0, firstChild: 0, lastChild: 0, nextSibling: 0, childCount: 0 }; 8]
+    let mut ats2: array<XmlAttribute, 8> = [XmlAttribute { name: 0, nameLen: 0, value: 0, valueLen: 0 }; 8]
+    let mut pool2: array<u8, 512> = [0 as u8; 512]
+    let mut d2: array<XmlDoc, 1> = [xmlDocInit(&els2[0], 8, &ats2[0], 8, &pool2[0], 512)]
+    if xmlParse(&d2[0], &out[0], w[0].len) != XML_OK or not xmlTreesEqual(d[0], d2[0]) {
+        return 8
+    }
+    return 0
+}
+
+function fmiDoc(top: string, vars: string, ms: string) -> string {
+    return "<?xml version='1.0' encoding='UTF-8'?><fmiModelDescription fmiVersion='2.0' modelName='m' guid='{g}'>" + top + "<ModelVariables>" + vars + "</ModelVariables><ModelStructure>" + ms + "</ModelStructure></fmiModelDescription>"
+}
+
+const CS: string = "<CoSimulation modelIdentifier='m'/>"
+const STATE_VARS: string = "<ScalarVariable name='x' valueReference='0' causality='output' initial='exact'><Real start='1'/></ScalarVariable><ScalarVariable name='der(x)' valueReference='1'><Real derivative='1'/></ScalarVariable>"
+const STATE_MS: string = "<Outputs><Unknown index='1'/></Outputs><Derivatives><Unknown index='2' dependencies='1' dependenciesKind='dependent'/></Derivatives><InitialUnknowns><Unknown index='2'/></InitialUnknowns>"
+
+function sv(name: string, attrs: string, body: string) -> string {
+    return "<ScalarVariable name='" + name + "' valueReference='9' " + attrs + ">" + body + "</ScalarVariable>"
+}
+
+function testFmiRules() -> i32 {
+    if validateText(fmiDoc(CS, STATE_VARS, STATE_MS)) != FMI2_OK {
+        return 1
+    }
+    if validateTextCap(fmiDoc(CS, STATE_VARS, STATE_MS), 1) != FMI2_ERR_CAPACITY {
+        return 41
+    }
+    let hdr: string = "<?xml version='1.0'?>"
+    if validateText(hdr + "<fmuDescription fmiVersion='2.0' modelName='m' guid='g'/>") != FMI2_ERR_ROOT {
+        return 2
+    }
+    if validateText(hdr + "<fmiModelDescription fmiVersion='3.0' modelName='m' guid='g'/>") != FMI2_ERR_VERSION {
+        return 3
+    }
+    if validateText(hdr + "<fmiModelDescription fmiVersion='2.0' modelName='m'><CoSimulation modelIdentifier='m'/><ModelVariables/><ModelStructure/></fmiModelDescription>") != FMI2_ERR_HEADER {
+        return 4
+    }
+    if validateText(fmiDoc("", "", "")) != FMI2_ERR_INTERFACE or validateText(fmiDoc("<CoSimulation/>", "", "")) != FMI2_ERR_INTERFACE {
+        return 5
+    }
+    if validateText(hdr + "<fmiModelDescription fmiVersion='2.0' modelName='m' guid='g'><ModelVariables/><CoSimulation modelIdentifier='m'/><ModelStructure/></fmiModelDescription>") != FMI2_ERR_STRUCTURE {
+        return 6
+    }
+    if validateText(hdr + "<fmiModelDescription fmiVersion='2.0' modelName='m' guid='g'><CoSimulation modelIdentifier='m'/><ModelVariables/></fmiModelDescription>") != FMI2_ERR_STRUCTURE {
+        return 7
+    }
+    if validateText(fmiDoc(CS, sv("a", "", "<Real/><Integer/>"), "")) != FMI2_ERR_TYPE_ELEMENT or validateText(fmiDoc(CS, sv("a", "", ""), "")) != FMI2_ERR_TYPE_ELEMENT {
+        return 8
+    }
+    if validateText(fmiDoc(CS, sv("a", "variability='discrete'", "<Integer/>") + sv("a", "variability='discrete'", "<Integer/>"), "")) != FMI2_ERR_NAME {
+        return 9
+    }
+    if validateText(fmiDoc(CS, "<ScalarVariable name='a' valueReference='-1'><Real/></ScalarVariable>", "")) != FMI2_ERR_VALUE_REFERENCE or validateText(fmiDoc(CS, "<ScalarVariable name='a'><Real/></ScalarVariable>", "")) != FMI2_ERR_VALUE_REFERENCE {
+        return 10
+    }
+    if validateText(fmiDoc(CS, sv("a", "causality='state'", "<Real/>"), "")) != FMI2_ERR_ENUM_LITERAL or validateText(fmiDoc(CS, sv("a", "initial='guess'", "<Real/>"), "")) != FMI2_ERR_ENUM_LITERAL {
+        return 11
+    }
+    if validateText(fmiDoc(CS, sv("p", "causality='parameter'", "<Real start='1'/>"), "")) != FMI2_ERR_COMBINATION {
+        return 12
+    }
+    if validateText(fmiDoc(CS, sv("n", "", "<Integer/>"), "")) != FMI2_ERR_COMBINATION or validateText(fmiDoc(CS, sv("u", "causality='input' variability='constant'", "<Real start='1'/>"), "")) != FMI2_ERR_COMBINATION {
+        return 13
+    }
+    if validateText(fmiDoc(CS, sv("t", "causality='independent' variability='discrete'", "<Real/>"), "")) != FMI2_ERR_COMBINATION {
+        return 14
+    }
+    if validateText(fmiDoc(CS, sv("p", "causality='parameter' variability='fixed' initial='calculated'", "<Real/>"), "")) != FMI2_ERR_INITIAL {
+        return 15
+    }
+    if validateText(fmiDoc(CS, sv("u", "causality='input' initial='exact'", "<Real start='0'/>"), "")) != FMI2_ERR_INITIAL or validateText(fmiDoc(CS, sv("c", "causality='calculatedParameter' variability='fixed' initial='exact'", "<Real start='0'/>"), "")) != FMI2_ERR_INITIAL {
+        return 16
+    }
+    if validateText(fmiDoc(CS, sv("p", "causality='parameter' variability='fixed'", "<Real/>"), "")) != FMI2_ERR_START or validateText(fmiDoc(CS, sv("u", "causality='input'", "<Real/>"), "")) != FMI2_ERR_START {
+        return 17
+    }
+    if validateText(fmiDoc(CS, sv("y", "initial='calculated'", "<Real start='1'/>"), "")) != FMI2_ERR_START or validateText(fmiDoc(CS, sv("t", "causality='independent'", "<Real start='0'/>"), "")) != FMI2_ERR_START {
+        return 18
+    }
+    if validateText(fmiDoc(CS, sv("t", "causality='independent'", "<Real/>") + sv("s", "causality='independent'", "<Real/>"), "")) != FMI2_ERR_INDEPENDENT {
+        return 19
+    }
+    if validateText(fmiDoc(CS, sv("a", "", "<Real derivative='5'/>"), "")) != FMI2_ERR_DERIVATIVE or validateText(fmiDoc(CS, sv("a", "variability='discrete'", "<Integer derivative='1'/>"), "")) != FMI2_ERR_DERIVATIVE {
+        return 20
+    }
+    if validateText(fmiDoc(CS, sv("b", "variability='discrete'", "<String/>") + sv("a", "", "<Real derivative='1'/>"), "")) != FMI2_ERR_DERIVATIVE {
+        return 21
+    }
+    let types: string = "<TypeDefinitions><SimpleType name='Len'><Real unit='m'/></SimpleType><SimpleType name='Mode'><Enumeration><Item name='off' value='0'/></Enumeration></SimpleType></TypeDefinitions>"
+    let units: string = "<UnitDefinitions><Unit name='m'><DisplayUnit name='mm' factor='1000'/></Unit></UnitDefinitions>"
+    if validateText(fmiDoc(CS + units + types, sv("a", "", "<Real declaredType='Len' displayUnit='mm' unit='m'/>") + sv("e", "variability='discrete'", "<Enumeration declaredType='Mode'/>"), "")) != FMI2_OK {
+        return 22
+    }
+    if validateText(fmiDoc(CS + units + types, sv("a", "", "<Real declaredType='Nope'/>"), "")) != FMI2_ERR_DECLARED_TYPE or validateText(fmiDoc(CS + units + types, sv("e", "variability='discrete'", "<Enumeration/>"), "")) != FMI2_ERR_DECLARED_TYPE {
+        return 23
+    }
+    if validateText(fmiDoc(CS + units + types, sv("i", "variability='discrete'", "<Integer declaredType='Len'/>"), "")) != FMI2_ERR_DECLARED_TYPE {
+        return 24
+    }
+    if validateText(fmiDoc(CS + units + types, sv("a", "", "<Real unit='kg'/>"), "")) != FMI2_ERR_UNIT or validateText(fmiDoc(CS + units + types, sv("a", "", "<Real unit='m' displayUnit='km'/>"), "")) != FMI2_ERR_UNIT {
+        return 25
+    }
+    if validateText(fmiDoc(CS + "<TypeDefinitions><SimpleType name='Mass'><Real unit='kg'/></SimpleType></TypeDefinitions>", "", "")) != FMI2_ERR_UNIT {
+        return 26
+    }
+    let noOutputs: string = "<Derivatives><Unknown index='2'/></Derivatives><InitialUnknowns><Unknown index='2'/></InitialUnknowns>"
+    if validateText(fmiDoc(CS, STATE_VARS, noOutputs)) != FMI2_ERR_OUTPUTS {
+        return 27
+    }
+    let extraOutput: string = "<Outputs><Unknown index='1'/><Unknown index='2'/></Outputs><Derivatives><Unknown index='2'/></Derivatives><InitialUnknowns><Unknown index='2'/></InitialUnknowns>"
+    if validateText(fmiDoc(CS, STATE_VARS, extraOutput)) != FMI2_ERR_OUTPUTS {
+        return 28
+    }
+    let twoOut: string = sv("y1", "causality='output'", "<Real/>") + sv("y2", "causality='output'", "<Real/>")
+    if validateText(fmiDoc(CS, twoOut, "<Outputs><Unknown index='2'/><Unknown index='1'/></Outputs><InitialUnknowns><Unknown index='1'/><Unknown index='2'/></InitialUnknowns>")) != FMI2_ERR_OUTPUTS {
+        return 29
+    }
+    if validateText(fmiDoc(CS, twoOut, "<Outputs><Unknown index='1'/><Unknown index='2'/></Outputs><InitialUnknowns><Unknown index='1'/><Unknown index='2'/></InitialUnknowns>")) != FMI2_OK {
+        return 30
+    }
+    let wrongDer: string = "<Outputs><Unknown index='1'/></Outputs><Derivatives><Unknown index='1'/></Derivatives><InitialUnknowns><Unknown index='2'/></InitialUnknowns>"
+    if validateText(fmiDoc(CS, STATE_VARS, wrongDer)) != FMI2_ERR_DERIVATIVES {
+        return 31
+    }
+    let twiceDer: string = "<Outputs><Unknown index='1'/></Outputs><Derivatives><Unknown index='2'/><Unknown index='2'/></Derivatives><InitialUnknowns><Unknown index='2'/></InitialUnknowns>"
+    if validateText(fmiDoc(CS, STATE_VARS, twiceDer)) != FMI2_ERR_DERIVATIVES {
+        return 32
+    }
+    let noInit: string = "<Outputs><Unknown index='1'/></Outputs><Derivatives><Unknown index='2'/></Derivatives>"
+    if validateText(fmiDoc(CS, STATE_VARS, noInit)) != FMI2_ERR_INITIAL_UNKNOWNS {
+        return 33
+    }
+    let extraInit: string = "<Outputs><Unknown index='1'/></Outputs><Derivatives><Unknown index='2'/></Derivatives><InitialUnknowns><Unknown index='1'/><Unknown index='2'/></InitialUnknowns>"
+    if validateText(fmiDoc(CS, STATE_VARS, extraInit)) != FMI2_ERR_INITIAL_UNKNOWNS {
+        return 34
+    }
+    # A calculatedParameter is always an initial unknown.
+    if validateText(fmiDoc(CS, sv("c", "causality='calculatedParameter' variability='fixed'", "<Real/>"), "")) != FMI2_ERR_INITIAL_UNKNOWNS {
+        return 35
+    }
+    let msHead: string = "<Outputs><Unknown index='1'/></Outputs><Derivatives><Unknown index='2' "
+    let msTail: string = "/></Derivatives><InitialUnknowns><Unknown index='2'/></InitialUnknowns>"
+    if validateText(fmiDoc(CS, STATE_VARS, msHead + "dependencies='2 1'" + msTail)) != FMI2_ERR_DEPENDENCIES {
+        return 36
+    }
+    if validateText(fmiDoc(CS, STATE_VARS, msHead + "dependencies='0'" + msTail)) != FMI2_ERR_DEPENDENCIES or validateText(fmiDoc(CS, STATE_VARS, msHead + "dependencies='3'" + msTail)) != FMI2_ERR_DEPENDENCIES {
+        return 37
+    }
+    if validateText(fmiDoc(CS, STATE_VARS, msHead + "dependencies='1 2' dependenciesKind='dependent'" + msTail)) != FMI2_ERR_DEPENDENCIES {
+        return 38
+    }
+    if validateText(fmiDoc(CS, STATE_VARS, msHead + "dependencies='1' dependenciesKind='bogus'" + msTail)) != FMI2_ERR_DEPENDENCIES or validateText(fmiDoc(CS, STATE_VARS, msHead + "dependenciesKind='fixed'" + msTail)) != FMI2_ERR_DEPENDENCIES {
+        return 39
+    }
+    if validateText(fmiDoc(CS, STATE_VARS, msHead + "dependencies=' 1  2 ' dependenciesKind=' fixed  dependent '" + msTail)) != FMI2_OK or validateText(fmiDoc(CS, STATE_VARS, msHead + "dependencies=''" + msTail)) != FMI2_OK {
+        return 40
+    }
+    return 0
+}
+
+function quarterCarVar(name: string, causality: i32, variability: i32, initial: i32, start: string, derivative: i32, unit: string) -> Fmi2RealVariable {
+    return Fmi2RealVariable { name: name, description: "", causality: causality, variability: variability, initial: initial, start: start, derivative: derivative, unit: unit }
+}
+
+# Export the interface of herbie.vehicle's quarter car (QuarterCarState and
+# QuarterCarParameters fields, road inputs, body acceleration output).
+function testQuarterCarExport() -> i32 {
+    let mut vars: array<Fmi2RealVariable, 18> = [
+        quarterCarVar("time", FMI2_INDEPENDENT, FMI2_CONTINUOUS, FMI2_INITIAL_NONE, "", 0, "s"),
+        quarterCarVar("roadPosition", FMI2_INPUT, FMI2_CONTINUOUS, FMI2_INITIAL_NONE, "0", 0, "m"),
+        quarterCarVar("roadVelocity", FMI2_INPUT, FMI2_CONTINUOUS, FMI2_INITIAL_NONE, "0", 0, "m/s"),
+        quarterCarVar("sprungPosition", FMI2_OUTPUT, FMI2_CONTINUOUS, FMI2_EXACT, "0", 0, "m"),
+        quarterCarVar("der(sprungPosition)", FMI2_LOCAL, FMI2_CONTINUOUS, FMI2_INITIAL_NONE, "", 4, "m/s"),
+        quarterCarVar("sprungVelocity", FMI2_OUTPUT, FMI2_CONTINUOUS, FMI2_EXACT, "0", 0, "m/s"),
+        quarterCarVar("der(sprungVelocity)", FMI2_LOCAL, FMI2_CONTINUOUS, FMI2_INITIAL_NONE, "", 6, "m/s2"),
+        quarterCarVar("unsprungPosition", FMI2_LOCAL, FMI2_CONTINUOUS, FMI2_EXACT, "0", 0, "m"),
+        quarterCarVar("der(unsprungPosition)", FMI2_LOCAL, FMI2_CONTINUOUS, FMI2_INITIAL_NONE, "", 8, "m/s"),
+        quarterCarVar("unsprungVelocity", FMI2_LOCAL, FMI2_CONTINUOUS, FMI2_EXACT, "0", 0, "m/s"),
+        quarterCarVar("der(unsprungVelocity)", FMI2_LOCAL, FMI2_CONTINUOUS, FMI2_INITIAL_NONE, "", 10, "m/s2"),
+        quarterCarVar("sprungMass", FMI2_PARAMETER, FMI2_FIXED, FMI2_INITIAL_NONE, "400", 0, "kg"),
+        quarterCarVar("unsprungMass", FMI2_PARAMETER, FMI2_FIXED, FMI2_INITIAL_NONE, "40", 0, "kg"),
+        quarterCarVar("suspensionStiffness", FMI2_PARAMETER, FMI2_TUNABLE, FMI2_INITIAL_NONE, "20000", 0, "N/m"),
+        quarterCarVar("suspensionDamping", FMI2_PARAMETER, FMI2_TUNABLE, FMI2_INITIAL_NONE, "1500", 0, "N.s/m"),
+        quarterCarVar("tireStiffness", FMI2_PARAMETER, FMI2_FIXED, FMI2_INITIAL_NONE, "200000", 0, "N/m"),
+        quarterCarVar("tireDamping", FMI2_PARAMETER, FMI2_FIXED, FMI2_INITIAL_NONE, "0", 0, "N.s/m"),
+        quarterCarVar("bodyAcceleration", FMI2_OUTPUT, FMI2_CONTINUOUS, FMI2_INITIAL_NONE, "", 0, "m/s2")
+    ]
+    let info: Fmi2ModelInfo = Fmi2ModelInfo {
+        modelName: "herbie.vehicle.QuarterCar",
+        guid: "{6b1d2f4e-9c3a-4e57-8a10-5f2c7d9e0b31}",
+        description: "Quarter-car vertical dynamics (herbie.vehicle) & road input",
+        generationTool: "herbie.fmi2",
+        modelIdentifier: "herbie_quarter_car",
+        modelExchange: true,
+        coSimulation: true,
+        numberOfEventIndicators: 0,
+        startTime: "0",
+        stopTime: "5",
+        stepSize: "1e-3"
+    }
+    let mut els: array<XmlElement, 512> = [XmlElement { name: 0, nameLen: 0, parent: 0, depth: 0, firstAttr: 0, attrCount: 0, firstChild: 0, lastChild: 0, nextSibling: 0, childCount: 0 }; 512]
+    let mut ats: array<XmlAttribute, 1024> = [XmlAttribute { name: 0, nameLen: 0, value: 0, valueLen: 0 }; 1024]
+    let mut pool: array<u8, 32768> = [0 as u8; 32768]
+    let mut d: array<XmlDoc, 1> = [xmlDocInit(&els[0], MAX_ELEMS, &ats[0], MAX_ATTRS, &pool[0], POOL_BYTES)]
+    let mut scratch: array<Fmi2VarInfo, 18> = [Fmi2VarInfo { element: -1, typeElement: -1, baseType: 0, causality: 4, variability: 4, initial: 0, hasStart: false, derivative: 0, isState: false, isDerivative: false }; 18]
+    let mut idx: array<i32, 18> = [0; 18]
+    if fmi2BuildRealModel(&d[0], info, &vars[0], 18, &scratch[0], &idx[0]) != FMI2_OK {
+        return 1
+    }
+    let mut out: array<u8, 32768> = [0 as u8; 32768]
+    let mut w: array<XmlWriter, 1> = [XmlWriter { buf: &out[0], cap: TEXT_BYTES, len: 0, overflow: false }]
+    if not xmlWrite(d[0], &w[0]) {
+        return 2
+    }
+    if not io_write_bytes("/tmp/herbie-fmi2-QuarterCar.xml", &out[0], w[0].len as i64) {
+        return 3
+    }
+    let mut els2: array<XmlElement, 512> = [XmlElement { name: 0, nameLen: 0, parent: 0, depth: 0, firstAttr: 0, attrCount: 0, firstChild: 0, lastChild: 0, nextSibling: 0, childCount: 0 }; 512]
+    let mut ats2: array<XmlAttribute, 1024> = [XmlAttribute { name: 0, nameLen: 0, value: 0, valueLen: 0 }; 1024]
+    let mut pool2: array<u8, 32768> = [0 as u8; 32768]
+    let mut d2: array<XmlDoc, 1> = [xmlDocInit(&els2[0], MAX_ELEMS, &ats2[0], MAX_ATTRS, &pool2[0], POOL_BYTES)]
+    if xmlParse(&d2[0], &out[0], w[0].len) != XML_OK or not xmlTreesEqual(d[0], d2[0]) {
+        return 4
+    }
+    let mut vi: array<Fmi2VarInfo, 64> = [Fmi2VarInfo { element: -1, typeElement: -1, baseType: 0, causality: 4, variability: 4, initial: 0, hasStart: false, derivative: 0, isState: false, isDerivative: false }; 64]
+    let mut r: array<Fmi2Report, 1> = [fmi2EmptyReport()]
+    if fmi2Validate(d2[0], &vi[0], MAX_VARS, &r[0]) != FMI2_OK {
+        return 5
+    }
+    # 3 outputs, 4 state derivatives; initial unknowns are the 4 calculated derivatives
+    # and the calculated body acceleration.
+    if r[0].variables != 18 or r[0].reals != 18 or r[0].outputs != 3 or r[0].derivatives != 4 or r[0].initialUnknowns != 5 or r[0].independent != 1 {
+        return 6
+    }
+    let root: i32 = 0
+    let ud: i32 = xmlChildNamed(d2[0], root, "UnitDefinitions")
+    if ud < 0 or d2[0].elems[ud].childCount != 7 {
+        return 7
+    }
+    if not xmlAttrValueIs(d2[0], xmlFindAttr(d2[0], root, "description"), "Quarter-car vertical dynamics (herbie.vehicle) & road input") {
+        return 8
+    }
+    # A continuous parameter is outside the causality/variability table.
+    vars[11] = quarterCarVar("sprungMass", FMI2_PARAMETER, FMI2_CONTINUOUS, FMI2_INITIAL_NONE, "400", 0, "kg")
+    if fmi2BuildRealModel(&d[0], info, &vars[0], 18, &scratch[0], &idx[0]) != FMI2_ERR_COMBINATION {
+        return 9
+    }
+    # A document too large for the caller's tables reports capacity.
+    let mut small: array<XmlElement, 8> = [XmlElement { name: 0, nameLen: 0, parent: 0, depth: 0, firstAttr: 0, attrCount: 0, firstChild: 0, lastChild: 0, nextSibling: 0, childCount: 0 }; 8]
+    let mut ds: array<XmlDoc, 1> = [xmlDocInit(&small[0], 8, &ats[0], MAX_ATTRS, &pool[0], POOL_BYTES)]
+    vars[11] = quarterCarVar("sprungMass", FMI2_PARAMETER, FMI2_FIXED, FMI2_INITIAL_NONE, "400", 0, "kg")
+    if fmi2BuildRealModel(&ds[0], info, &vars[0], 18, &scratch[0], &idx[0]) != FMI2_ERR_CAPACITY {
+        return 10
+    }
+    return 0
+}
+
+function main() -> i32 {
+    let mut code: i32 = 0
+    code = testReferenceFmus()
+    if code != 0 {
+        print("FAIL reference FMUs ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testBouncingBallFacts()
+    if code != 0 {
+        print("FAIL BouncingBall facts ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testCombinationTable()
+    if code != 0 {
+        print("FAIL causality/variability table ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testXmlWellFormedness()
+    if code != 0 {
+        print("FAIL XML well-formedness ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testXmlReferencesRoundTrip()
+    if code != 0 {
+        print("FAIL XML references round trip ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testFmiRules()
+    if code != 0 {
+        print("FAIL FMI 2.0 rules ")
+        print(code)
+        println("")
+        return code
+    }
+    code = testQuarterCarExport()
+    if code != 0 {
+        print("FAIL quarter-car export ")
+        print(code)
+        println("")
+        return code
+    }
+    println("PASS FMI 2.0 modelDescription parse, rules, canonical round trip and export")
+    return 0
+}

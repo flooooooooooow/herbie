@@ -1,0 +1,1042 @@
+# @module herbie.fmi2
+# FMI 2.0 modelDescription.xml checking and export on top of herbie.xml.
+#
+# fmi2Validate applies the rules of the FMI 2.0.4 specification (section 2.2) that the XSD
+# cannot express, after structural checks that mirror the XSD element order:
+#   - fmiVersion "2.0", required modelName and guid, at least one of ModelExchange and
+#     CoSimulation, each with a modelIdentifier;
+#   - unique variable names, unsigned valueReference, exactly one type element;
+#   - the causality × variability table (section 2.2.7), continuous only for Real, at
+#     most one independent variable, which is Real without start or initial;
+#   - the allowed and default `initial` per combination (classes A to E), start required
+#     for exact/approx/input and forbidden for calculated/independent;
+#   - `derivative` points at a Real variable; declaredType names a SimpleType of the same
+#     base type; Enumeration variables carry declaredType; unit and displayUnit exist;
+#   - ModelStructure: Outputs lists exactly the outputs in index order, every Derivatives
+#     entry is a Real with `derivative`, InitialUnknowns is exactly the set of section
+#     2.2.8 in index order, and dependency lists are ascending, in range and matched by
+#     dependenciesKind.
+# fmi2BuildRealModel writes a modelDescription for a Real-valued Herbie model interface;
+# xmlWrite serialises it. This is the model description only: no FMU archive, binaries,
+# fmi2 C API or co-simulation master.
+
+import "stdlib/string.flow"
+import herbie.xml {
+    XmlDoc, XmlElement, XmlAttribute,
+    xmlNameIs, xmlFindAttr, xmlAttrValueIs, xmlAttrIs, xmlAttrValuesEqual, xmlChildNamed,
+    xmlNextSame, xmlCountChildrenNamed, xmlAddElementNamed, xmlAddAttributeNamed, xmlStrLen
+}
+
+export const FMI2_OK: i32 = 0
+export const FMI2_ERR_ROOT: i32 = 1
+export const FMI2_ERR_VERSION: i32 = 2
+export const FMI2_ERR_HEADER: i32 = 3
+export const FMI2_ERR_INTERFACE: i32 = 4
+export const FMI2_ERR_STRUCTURE: i32 = 5
+export const FMI2_ERR_CAPACITY: i32 = 6
+export const FMI2_ERR_TYPE_ELEMENT: i32 = 7
+export const FMI2_ERR_NAME: i32 = 8
+export const FMI2_ERR_VALUE_REFERENCE: i32 = 9
+export const FMI2_ERR_ENUM_LITERAL: i32 = 10
+export const FMI2_ERR_COMBINATION: i32 = 11
+export const FMI2_ERR_INITIAL: i32 = 12
+export const FMI2_ERR_START: i32 = 13
+export const FMI2_ERR_INDEPENDENT: i32 = 14
+export const FMI2_ERR_DERIVATIVE: i32 = 15
+export const FMI2_ERR_DECLARED_TYPE: i32 = 16
+export const FMI2_ERR_UNIT: i32 = 17
+export const FMI2_ERR_OUTPUTS: i32 = 18
+export const FMI2_ERR_DERIVATIVES: i32 = 19
+export const FMI2_ERR_INITIAL_UNKNOWNS: i32 = 20
+export const FMI2_ERR_DEPENDENCIES: i32 = 21
+
+export const FMI2_PARAMETER: i32 = 0
+export const FMI2_CALCULATED_PARAMETER: i32 = 1
+export const FMI2_INPUT: i32 = 2
+export const FMI2_OUTPUT: i32 = 3
+export const FMI2_LOCAL: i32 = 4
+export const FMI2_INDEPENDENT: i32 = 5
+
+export const FMI2_CONSTANT: i32 = 0
+export const FMI2_FIXED: i32 = 1
+export const FMI2_TUNABLE: i32 = 2
+export const FMI2_DISCRETE: i32 = 3
+export const FMI2_CONTINUOUS: i32 = 4
+
+export const FMI2_INITIAL_NONE: i32 = 0
+export const FMI2_EXACT: i32 = 1
+export const FMI2_APPROX: i32 = 2
+export const FMI2_CALCULATED: i32 = 3
+
+export const FMI2_REAL: i32 = 1
+export const FMI2_INTEGER: i32 = 2
+export const FMI2_BOOLEAN: i32 = 3
+export const FMI2_STRING: i32 = 4
+export const FMI2_ENUMERATION: i32 = 5
+
+# Per-variable facts gathered by fmi2Validate (index i is ScalarVariable i + 1).
+export struct Fmi2VarInfo {
+    element: i32,
+    typeElement: i32,
+    baseType: i32,
+    causality: i32,
+    variability: i32,
+    # Resolved initial (explicit or table default); FMI2_INITIAL_NONE for input/independent.
+    initial: i32,
+    hasStart: bool,
+    # 1-based index of the variable this one is the derivative of; 0 when absent.
+    derivative: i32,
+    isState: bool,
+    isDerivative: bool
+}
+
+export struct Fmi2Report {
+    code: i32,
+    # Element index where the fault was found; -1 when not tied to one element.
+    element: i32,
+    variables: i32,
+    reals: i32,
+    integers: i32,
+    booleans: i32,
+    strings: i32,
+    enumerations: i32,
+    outputs: i32,
+    derivatives: i32,
+    initialUnknowns: i32,
+    # 1-based index of the independent variable; 0 when implicit.
+    independent: i32,
+    modelExchange: bool,
+    coSimulation: bool
+}
+
+export function fmi2EmptyVarInfo() -> Fmi2VarInfo {
+    return Fmi2VarInfo {
+        element: -1, typeElement: -1, baseType: 0, causality: FMI2_LOCAL,
+        variability: FMI2_CONTINUOUS, initial: FMI2_INITIAL_NONE, hasStart: false,
+        derivative: 0, isState: false, isDerivative: false
+    }
+}
+
+export function fmi2EmptyReport() -> Fmi2Report {
+    return Fmi2Report {
+        code: FMI2_OK, element: -1, variables: 0, reals: 0, integers: 0, booleans: 0,
+        strings: 0, enumerations: 0, outputs: 0, derivatives: 0, initialUnknowns: 0,
+        independent: 0, modelExchange: false, coSimulation: false
+    }
+}
+
+# Initial class of a causality/variability pair: 0 not allowed, 1..5 for (A)..(E).
+export function fmi2InitialClass(causality: i32, variability: i32) -> i32 {
+    if variability == FMI2_CONSTANT {
+        if causality == FMI2_OUTPUT or causality == FMI2_LOCAL {
+            return 1
+        }
+        return 0
+    }
+    if variability == FMI2_FIXED or variability == FMI2_TUNABLE {
+        if causality == FMI2_PARAMETER {
+            return 1
+        }
+        if causality == FMI2_CALCULATED_PARAMETER or causality == FMI2_LOCAL {
+            return 2
+        }
+        return 0
+    }
+    if variability == FMI2_DISCRETE or variability == FMI2_CONTINUOUS {
+        if causality == FMI2_INPUT {
+            return 4
+        }
+        if causality == FMI2_OUTPUT or causality == FMI2_LOCAL {
+            return 3
+        }
+        if causality == FMI2_INDEPENDENT and variability == FMI2_CONTINUOUS {
+            return 5
+        }
+    }
+    return 0
+}
+
+export function fmi2DefaultInitial(cls: i32) -> i32 {
+    if cls == 1 {
+        return FMI2_EXACT
+    }
+    if cls == 2 or cls == 3 {
+        return FMI2_CALCULATED
+    }
+    return FMI2_INITIAL_NONE
+}
+
+export function fmi2InitialAllowed(cls: i32, initial: i32) -> bool {
+    if cls == 1 {
+        return initial == FMI2_EXACT
+    }
+    if cls == 2 {
+        return initial == FMI2_APPROX or initial == FMI2_CALCULATED
+    }
+    if cls == 3 {
+        return initial == FMI2_EXACT or initial == FMI2_APPROX or initial == FMI2_CALCULATED
+    }
+    return false
+}
+
+# Section 2.2.8 membership of InitialUnknowns.
+export function fmi2IsInitialUnknown(v: Fmi2VarInfo) -> bool {
+    let approxOrCalc: bool = v.initial == FMI2_APPROX or v.initial == FMI2_CALCULATED
+    if v.causality == FMI2_OUTPUT and approxOrCalc {
+        return true
+    }
+    if v.causality == FMI2_CALCULATED_PARAMETER {
+        return true
+    }
+    return (v.isState or v.isDerivative) and approxOrCalc
+}
+
+function fmi2Fail(r: ptr<Fmi2Report>, code: i32, element: i32) -> i32 {
+    r[0].code = code
+    r[0].element = element
+    return code
+}
+
+function fmi2CausalityCode(d: XmlDoc, a: i32) -> i32 {
+    if xmlAttrValueIs(d, a, "parameter") {
+        return FMI2_PARAMETER
+    }
+    if xmlAttrValueIs(d, a, "calculatedParameter") {
+        return FMI2_CALCULATED_PARAMETER
+    }
+    if xmlAttrValueIs(d, a, "input") {
+        return FMI2_INPUT
+    }
+    if xmlAttrValueIs(d, a, "output") {
+        return FMI2_OUTPUT
+    }
+    if xmlAttrValueIs(d, a, "local") {
+        return FMI2_LOCAL
+    }
+    if xmlAttrValueIs(d, a, "independent") {
+        return FMI2_INDEPENDENT
+    }
+    return -1
+}
+
+function fmi2VariabilityCode(d: XmlDoc, a: i32) -> i32 {
+    if xmlAttrValueIs(d, a, "constant") {
+        return FMI2_CONSTANT
+    }
+    if xmlAttrValueIs(d, a, "fixed") {
+        return FMI2_FIXED
+    }
+    if xmlAttrValueIs(d, a, "tunable") {
+        return FMI2_TUNABLE
+    }
+    if xmlAttrValueIs(d, a, "discrete") {
+        return FMI2_DISCRETE
+    }
+    if xmlAttrValueIs(d, a, "continuous") {
+        return FMI2_CONTINUOUS
+    }
+    return -1
+}
+
+function fmi2InitialCode(d: XmlDoc, a: i32) -> i32 {
+    if xmlAttrValueIs(d, a, "exact") {
+        return FMI2_EXACT
+    }
+    if xmlAttrValueIs(d, a, "approx") {
+        return FMI2_APPROX
+    }
+    if xmlAttrValueIs(d, a, "calculated") {
+        return FMI2_CALCULATED
+    }
+    return -1
+}
+
+function fmi2BaseTypeOf(d: XmlDoc, e: i32) -> i32 {
+    if xmlNameIs(d, e, "Real") {
+        return FMI2_REAL
+    }
+    if xmlNameIs(d, e, "Integer") {
+        return FMI2_INTEGER
+    }
+    if xmlNameIs(d, e, "Boolean") {
+        return FMI2_BOOLEAN
+    }
+    if xmlNameIs(d, e, "String") {
+        return FMI2_STRING
+    }
+    if xmlNameIs(d, e, "Enumeration") {
+        return FMI2_ENUMERATION
+    }
+    return 0
+}
+
+function fmi2IsSpace(c: u8) -> bool {
+    return c == (32 as u8) or c == (9 as u8) or c == (10 as u8) or c == (13 as u8)
+}
+
+# Unsigned decimal in v[at .. end) after XSD whitespace collapse; -1 when malformed or
+# above maxValue. *next receives the index after the number.
+function fmi2ParseUnsigned(v: ptr<u8>, at: i32, end: i32, maxValue: i64, next: ptr<i32>) -> i64 {
+    let mut i: i32 = at
+    while i < end and fmi2IsSpace(v[i]) {
+        i = i + 1
+    }
+    if i < end and v[i] == (43 as u8) {
+        i = i + 1
+    }
+    let start: i32 = i
+    let mut x: i64 = 0
+    while i < end and (v[i] as i32) >= 48 and (v[i] as i32) <= 57 {
+        x = x * 10 + ((v[i] as i32) - 48) as i64
+        if x > maxValue {
+            return -1
+        }
+        i = i + 1
+    }
+    if i == start {
+        return -1
+    }
+    next[0] = i
+    return x
+}
+
+# Whole attribute value as one unsigned integer, or -1.
+function fmi2AttrUnsigned(d: XmlDoc, a: i32, maxValue: i64) -> i64 {
+    let at: XmlAttribute = d.attrs[a]
+    let v: ptr<u8> = &d.pool[at.value]
+    let mut next: array<i32, 1> = [0]
+    let x: i64 = fmi2ParseUnsigned(v, 0, at.valueLen, maxValue, &next[0])
+    if x < 0 {
+        return -1
+    }
+    let mut i: i32 = next[0]
+    while i < at.valueLen and fmi2IsSpace(v[i]) {
+        i = i + 1
+    }
+    if i != at.valueLen {
+        return -1
+    }
+    return x
+}
+
+# Finds the SimpleType named by attribute a; returns its type element or -1.
+function fmi2FindSimpleType(d: XmlDoc, root: i32, a: i32) -> i32 {
+    let td: i32 = xmlChildNamed(d, root, "TypeDefinitions")
+    if td < 0 {
+        return -1
+    }
+    let mut st: i32 = xmlChildNamed(d, td, "SimpleType")
+    while st >= 0 {
+        let n: i32 = xmlFindAttr(d, st, "name")
+        if n >= 0 and xmlAttrValuesEqual(d, n, a) {
+            return d.elems[st].firstChild
+        }
+        st = xmlNextSame(d, st)
+    }
+    return -1
+}
+
+function fmi2FindUnit(d: XmlDoc, root: i32, a: i32) -> i32 {
+    let ud: i32 = xmlChildNamed(d, root, "UnitDefinitions")
+    if ud < 0 {
+        return -1
+    }
+    let mut u: i32 = xmlChildNamed(d, ud, "Unit")
+    while u >= 0 {
+        let n: i32 = xmlFindAttr(d, u, "name")
+        if n >= 0 and xmlAttrValuesEqual(d, n, a) {
+            return u
+        }
+        u = xmlNextSame(d, u)
+    }
+    return -1
+}
+
+# unit and displayUnit on a Real element (variable or SimpleType) must be defined.
+function fmi2CheckUnits(d: XmlDoc, root: i32, e: i32) -> bool {
+    let ua: i32 = xmlFindAttr(d, e, "unit")
+    if ua < 0 {
+        return true
+    }
+    let u: i32 = fmi2FindUnit(d, root, ua)
+    if u < 0 {
+        return false
+    }
+    let da: i32 = xmlFindAttr(d, e, "displayUnit")
+    if da < 0 {
+        return true
+    }
+    let mut du: i32 = xmlChildNamed(d, u, "DisplayUnit")
+    while du >= 0 {
+        let n: i32 = xmlFindAttr(d, du, "name")
+        if n >= 0 and xmlAttrValuesEqual(d, n, da) {
+            return true
+        }
+        du = xmlNextSame(d, du)
+    }
+    return false
+}
+
+# Top-level children must follow the XSD sequence, each at most once.
+function fmi2CheckTopLevel(d: XmlDoc, root: i32) -> bool {
+    let mut rank: i32 = -1
+    let mut c: i32 = d.elems[root].firstChild
+    while c >= 0 {
+        let mut r: i32 = -1
+        if xmlNameIs(d, c, "ModelExchange") {
+            r = 0
+        } elif xmlNameIs(d, c, "CoSimulation") {
+            r = 1
+        } elif xmlNameIs(d, c, "UnitDefinitions") {
+            r = 2
+        } elif xmlNameIs(d, c, "TypeDefinitions") {
+            r = 3
+        } elif xmlNameIs(d, c, "LogCategories") {
+            r = 4
+        } elif xmlNameIs(d, c, "DefaultExperiment") {
+            r = 5
+        } elif xmlNameIs(d, c, "VendorAnnotations") {
+            r = 6
+        } elif xmlNameIs(d, c, "ModelVariables") {
+            r = 7
+        } elif xmlNameIs(d, c, "ModelStructure") {
+            r = 8
+        }
+        if r <= rank {
+            return false
+        }
+        rank = r
+        c = d.elems[c].nextSibling
+    }
+    return true
+}
+
+# Checks the dependencies / dependenciesKind pair of one Unknown.
+function fmi2CheckDependencies(d: XmlDoc, u: i32, n: i32) -> bool {
+    let da: i32 = xmlFindAttr(d, u, "dependencies")
+    let ka: i32 = xmlFindAttr(d, u, "dependenciesKind")
+    if da < 0 {
+        return ka < 0
+    }
+    let at: XmlAttribute = d.attrs[da]
+    let v: ptr<u8> = &d.pool[at.value]
+    let mut i: i32 = 0
+    let mut count: i32 = 0
+    let mut last: i64 = 0
+    let mut next: array<i32, 1> = [0]
+    while true {
+        while i < at.valueLen and fmi2IsSpace(v[i]) {
+            i = i + 1
+        }
+        if i >= at.valueLen {
+            break
+        }
+        let x: i64 = fmi2ParseUnsigned(v, i, at.valueLen, 2147483647, &next[0])
+        if x < 1 or x > (n as i64) or x <= last {
+            return false
+        }
+        i = next[0]
+        if i < at.valueLen and not fmi2IsSpace(v[i]) {
+            return false
+        }
+        last = x
+        count = count + 1
+    }
+    if ka < 0 {
+        return true
+    }
+    let kt: XmlAttribute = d.attrs[ka]
+    let k: ptr<u8> = &d.pool[kt.value]
+    let mut j: i32 = 0
+    let mut kinds: i32 = 0
+    while true {
+        while j < kt.valueLen and fmi2IsSpace(k[j]) {
+            j = j + 1
+        }
+        if j >= kt.valueLen {
+            break
+        }
+        let s: i32 = j
+        while j < kt.valueLen and not fmi2IsSpace(k[j]) {
+            j = j + 1
+        }
+        if not (fmi2WordIs(k, s, j, "dependent") or fmi2WordIs(k, s, j, "constant") or fmi2WordIs(k, s, j, "fixed") or fmi2WordIs(k, s, j, "tunable") or fmi2WordIs(k, s, j, "discrete")) {
+            return false
+        }
+        kinds = kinds + 1
+    }
+    return kinds == count
+}
+
+function fmi2WordIs(k: ptr<u8>, s: i32, e: i32, lit: string) -> bool {
+    let q: ptr<u8> = lit as ptr<u8>
+    if e - s != xmlStrLen(lit) {
+        return false
+    }
+    for i in 0 to e - s {
+        if k[s + i] != q[i] {
+            return false
+        }
+    }
+    return true
+}
+
+# 1-based Unknown index, or -1 when missing or out of range.
+function fmi2UnknownIndex(d: XmlDoc, u: i32, n: i32) -> i32 {
+    if not xmlNameIs(d, u, "Unknown") {
+        return -1
+    }
+    let a: i32 = xmlFindAttr(d, u, "index")
+    if a < 0 {
+        return -1
+    }
+    let x: i64 = fmi2AttrUnsigned(d, a, 2147483647)
+    if x < 1 or x > (n as i64) {
+        return -1
+    }
+    return x as i32
+}
+
+function fmi2CheckVariable(d: XmlDoc, root: i32, sv: i32, info: ptr<Fmi2VarInfo>, r: ptr<Fmi2Report>) -> i32 {
+    let mut v: Fmi2VarInfo = fmi2EmptyVarInfo()
+    v.element = sv
+    if not xmlNameIs(d, sv, "ScalarVariable") {
+        return fmi2Fail(r, FMI2_ERR_STRUCTURE, sv)
+    }
+    let mut types: i32 = 0
+    let mut c: i32 = d.elems[sv].firstChild
+    while c >= 0 {
+        let bt: i32 = fmi2BaseTypeOf(d, c)
+        if bt > 0 {
+            types = types + 1
+            v.typeElement = c
+            v.baseType = bt
+        } elif not xmlNameIs(d, c, "Annotations") {
+            return fmi2Fail(r, FMI2_ERR_TYPE_ELEMENT, c)
+        }
+        c = d.elems[c].nextSibling
+    }
+    if types != 1 or d.elems[sv].firstChild != v.typeElement {
+        return fmi2Fail(r, FMI2_ERR_TYPE_ELEMENT, sv)
+    }
+    let vr: i32 = xmlFindAttr(d, sv, "valueReference")
+    if vr < 0 or fmi2AttrUnsigned(d, vr, 4294967295) < 0 {
+        return fmi2Fail(r, FMI2_ERR_VALUE_REFERENCE, sv)
+    }
+    let ca: i32 = xmlFindAttr(d, sv, "causality")
+    if ca >= 0 {
+        v.causality = fmi2CausalityCode(d, ca)
+    }
+    let va: i32 = xmlFindAttr(d, sv, "variability")
+    if va >= 0 {
+        v.variability = fmi2VariabilityCode(d, va)
+    }
+    let ia: i32 = xmlFindAttr(d, sv, "initial")
+    let mut explicitInitial: i32 = FMI2_INITIAL_NONE
+    if ia >= 0 {
+        explicitInitial = fmi2InitialCode(d, ia)
+    }
+    if v.causality < 0 or v.variability < 0 or explicitInitial < 0 {
+        return fmi2Fail(r, FMI2_ERR_ENUM_LITERAL, sv)
+    }
+    let cls: i32 = fmi2InitialClass(v.causality, v.variability)
+    if cls == 0 or (v.variability == FMI2_CONTINUOUS and v.baseType != FMI2_REAL) {
+        return fmi2Fail(r, FMI2_ERR_COMBINATION, sv)
+    }
+    if explicitInitial != FMI2_INITIAL_NONE {
+        if not fmi2InitialAllowed(cls, explicitInitial) {
+            return fmi2Fail(r, FMI2_ERR_INITIAL, sv)
+        }
+        v.initial = explicitInitial
+    } else {
+        v.initial = fmi2DefaultInitial(cls)
+    }
+    let te: i32 = v.typeElement
+    v.hasStart = xmlFindAttr(d, te, "start") >= 0
+    let needStart: bool = v.initial == FMI2_EXACT or v.initial == FMI2_APPROX or v.causality == FMI2_INPUT
+    let forbidStart: bool = v.initial == FMI2_CALCULATED or v.causality == FMI2_INDEPENDENT
+    if (needStart and not v.hasStart) or (forbidStart and v.hasStart) {
+        return fmi2Fail(r, FMI2_ERR_START, sv)
+    }
+    if v.causality == FMI2_INDEPENDENT {
+        if r[0].independent > 0 or v.baseType != FMI2_REAL {
+            return fmi2Fail(r, FMI2_ERR_INDEPENDENT, sv)
+        }
+    }
+    let dt: i32 = xmlFindAttr(d, te, "declaredType")
+    if dt >= 0 {
+        let st: i32 = fmi2FindSimpleType(d, root, dt)
+        if st < 0 or fmi2BaseTypeOf(d, st) != v.baseType {
+            return fmi2Fail(r, FMI2_ERR_DECLARED_TYPE, te)
+        }
+    } elif v.baseType == FMI2_ENUMERATION {
+        return fmi2Fail(r, FMI2_ERR_DECLARED_TYPE, te)
+    }
+    if v.baseType == FMI2_REAL and not fmi2CheckUnits(d, root, te) {
+        return fmi2Fail(r, FMI2_ERR_UNIT, te)
+    }
+    let der: i32 = xmlFindAttr(d, te, "derivative")
+    if der >= 0 {
+        if v.baseType != FMI2_REAL {
+            return fmi2Fail(r, FMI2_ERR_DERIVATIVE, te)
+        }
+        let x: i64 = fmi2AttrUnsigned(d, der, 2147483647)
+        if x < 1 {
+            return fmi2Fail(r, FMI2_ERR_DERIVATIVE, te)
+        }
+        v.derivative = x as i32
+    }
+    info[0] = v
+    return FMI2_OK
+}
+
+# Validate d as an FMI 2.0 modelDescription. info must hold maxVars entries.
+export function fmi2Validate(d: XmlDoc, info: ptr<Fmi2VarInfo>, maxVars: i32, r: ptr<Fmi2Report>) -> i32 {
+    r[0] = fmi2EmptyReport()
+    if d.elemCount == 0 or not xmlNameIs(d, 0, "fmiModelDescription") {
+        return fmi2Fail(r, FMI2_ERR_ROOT, 0)
+    }
+    let root: i32 = 0
+    if not xmlAttrIs(d, root, "fmiVersion", "2.0") {
+        return fmi2Fail(r, FMI2_ERR_VERSION, root)
+    }
+    if xmlFindAttr(d, root, "modelName") < 0 or xmlFindAttr(d, root, "guid") < 0 {
+        return fmi2Fail(r, FMI2_ERR_HEADER, root)
+    }
+    if not fmi2CheckTopLevel(d, root) {
+        return fmi2Fail(r, FMI2_ERR_STRUCTURE, root)
+    }
+    let me: i32 = xmlChildNamed(d, root, "ModelExchange")
+    let cs: i32 = xmlChildNamed(d, root, "CoSimulation")
+    if me < 0 and cs < 0 {
+        return fmi2Fail(r, FMI2_ERR_INTERFACE, root)
+    }
+    if me >= 0 and xmlFindAttr(d, me, "modelIdentifier") < 0 {
+        return fmi2Fail(r, FMI2_ERR_INTERFACE, me)
+    }
+    if cs >= 0 and xmlFindAttr(d, cs, "modelIdentifier") < 0 {
+        return fmi2Fail(r, FMI2_ERR_INTERFACE, cs)
+    }
+    r[0].modelExchange = me >= 0
+    r[0].coSimulation = cs >= 0
+    let mv: i32 = xmlChildNamed(d, root, "ModelVariables")
+    let ms: i32 = xmlChildNamed(d, root, "ModelStructure")
+    if mv < 0 or ms < 0 {
+        return fmi2Fail(r, FMI2_ERR_STRUCTURE, root)
+    }
+    # SimpleType Real elements carry units too.
+    let td: i32 = xmlChildNamed(d, root, "TypeDefinitions")
+    if td >= 0 {
+        let mut st: i32 = d.elems[td].firstChild
+        while st >= 0 {
+            let te: i32 = d.elems[st].firstChild
+            if not xmlNameIs(d, st, "SimpleType") or xmlFindAttr(d, st, "name") < 0 or te < 0 or fmi2BaseTypeOf(d, te) == 0 {
+                return fmi2Fail(r, FMI2_ERR_STRUCTURE, st)
+            }
+            if fmi2BaseTypeOf(d, te) == FMI2_REAL and not fmi2CheckUnits(d, root, te) {
+                return fmi2Fail(r, FMI2_ERR_UNIT, te)
+            }
+            st = d.elems[st].nextSibling
+        }
+    }
+    let n: i32 = d.elems[mv].childCount
+    if n > maxVars {
+        return fmi2Fail(r, FMI2_ERR_CAPACITY, mv)
+    }
+    let mut sv: i32 = d.elems[mv].firstChild
+    let mut i: i32 = 0
+    while sv >= 0 {
+        let na: i32 = xmlFindAttr(d, sv, "name")
+        if na < 0 {
+            return fmi2Fail(r, FMI2_ERR_NAME, sv)
+        }
+        for j in 0 to i {
+            let other: i32 = xmlFindAttr(d, info[j].element, "name")
+            if xmlAttrValuesEqual(d, na, other) {
+                return fmi2Fail(r, FMI2_ERR_NAME, sv)
+            }
+        }
+        let code: i32 = fmi2CheckVariable(d, root, sv, &info[i], r)
+        if code != FMI2_OK {
+            return code
+        }
+        if info[i].causality == FMI2_INDEPENDENT {
+            r[0].independent = i + 1
+        }
+        let bt: i32 = info[i].baseType
+        if bt == FMI2_REAL {
+            r[0].reals = r[0].reals + 1
+        } elif bt == FMI2_INTEGER {
+            r[0].integers = r[0].integers + 1
+        } elif bt == FMI2_BOOLEAN {
+            r[0].booleans = r[0].booleans + 1
+        } elif bt == FMI2_STRING {
+            r[0].strings = r[0].strings + 1
+        } else {
+            r[0].enumerations = r[0].enumerations + 1
+        }
+        i = i + 1
+        sv = d.elems[sv].nextSibling
+    }
+    r[0].variables = n
+    for k in 0 to n {
+        let t: i32 = info[k].derivative
+        if t > n or (t > 0 and info[t - 1].baseType != FMI2_REAL) {
+            return fmi2Fail(r, FMI2_ERR_DERIVATIVE, info[k].typeElement)
+        }
+    }
+    # ModelStructure children: Outputs, Derivatives, InitialUnknowns in that order.
+    let mut rank: i32 = -1
+    let mut msc: i32 = d.elems[ms].firstChild
+    while msc >= 0 {
+        let mut rr: i32 = -1
+        if xmlNameIs(d, msc, "Outputs") {
+            rr = 0
+        } elif xmlNameIs(d, msc, "Derivatives") {
+            rr = 1
+        } elif xmlNameIs(d, msc, "InitialUnknowns") {
+            rr = 2
+        }
+        if rr <= rank {
+            return fmi2Fail(r, FMI2_ERR_STRUCTURE, msc)
+        }
+        rank = rr
+        msc = d.elems[msc].nextSibling
+    }
+    # Outputs: exactly the causality="output" variables, in index order.
+    let outs: i32 = xmlChildNamed(d, ms, "Outputs")
+    let mut u: i32 = -1
+    if outs >= 0 {
+        u = d.elems[outs].firstChild
+    }
+    for k in 0 to n {
+        if info[k].causality == FMI2_OUTPUT {
+            if u < 0 or fmi2UnknownIndex(d, u, n) != k + 1 {
+                return fmi2Fail(r, FMI2_ERR_OUTPUTS, outs)
+            }
+            if not fmi2CheckDependencies(d, u, n) {
+                return fmi2Fail(r, FMI2_ERR_DEPENDENCIES, u)
+            }
+            r[0].outputs = r[0].outputs + 1
+            u = d.elems[u].nextSibling
+        }
+    }
+    if u >= 0 {
+        return fmi2Fail(r, FMI2_ERR_OUTPUTS, u)
+    }
+    # Derivatives: Real variables with a derivative attribute, each listed once.
+    let ders: i32 = xmlChildNamed(d, ms, "Derivatives")
+    if ders >= 0 {
+        let mut du: i32 = d.elems[ders].firstChild
+        while du >= 0 {
+            let x: i32 = fmi2UnknownIndex(d, du, n)
+            if x < 0 or info[x - 1].derivative == 0 or info[x - 1].isDerivative {
+                return fmi2Fail(r, FMI2_ERR_DERIVATIVES, du)
+            }
+            if not fmi2CheckDependencies(d, du, n) {
+                return fmi2Fail(r, FMI2_ERR_DEPENDENCIES, du)
+            }
+            info[x - 1].isDerivative = true
+            info[info[x - 1].derivative - 1].isState = true
+            r[0].derivatives = r[0].derivatives + 1
+            du = d.elems[du].nextSibling
+        }
+    }
+    # InitialUnknowns: exactly the section 2.2.8 set, in index order.
+    let inits: i32 = xmlChildNamed(d, ms, "InitialUnknowns")
+    let mut iu: i32 = -1
+    if inits >= 0 {
+        iu = d.elems[inits].firstChild
+    }
+    for k in 0 to n {
+        if fmi2IsInitialUnknown(info[k]) {
+            if iu < 0 or fmi2UnknownIndex(d, iu, n) != k + 1 {
+                return fmi2Fail(r, FMI2_ERR_INITIAL_UNKNOWNS, inits)
+            }
+            if not fmi2CheckDependencies(d, iu, n) {
+                return fmi2Fail(r, FMI2_ERR_DEPENDENCIES, iu)
+            }
+            r[0].initialUnknowns = r[0].initialUnknowns + 1
+            iu = d.elems[iu].nextSibling
+        }
+    }
+    if iu >= 0 {
+        return fmi2Fail(r, FMI2_ERR_INITIAL_UNKNOWNS, iu)
+    }
+    return FMI2_OK
+}
+
+# 1-based index of the variable with this name, or 0.
+export function fmi2VariableIndex(d: XmlDoc, name: string) -> i32 {
+    let mv: i32 = xmlChildNamed(d, 0, "ModelVariables")
+    if mv < 0 {
+        return 0
+    }
+    let mut sv: i32 = d.elems[mv].firstChild
+    let mut i: i32 = 1
+    while sv >= 0 {
+        if xmlAttrIs(d, sv, "name", name) {
+            return i
+        }
+        i = i + 1
+        sv = d.elems[sv].nextSibling
+    }
+    return 0
+}
+
+# ---- export ----
+
+export struct Fmi2ModelInfo {
+    modelName: string,
+    guid: string,
+    description: string,
+    generationTool: string,
+    modelIdentifier: string,
+    modelExchange: bool,
+    coSimulation: bool,
+    numberOfEventIndicators: i32,
+    # DefaultExperiment attributes as xs:double literals; "" omits the attribute.
+    startTime: string,
+    stopTime: string,
+    stepSize: string
+}
+
+# One Real ScalarVariable. initial FMI2_INITIAL_NONE omits the attribute (table default);
+# start "" omits it; derivative is the 1-based index of the integrated variable or 0;
+# unit "" omits it.
+export struct Fmi2RealVariable {
+    name: string,
+    description: string,
+    causality: i32,
+    variability: i32,
+    initial: i32,
+    start: string,
+    derivative: i32,
+    unit: string
+}
+
+function fmi2CausalityName(c: i32) -> string {
+    if c == FMI2_PARAMETER {
+        return "parameter"
+    }
+    if c == FMI2_CALCULATED_PARAMETER {
+        return "calculatedParameter"
+    }
+    if c == FMI2_INPUT {
+        return "input"
+    }
+    if c == FMI2_OUTPUT {
+        return "output"
+    }
+    if c == FMI2_INDEPENDENT {
+        return "independent"
+    }
+    return "local"
+}
+
+function fmi2VariabilityName(v: i32) -> string {
+    if v == FMI2_CONSTANT {
+        return "constant"
+    }
+    if v == FMI2_FIXED {
+        return "fixed"
+    }
+    if v == FMI2_TUNABLE {
+        return "tunable"
+    }
+    if v == FMI2_DISCRETE {
+        return "discrete"
+    }
+    return "continuous"
+}
+
+function fmi2InitialName(i: i32) -> string {
+    if i == FMI2_EXACT {
+        return "exact"
+    }
+    if i == FMI2_APPROX {
+        return "approx"
+    }
+    return "calculated"
+}
+
+function fmi2PutAttr(d: ptr<XmlDoc>, e: i32, name: string, value: string) -> bool {
+    if e < 0 {
+        return false
+    }
+    return xmlAddAttributeNamed(d, e, name, value)
+}
+
+function fmi2PutOptional(d: ptr<XmlDoc>, e: i32, name: string, value: string) -> bool {
+    if xmlStrLen(value) == 0 {
+        return e >= 0
+    }
+    return fmi2PutAttr(d, e, name, value)
+}
+
+function fmi2PutInt(d: ptr<XmlDoc>, e: i32, name: string, v: i32) -> bool {
+    let mut tmp: array<u8, 16> = [0 as u8; 16]
+    let n: i32 = str_format_i32(&tmp[0], 16, v)
+    if n < 0 {
+        return false
+    }
+    tmp[n] = 0 as u8
+    return fmi2PutAttr(d, e, name, (&tmp[0]) as string)
+}
+
+function fmi2StrEq(a: string, b: string) -> bool {
+    let p: ptr<u8> = a as ptr<u8>
+    let q: ptr<u8> = b as ptr<u8>
+    let mut i: i32 = 0
+    while p[i] == q[i] {
+        if p[i] == (0 as u8) {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+function fmi2AddUnknowns(d: ptr<XmlDoc>, parent: i32, idx: ptr<i32>, count: i32) -> bool {
+    for k in 0 to count {
+        let u: i32 = xmlAddElementNamed(d, parent, "Unknown")
+        if not fmi2PutInt(d, u, "index", idx[k]) {
+            return false
+        }
+    }
+    return true
+}
+
+# Build a modelDescription for a Real-valued model into d (which is cleared first).
+# Units are declared in first-use order; ModelStructure is derived from the variables
+# with the same rules fmi2Validate checks. scratch must hold `count` entries.
+# Returns FMI2_OK, FMI2_ERR_CAPACITY when d is full, or the fmi2Validate fault of the
+# built document.
+export function fmi2BuildRealModel(d: ptr<XmlDoc>, m: Fmi2ModelInfo, vars: ptr<Fmi2RealVariable>, count: i32, scratch: ptr<Fmi2VarInfo>, indices: ptr<i32>) -> i32 {
+    d[0].elemCount = 0
+    d[0].attrCount = 0
+    d[0].poolLen = 0
+    d[0].error = 0
+    let root: i32 = xmlAddElementNamed(d, -1, "fmiModelDescription")
+    let mut ok: bool = fmi2PutAttr(d, root, "fmiVersion", "2.0")
+    ok = ok and fmi2PutAttr(d, root, "modelName", m.modelName)
+    ok = ok and fmi2PutAttr(d, root, "guid", m.guid)
+    ok = ok and fmi2PutOptional(d, root, "description", m.description)
+    ok = ok and fmi2PutOptional(d, root, "generationTool", m.generationTool)
+    ok = ok and fmi2PutAttr(d, root, "variableNamingConvention", "structured")
+    if m.modelExchange {
+        ok = ok and fmi2PutInt(d, root, "numberOfEventIndicators", m.numberOfEventIndicators)
+        let me: i32 = xmlAddElementNamed(d, root, "ModelExchange")
+        ok = ok and fmi2PutAttr(d, me, "modelIdentifier", m.modelIdentifier)
+    }
+    if m.coSimulation {
+        let cs: i32 = xmlAddElementNamed(d, root, "CoSimulation")
+        ok = ok and fmi2PutAttr(d, cs, "modelIdentifier", m.modelIdentifier)
+        ok = ok and fmi2PutAttr(d, cs, "canHandleVariableCommunicationStepSize", "true")
+    }
+    let mut anyUnit: bool = false
+    for k in 0 to count {
+        if xmlStrLen(vars[k].unit) > 0 {
+            anyUnit = true
+        }
+    }
+    if anyUnit {
+        let ud: i32 = xmlAddElementNamed(d, root, "UnitDefinitions")
+        for k in 0 to count {
+            let unit: string = vars[k].unit
+            let mut seen: bool = xmlStrLen(unit) == 0
+            for j in 0 to k {
+                if fmi2StrEq(vars[j].unit, unit) {
+                    seen = true
+                }
+            }
+            if not seen {
+                let ue: i32 = xmlAddElementNamed(d, ud, "Unit")
+                ok = ok and fmi2PutAttr(d, ue, "name", unit)
+            }
+        }
+    }
+    if xmlStrLen(m.startTime) > 0 or xmlStrLen(m.stopTime) > 0 or xmlStrLen(m.stepSize) > 0 {
+        let de: i32 = xmlAddElementNamed(d, root, "DefaultExperiment")
+        ok = ok and fmi2PutOptional(d, de, "startTime", m.startTime)
+        ok = ok and fmi2PutOptional(d, de, "stopTime", m.stopTime)
+        ok = ok and fmi2PutOptional(d, de, "stepSize", m.stepSize)
+    }
+    let mv: i32 = xmlAddElementNamed(d, root, "ModelVariables")
+    ok = ok and mv >= 0
+    for k in 0 to count {
+        let v: Fmi2RealVariable = vars[k]
+        let sv: i32 = xmlAddElementNamed(d, mv, "ScalarVariable")
+        ok = ok and fmi2PutAttr(d, sv, "name", v.name)
+        ok = ok and fmi2PutInt(d, sv, "valueReference", k)
+        ok = ok and fmi2PutOptional(d, sv, "description", v.description)
+        ok = ok and fmi2PutAttr(d, sv, "causality", fmi2CausalityName(v.causality))
+        ok = ok and fmi2PutAttr(d, sv, "variability", fmi2VariabilityName(v.variability))
+        if v.initial != FMI2_INITIAL_NONE {
+            ok = ok and fmi2PutAttr(d, sv, "initial", fmi2InitialName(v.initial))
+        }
+        let re: i32 = xmlAddElementNamed(d, sv, "Real")
+        ok = ok and re >= 0
+        ok = ok and fmi2PutOptional(d, re, "unit", v.unit)
+        ok = ok and fmi2PutOptional(d, re, "start", v.start)
+        if v.derivative > 0 {
+            ok = ok and fmi2PutInt(d, re, "derivative", v.derivative)
+        }
+        let mut info: Fmi2VarInfo = fmi2EmptyVarInfo()
+        info.causality = v.causality
+        info.variability = v.variability
+        info.derivative = v.derivative
+        info.initial = v.initial
+        if v.initial == FMI2_INITIAL_NONE {
+            info.initial = fmi2DefaultInitial(fmi2InitialClass(v.causality, v.variability))
+        }
+        scratch[k] = info
+    }
+    for k in 0 to count {
+        let t: i32 = scratch[k].derivative
+        if t > 0 and t <= count {
+            scratch[k].isDerivative = true
+            scratch[t - 1].isState = true
+        }
+    }
+    let ms: i32 = xmlAddElementNamed(d, root, "ModelStructure")
+    ok = ok and ms >= 0
+    let mut no: i32 = 0
+    for k in 0 to count {
+        if scratch[k].causality == FMI2_OUTPUT {
+            indices[no] = k + 1
+            no = no + 1
+        }
+    }
+    if no > 0 {
+        let outs: i32 = xmlAddElementNamed(d, ms, "Outputs")
+        ok = ok and fmi2AddUnknowns(d, outs, indices, no)
+    }
+    let mut nd: i32 = 0
+    for k in 0 to count {
+        if scratch[k].isDerivative {
+            indices[nd] = k + 1
+            nd = nd + 1
+        }
+    }
+    if nd > 0 {
+        let ders: i32 = xmlAddElementNamed(d, ms, "Derivatives")
+        ok = ok and fmi2AddUnknowns(d, ders, indices, nd)
+    }
+    let mut ni: i32 = 0
+    for k in 0 to count {
+        if fmi2IsInitialUnknown(scratch[k]) {
+            indices[ni] = k + 1
+            ni = ni + 1
+        }
+    }
+    if ni > 0 {
+        let inits: i32 = xmlAddElementNamed(d, ms, "InitialUnknowns")
+        ok = ok and fmi2AddUnknowns(d, inits, indices, ni)
+    }
+    if not ok or d[0].error != 0 {
+        return FMI2_ERR_CAPACITY
+    }
+    let mut report: array<Fmi2Report, 1> = [fmi2EmptyReport()]
+    return fmi2Validate(d[0], scratch, count, &report[0])
+}

@@ -19,7 +19,7 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang make
+          sudo apt-get install -y clang make libxml2-utils
           git clone https://github.com/flooooooooooow/flow.git .flow-toolchain
           git -C .flow-toolchain checkout --detach 7687fc936365e17bc6286415585c55fcc6ea64c3
           echo "$PWD/.flow-toolchain" >> "$GITHUB_PATH"
@@ -65,6 +65,10 @@ jobs:
         run: flow run tests/nl_devices.flow
       - name: Verify versioned netlist parse, export and solver stamps
         run: flow run tests/netlist.flow
+      - name: Verify FMI 2.0 modelDescription rules, round trip and export
+        run: flow run tests/fmi2_model_description.flow
+      - name: Validate FMI 2.0 rewrites and exports against the FMI 2.0.4 XSD
+        run: xmllint --noout --schema tests/fmi2/schema/fmi2ModelDescription.xsd /tmp/herbie-fmi2-*.xml
       - name: Cross-validate circuits against stored ngspice-42 references
         run: flow run tests/ngspice_crossval.flow
       - name: Cross-validate bridge, rectifier and RLC ngspice fixtures

@@ -1,0 +1,900 @@
+# @module herbie.xml
+# Strict, allocation-free XML 1.0 subset reader and canonical writer for interchange files
+# such as FMI 2.0 modelDescription.xml. The caller owns every buffer: an element table, an
+# attribute table and a byte pool for names and decoded attribute values.
+#
+# Accepted: an optional UTF-8 byte-order mark, an XML declaration (version 1.0, encoding
+# UTF-8 when given), comments, processing instructions (skipped), elements with single- or
+# double-quoted attributes, the five predefined entities and decimal/hex character
+# references in attribute values, and whitespace between elements.
+# Refused with a fault code: DOCTYPE/DTD, CDATA, non-whitespace character data, duplicate
+# attributes, mismatched or missing end tags, bad references, invalid UTF-8 or NUL bytes,
+# more than one root, and nesting deeper than XML_MAX_DEPTH. Namespaces are not resolved;
+# a prefixed name is an ordinary name.
+#
+# Attribute values are normalised as the XML spec requires for CDATA attributes: literal
+# tab, LF and CR become a space, while character references keep their character.
+# xmlWrite emits one canonical form (declaration, two-space indent, one element per line,
+# attributes in document order, `/>` for childless elements), so parse → write → parse
+# returns an equal tree and a second write is byte-identical.
+
+import "stdlib/string.flow"
+
+export const XML_OK: i32 = 0
+export const XML_ERR_CAPACITY: i32 = 1
+export const XML_ERR_SYNTAX: i32 = 2
+export const XML_ERR_END_TAG: i32 = 3
+export const XML_ERR_REFERENCE: i32 = 4
+export const XML_ERR_DUPLICATE_ATTRIBUTE: i32 = 5
+export const XML_ERR_TEXT: i32 = 6
+export const XML_ERR_UNSUPPORTED: i32 = 7
+export const XML_ERR_DECLARATION: i32 = 8
+export const XML_ERR_ROOT: i32 = 9
+export const XML_ERR_DEPTH: i32 = 10
+export const XML_ERR_ENCODING: i32 = 11
+
+export const XML_MAX_DEPTH: i32 = 64
+
+export struct XmlElement {
+    # Name bytes in the pool.
+    name: i32,
+    nameLen: i32,
+    # Parent element index; -1 for the root.
+    parent: i32,
+    depth: i32,
+    # Attributes are contiguous: attrs[firstAttr .. firstAttr + attrCount).
+    firstAttr: i32,
+    attrCount: i32,
+    firstChild: i32,
+    lastChild: i32,
+    nextSibling: i32,
+    childCount: i32
+}
+
+export struct XmlAttribute {
+    name: i32,
+    nameLen: i32,
+    value: i32,
+    valueLen: i32
+}
+
+export struct XmlDoc {
+    elems: ptr<XmlElement>,
+    maxElems: i32,
+    elemCount: i32,
+    attrs: ptr<XmlAttribute>,
+    maxAttrs: i32,
+    attrCount: i32,
+    pool: ptr<u8>,
+    poolCap: i32,
+    poolLen: i32,
+    # Fault code from the last parse or edit and the byte offset where it was found.
+    error: i32,
+    errorOffset: i32
+}
+
+export struct XmlWriter {
+    buf: ptr<u8>,
+    cap: i32,
+    len: i32,
+    overflow: bool
+}
+
+export function xmlDocInit(elems: ptr<XmlElement>, maxElems: i32, attrs: ptr<XmlAttribute>, maxAttrs: i32, pool: ptr<u8>, poolCap: i32) -> XmlDoc {
+    return XmlDoc {
+        elems: elems, maxElems: maxElems, elemCount: 0,
+        attrs: attrs, maxAttrs: maxAttrs, attrCount: 0,
+        pool: pool, poolCap: poolCap, poolLen: 0,
+        error: XML_OK, errorOffset: 0
+    }
+}
+
+export function xmlDocClear(d: ptr<XmlDoc>) -> void {
+    d[0].elemCount = 0
+    d[0].attrCount = 0
+    d[0].poolLen = 0
+    d[0].error = XML_OK
+    d[0].errorOffset = 0
+}
+
+export function xmlStrLen(s: string) -> i32 {
+    let p: ptr<u8> = s as ptr<u8>
+    let mut n: i32 = 0
+    while p[n] != (0 as u8) {
+        n = n + 1
+    }
+    return n
+}
+
+function xmlFail(d: ptr<XmlDoc>, code: i32, at: i32) -> i32 {
+    if d[0].error == XML_OK {
+        d[0].error = code
+        d[0].errorOffset = at
+    }
+    return -1
+}
+
+function xmlPoolPut(d: ptr<XmlDoc>, c: u8) -> bool {
+    if d[0].poolLen >= d[0].poolCap {
+        return false
+    }
+    d[0].pool[d[0].poolLen] = c
+    d[0].poolLen = d[0].poolLen + 1
+    return true
+}
+
+# Append bytes to the pool; returns the offset or -1 when full.
+export function xmlPoolAdd(d: ptr<XmlDoc>, bytes: ptr<u8>, n: i32) -> i32 {
+    if n < 0 or d[0].poolLen + n > d[0].poolCap {
+        let _f: i32 = xmlFail(d, XML_ERR_CAPACITY, 0)
+        return -1
+    }
+    let off: i32 = d[0].poolLen
+    for i in 0 to n {
+        d[0].pool[off + i] = bytes[i]
+    }
+    d[0].poolLen = off + n
+    return off
+}
+
+# Append an element as the last child of parent (-1 for the root). Attributes for an
+# element must be added before the next element is added.
+export function xmlAddElement(d: ptr<XmlDoc>, parent: i32, name: ptr<u8>, nameLen: i32) -> i32 {
+    if d[0].elemCount >= d[0].maxElems {
+        return xmlFail(d, XML_ERR_CAPACITY, 0)
+    }
+    if parent < -1 or parent >= d[0].elemCount {
+        return xmlFail(d, XML_ERR_SYNTAX, 0)
+    }
+    if parent == -1 and d[0].elemCount > 0 {
+        return xmlFail(d, XML_ERR_ROOT, 0)
+    }
+    let mut depth: i32 = 0
+    if parent >= 0 {
+        depth = d[0].elems[parent].depth + 1
+    }
+    if depth >= XML_MAX_DEPTH {
+        return xmlFail(d, XML_ERR_DEPTH, 0)
+    }
+    let off: i32 = xmlPoolAdd(d, name, nameLen)
+    if off < 0 {
+        return -1
+    }
+    let idx: i32 = d[0].elemCount
+    d[0].elems[idx] = XmlElement {
+        name: off, nameLen: nameLen, parent: parent, depth: depth,
+        firstAttr: d[0].attrCount, attrCount: 0,
+        firstChild: -1, lastChild: -1, nextSibling: -1, childCount: 0
+    }
+    if parent >= 0 {
+        let last: i32 = d[0].elems[parent].lastChild
+        if last < 0 {
+            d[0].elems[parent].firstChild = idx
+        } else {
+            d[0].elems[last].nextSibling = idx
+        }
+        d[0].elems[parent].lastChild = idx
+        d[0].elems[parent].childCount = d[0].elems[parent].childCount + 1
+    }
+    d[0].elemCount = idx + 1
+    return idx
+}
+
+function xmlBytesEq(a: ptr<u8>, an: i32, b: ptr<u8>, bn: i32) -> bool {
+    if an != bn {
+        return false
+    }
+    for i in 0 to an {
+        if a[i] != b[i] {
+            return false
+        }
+    }
+    return true
+}
+
+# Index of the attribute of element e with the given name bytes, or -1.
+export function xmlFindAttrBytes(d: XmlDoc, e: i32, name: ptr<u8>, nameLen: i32) -> i32 {
+    let el: XmlElement = d.elems[e]
+    for k in 0 to el.attrCount {
+        let a: XmlAttribute = d.attrs[el.firstAttr + k]
+        if xmlBytesEq(&d.pool[a.name], a.nameLen, name, nameLen) {
+            return el.firstAttr + k
+        }
+    }
+    return -1
+}
+
+# Add an attribute to element e, which must be the element added last. Duplicates fail.
+export function xmlAddAttribute(d: ptr<XmlDoc>, e: i32, name: ptr<u8>, nameLen: i32, value: ptr<u8>, valueLen: i32) -> bool {
+    if e < 0 or e >= d[0].elemCount {
+        let _f: i32 = xmlFail(d, XML_ERR_SYNTAX, 0)
+        return false
+    }
+    if d[0].elems[e].firstAttr + d[0].elems[e].attrCount != d[0].attrCount {
+        let _g: i32 = xmlFail(d, XML_ERR_SYNTAX, 0)
+        return false
+    }
+    if xmlFindAttrBytes(d[0], e, name, nameLen) >= 0 {
+        let _h: i32 = xmlFail(d, XML_ERR_DUPLICATE_ATTRIBUTE, 0)
+        return false
+    }
+    if d[0].attrCount >= d[0].maxAttrs {
+        let _i: i32 = xmlFail(d, XML_ERR_CAPACITY, 0)
+        return false
+    }
+    let no: i32 = xmlPoolAdd(d, name, nameLen)
+    if no < 0 {
+        return false
+    }
+    let vo: i32 = xmlPoolAdd(d, value, valueLen)
+    if vo < 0 {
+        return false
+    }
+    d[0].attrs[d[0].attrCount] = XmlAttribute { name: no, nameLen: nameLen, value: vo, valueLen: valueLen }
+    d[0].attrCount = d[0].attrCount + 1
+    d[0].elems[e].attrCount = d[0].elems[e].attrCount + 1
+    return true
+}
+
+export function xmlAddElementNamed(d: ptr<XmlDoc>, parent: i32, name: string) -> i32 {
+    return xmlAddElement(d, parent, name as ptr<u8>, xmlStrLen(name))
+}
+
+export function xmlAddAttributeNamed(d: ptr<XmlDoc>, e: i32, name: string, value: string) -> bool {
+    return xmlAddAttribute(d, e, name as ptr<u8>, xmlStrLen(name), value as ptr<u8>, xmlStrLen(value))
+}
+
+# ---- queries ----
+
+export function xmlNameIs(d: XmlDoc, e: i32, name: string) -> bool {
+    let el: XmlElement = d.elems[e]
+    return xmlBytesEq(&d.pool[el.name], el.nameLen, name as ptr<u8>, xmlStrLen(name))
+}
+
+export function xmlFindAttr(d: XmlDoc, e: i32, name: string) -> i32 {
+    return xmlFindAttrBytes(d, e, name as ptr<u8>, xmlStrLen(name))
+}
+
+export function xmlAttrValueIs(d: XmlDoc, a: i32, value: string) -> bool {
+    let at: XmlAttribute = d.attrs[a]
+    return xmlBytesEq(&d.pool[at.value], at.valueLen, value as ptr<u8>, xmlStrLen(value))
+}
+
+# True when element e has attribute name equal to value.
+export function xmlAttrIs(d: XmlDoc, e: i32, name: string, value: string) -> bool {
+    let a: i32 = xmlFindAttr(d, e, name)
+    if a < 0 {
+        return false
+    }
+    return xmlAttrValueIs(d, a, value)
+}
+
+export function xmlAttrValuesEqual(d: XmlDoc, a: i32, b: i32) -> bool {
+    let x: XmlAttribute = d.attrs[a]
+    let y: XmlAttribute = d.attrs[b]
+    return xmlBytesEq(&d.pool[x.value], x.valueLen, &d.pool[y.value], y.valueLen)
+}
+
+# First child of e with the given name, or -1.
+export function xmlChildNamed(d: XmlDoc, e: i32, name: string) -> i32 {
+    let mut c: i32 = d.elems[e].firstChild
+    while c >= 0 {
+        if xmlNameIs(d, c, name) {
+            return c
+        }
+        c = d.elems[c].nextSibling
+    }
+    return -1
+}
+
+# Next sibling after c with the same name as c, or -1.
+export function xmlNextSame(d: XmlDoc, c: i32) -> i32 {
+    let el: XmlElement = d.elems[c]
+    let mut s: i32 = el.nextSibling
+    while s >= 0 {
+        let sl: XmlElement = d.elems[s]
+        if xmlBytesEq(&d.pool[sl.name], sl.nameLen, &d.pool[el.name], el.nameLen) {
+            return s
+        }
+        s = sl.nextSibling
+    }
+    return -1
+}
+
+export function xmlCountChildrenNamed(d: XmlDoc, e: i32, name: string) -> i32 {
+    let mut n: i32 = 0
+    let mut c: i32 = d.elems[e].firstChild
+    while c >= 0 {
+        if xmlNameIs(d, c, name) {
+            n = n + 1
+        }
+        c = d.elems[c].nextSibling
+    }
+    return n
+}
+
+function xmlSubtreeEqual(a: XmlDoc, ea: i32, b: XmlDoc, eb: i32) -> bool {
+    let x: XmlElement = a.elems[ea]
+    let y: XmlElement = b.elems[eb]
+    if not xmlBytesEq(&a.pool[x.name], x.nameLen, &b.pool[y.name], y.nameLen) {
+        return false
+    }
+    if x.attrCount != y.attrCount or x.childCount != y.childCount {
+        return false
+    }
+    for k in 0 to x.attrCount {
+        let p: XmlAttribute = a.attrs[x.firstAttr + k]
+        let q: XmlAttribute = b.attrs[y.firstAttr + k]
+        if not xmlBytesEq(&a.pool[p.name], p.nameLen, &b.pool[q.name], q.nameLen) {
+            return false
+        }
+        if not xmlBytesEq(&a.pool[p.value], p.valueLen, &b.pool[q.value], q.valueLen) {
+            return false
+        }
+    }
+    let mut ca: i32 = x.firstChild
+    let mut cb: i32 = y.firstChild
+    while ca >= 0 {
+        if not xmlSubtreeEqual(a, ca, b, cb) {
+            return false
+        }
+        ca = a.elems[ca].nextSibling
+        cb = b.elems[cb].nextSibling
+    }
+    return true
+}
+
+# Element names, attribute order, attribute values and child order all equal.
+export function xmlTreesEqual(a: XmlDoc, b: XmlDoc) -> bool {
+    if a.elemCount == 0 or b.elemCount == 0 {
+        return a.elemCount == b.elemCount
+    }
+    return xmlSubtreeEqual(a, 0, b, 0)
+}
+
+# ---- reader ----
+
+function xmlIsSpace(c: u8) -> bool {
+    return c == (32 as u8) or c == (9 as u8) or c == (10 as u8) or c == (13 as u8)
+}
+
+function xmlIsNameStart(c: u8) -> bool {
+    let v: i32 = c as i32
+    return (v >= 65 and v <= 90) or (v >= 97 and v <= 122) or v == 95 or v == 58 or v >= 128
+}
+
+function xmlIsNameChar(c: u8) -> bool {
+    let v: i32 = c as i32
+    return xmlIsNameStart(c) or (v >= 48 and v <= 57) or v == 45 or v == 46
+}
+
+function xmlHasPrefix(t: ptr<u8>, n: i32, at: i32, lit: string) -> bool {
+    let q: ptr<u8> = lit as ptr<u8>
+    let m: i32 = xmlStrLen(lit)
+    if at + m > n {
+        return false
+    }
+    for k in 0 to m {
+        if t[at + k] != q[k] {
+            return false
+        }
+    }
+    return true
+}
+
+function xmlSkipSpace(t: ptr<u8>, n: i32, at: i32) -> i32 {
+    let mut i: i32 = at
+    while i < n and xmlIsSpace(t[i]) {
+        i = i + 1
+    }
+    return i
+}
+
+# End of a name starting at `at`, or `at` when no name starts there.
+function xmlNameEnd(t: ptr<u8>, n: i32, at: i32) -> i32 {
+    if at >= n or not xmlIsNameStart(t[at]) {
+        return at
+    }
+    let mut i: i32 = at + 1
+    while i < n and xmlIsNameChar(t[i]) {
+        i = i + 1
+    }
+    return i
+}
+
+function xmlPutCodePoint(d: ptr<XmlDoc>, cp: i32) -> bool {
+    if cp < 128 {
+        return xmlPoolPut(d, cp as u8)
+    }
+    if cp < 2048 {
+        return xmlPoolPut(d, (192 + cp / 64) as u8) and xmlPoolPut(d, (128 + cp % 64) as u8)
+    }
+    if cp < 65536 {
+        return xmlPoolPut(d, (224 + cp / 4096) as u8) and xmlPoolPut(d, (128 + (cp / 64) % 64) as u8) and xmlPoolPut(d, (128 + cp % 64) as u8)
+    }
+    return xmlPoolPut(d, (240 + cp / 262144) as u8) and xmlPoolPut(d, (128 + (cp / 4096) % 64) as u8) and xmlPoolPut(d, (128 + (cp / 64) % 64) as u8) and xmlPoolPut(d, (128 + cp % 64) as u8)
+}
+
+function xmlCharAllowed(cp: i32) -> bool {
+    if cp == 9 or cp == 10 or cp == 13 {
+        return true
+    }
+    if cp < 32 {
+        return false
+    }
+    if cp >= 55296 and cp <= 57343 {
+        return false
+    }
+    if cp == 65534 or cp == 65535 {
+        return false
+    }
+    return cp <= 1114111
+}
+
+# Decode the reference starting at t[at] == '&' into the pool. Returns the index after ';'.
+function xmlDecodeReference(d: ptr<XmlDoc>, t: ptr<u8>, n: i32, at: i32) -> i32 {
+    let mut semi: i32 = at + 1
+    while semi < n and semi - at <= 12 and t[semi] != (59 as u8) {
+        semi = semi + 1
+    }
+    if semi >= n or t[semi] != (59 as u8) {
+        return xmlFail(d, XML_ERR_REFERENCE, at)
+    }
+    let mut ok: bool = true
+    if xmlHasPrefix(t, n, at, "&amp;") {
+        ok = xmlPoolPut(d, 38 as u8)
+    } elif xmlHasPrefix(t, n, at, "&lt;") {
+        ok = xmlPoolPut(d, 60 as u8)
+    } elif xmlHasPrefix(t, n, at, "&gt;") {
+        ok = xmlPoolPut(d, 62 as u8)
+    } elif xmlHasPrefix(t, n, at, "&quot;") {
+        ok = xmlPoolPut(d, 34 as u8)
+    } elif xmlHasPrefix(t, n, at, "&apos;") {
+        ok = xmlPoolPut(d, 39 as u8)
+    } elif at + 2 < semi and t[at + 1] == (35 as u8) {
+        let mut cp: i32 = 0
+        let mut i: i32 = at + 2
+        let mut hex: bool = false
+        if t[i] == (120 as u8) {
+            hex = true
+            i = i + 1
+        }
+        if i >= semi {
+            return xmlFail(d, XML_ERR_REFERENCE, at)
+        }
+        while i < semi {
+            let v: i32 = t[i] as i32
+            let mut digit: i32 = -1
+            if v >= 48 and v <= 57 {
+                digit = v - 48
+            } elif hex and v >= 97 and v <= 102 {
+                digit = v - 87
+            } elif hex and v >= 65 and v <= 70 {
+                digit = v - 55
+            }
+            if digit < 0 {
+                return xmlFail(d, XML_ERR_REFERENCE, at)
+            }
+            if hex {
+                cp = cp * 16 + digit
+            } else {
+                cp = cp * 10 + digit
+            }
+            if cp > 1114111 {
+                return xmlFail(d, XML_ERR_REFERENCE, at)
+            }
+            i = i + 1
+        }
+        if not xmlCharAllowed(cp) {
+            return xmlFail(d, XML_ERR_REFERENCE, at)
+        }
+        ok = xmlPutCodePoint(d, cp)
+    } else {
+        return xmlFail(d, XML_ERR_REFERENCE, at)
+    }
+    if not ok {
+        return xmlFail(d, XML_ERR_CAPACITY, at)
+    }
+    return semi + 1
+}
+
+# Parse one attribute value starting at the opening quote; decoded bytes go to the pool.
+# Returns the index after the closing quote.
+function xmlReadValue(d: ptr<XmlDoc>, t: ptr<u8>, n: i32, at: i32) -> i32 {
+    let q: u8 = t[at]
+    let mut i: i32 = at + 1
+    while i < n and t[i] != q {
+        let c: u8 = t[i]
+        if c == (60 as u8) {
+            return xmlFail(d, XML_ERR_SYNTAX, i)
+        }
+        if c == (38 as u8) {
+            i = xmlDecodeReference(d, t, n, i)
+            if i < 0 {
+                return -1
+            }
+        } else {
+            let mut b: u8 = c
+            if c == (9 as u8) or c == (10 as u8) or c == (13 as u8) {
+                b = 32 as u8
+            }
+            if not xmlPoolPut(d, b) {
+                return xmlFail(d, XML_ERR_CAPACITY, i)
+            }
+            i = i + 1
+        }
+    }
+    if i >= n {
+        return xmlFail(d, XML_ERR_SYNTAX, at)
+    }
+    return i + 1
+}
+
+# Skip a comment or processing instruction at `at`; returns the index after it.
+function xmlSkipMisc(d: ptr<XmlDoc>, t: ptr<u8>, n: i32, at: i32) -> i32 {
+    if xmlHasPrefix(t, n, at, "<!--") {
+        let mut i: i32 = at + 4
+        while i + 1 < n {
+            if t[i] == (45 as u8) and t[i + 1] == (45 as u8) {
+                if i + 2 < n and t[i + 2] == (62 as u8) {
+                    return i + 3
+                }
+                return xmlFail(d, XML_ERR_SYNTAX, i)
+            }
+            i = i + 1
+        }
+        return xmlFail(d, XML_ERR_SYNTAX, at)
+    }
+    # Processing instruction; the target "xml" is reserved for the declaration.
+    let ne: i32 = xmlNameEnd(t, n, at + 2)
+    if ne == at + 2 {
+        return xmlFail(d, XML_ERR_SYNTAX, at)
+    }
+    if ne - (at + 2) == 3 {
+        let a: i32 = (t[at + 2] as i32) | 32
+        let b: i32 = (t[at + 3] as i32) | 32
+        let c: i32 = (t[at + 4] as i32) | 32
+        if a == 120 and b == 109 and c == 108 {
+            return xmlFail(d, XML_ERR_DECLARATION, at)
+        }
+    }
+    let mut i: i32 = ne
+    while i + 1 < n {
+        if t[i] == (63 as u8) and t[i + 1] == (62 as u8) {
+            return i + 2
+        }
+        i = i + 1
+    }
+    return xmlFail(d, XML_ERR_SYNTAX, at)
+}
+
+function xmlAsciiLowerEq(t: ptr<u8>, at: i32, len: i32, lit: string) -> bool {
+    let q: ptr<u8> = lit as ptr<u8>
+    if len != xmlStrLen(lit) {
+        return false
+    }
+    for k in 0 to len {
+        let mut c: i32 = t[at + k] as i32
+        if c >= 65 and c <= 90 {
+            c = c + 32
+        }
+        if c != (q[k] as i32) {
+            return false
+        }
+    }
+    return true
+}
+
+# Parse `<?xml version="1.0" encoding="UTF-8" standalone="..."?>` at `at`.
+function xmlReadDeclaration(d: ptr<XmlDoc>, t: ptr<u8>, n: i32, at: i32) -> i32 {
+    let mut i: i32 = at + 5
+    let mut seenVersion: bool = false
+    while true {
+        let s: i32 = xmlSkipSpace(t, n, i)
+        if xmlHasPrefix(t, n, s, "?>") {
+            if not seenVersion {
+                return xmlFail(d, XML_ERR_DECLARATION, at)
+            }
+            return s + 2
+        }
+        if s == i {
+            return xmlFail(d, XML_ERR_DECLARATION, s)
+        }
+        let ne: i32 = xmlNameEnd(t, n, s)
+        if ne == s {
+            return xmlFail(d, XML_ERR_DECLARATION, s)
+        }
+        let eq: i32 = xmlSkipSpace(t, n, ne)
+        if eq >= n or t[eq] != (61 as u8) {
+            return xmlFail(d, XML_ERR_DECLARATION, eq)
+        }
+        let vq: i32 = xmlSkipSpace(t, n, eq + 1)
+        if vq >= n or (t[vq] != (34 as u8) and t[vq] != (39 as u8)) {
+            return xmlFail(d, XML_ERR_DECLARATION, vq)
+        }
+        let mut ve: i32 = vq + 1
+        while ve < n and t[ve] != t[vq] {
+            ve = ve + 1
+        }
+        if ve >= n {
+            return xmlFail(d, XML_ERR_DECLARATION, vq)
+        }
+        let vlen: i32 = ve - vq - 1
+        if xmlAsciiLowerEq(t, s, ne - s, "version") {
+            if seenVersion or s != xmlSkipSpace(t, n, at + 5) or not xmlAsciiLowerEq(t, vq + 1, vlen, "1.0") {
+                return xmlFail(d, XML_ERR_DECLARATION, s)
+            }
+            seenVersion = true
+        } elif xmlAsciiLowerEq(t, s, ne - s, "encoding") {
+            if not seenVersion or not (xmlAsciiLowerEq(t, vq + 1, vlen, "utf-8") or xmlAsciiLowerEq(t, vq + 1, vlen, "utf8")) {
+                return xmlFail(d, XML_ERR_DECLARATION, s)
+            }
+        } elif xmlAsciiLowerEq(t, s, ne - s, "standalone") {
+            if not seenVersion {
+                return xmlFail(d, XML_ERR_DECLARATION, s)
+            }
+        } else {
+            return xmlFail(d, XML_ERR_DECLARATION, s)
+        }
+        i = ve + 1
+    }
+    return -1
+}
+
+# Parse a start tag at t[at] == '<'. Returns the index after '>' or '/>'; *selfClosed set.
+function xmlReadStartTag(d: ptr<XmlDoc>, t: ptr<u8>, n: i32, at: i32, parent: i32, outElem: ptr<i32>, selfClosed: ptr<bool>) -> i32 {
+    let ne: i32 = xmlNameEnd(t, n, at + 1)
+    if ne == at + 1 {
+        return xmlFail(d, XML_ERR_SYNTAX, at)
+    }
+    let e: i32 = xmlAddElement(d, parent, &t[at + 1], ne - at - 1)
+    if e < 0 {
+        if d[0].errorOffset == 0 {
+            d[0].errorOffset = at
+        }
+        return -1
+    }
+    outElem[0] = e
+    let mut i: i32 = ne
+    while true {
+        let s: i32 = xmlSkipSpace(t, n, i)
+        if s >= n {
+            return xmlFail(d, XML_ERR_SYNTAX, at)
+        }
+        if t[s] == (62 as u8) {
+            selfClosed[0] = false
+            return s + 1
+        }
+        if t[s] == (47 as u8) {
+            if s + 1 < n and t[s + 1] == (62 as u8) {
+                selfClosed[0] = true
+                return s + 2
+            }
+            return xmlFail(d, XML_ERR_SYNTAX, s)
+        }
+        if s == i {
+            return xmlFail(d, XML_ERR_SYNTAX, s)
+        }
+        let an: i32 = xmlNameEnd(t, n, s)
+        if an == s {
+            return xmlFail(d, XML_ERR_SYNTAX, s)
+        }
+        let eq: i32 = xmlSkipSpace(t, n, an)
+        if eq >= n or t[eq] != (61 as u8) {
+            return xmlFail(d, XML_ERR_SYNTAX, eq)
+        }
+        let vq: i32 = xmlSkipSpace(t, n, eq + 1)
+        if vq >= n or (t[vq] != (34 as u8) and t[vq] != (39 as u8)) {
+            return xmlFail(d, XML_ERR_SYNTAX, vq)
+        }
+        if xmlFindAttrBytes(d[0], e, &t[s], an - s) >= 0 {
+            return xmlFail(d, XML_ERR_DUPLICATE_ATTRIBUTE, s)
+        }
+        if d[0].attrCount >= d[0].maxAttrs {
+            return xmlFail(d, XML_ERR_CAPACITY, s)
+        }
+        let no: i32 = xmlPoolAdd(d, &t[s], an - s)
+        if no < 0 {
+            d[0].errorOffset = s
+            return -1
+        }
+        let vo: i32 = d[0].poolLen
+        let after: i32 = xmlReadValue(d, t, n, vq)
+        if after < 0 {
+            return -1
+        }
+        d[0].attrs[d[0].attrCount] = XmlAttribute { name: no, nameLen: an - s, value: vo, valueLen: d[0].poolLen - vo }
+        d[0].attrCount = d[0].attrCount + 1
+        d[0].elems[e].attrCount = d[0].elems[e].attrCount + 1
+        i = after
+    }
+    return -1
+}
+
+# Parse text[0 .. len) into d. Returns XML_OK or a fault code (also left in d.error).
+export function xmlParse(d: ptr<XmlDoc>, text: ptr<u8>, len: i32) -> i32 {
+    xmlDocClear(d)
+    let t: ptr<u8> = text
+    let n: i32 = len
+    for k in 0 to n {
+        if t[k] == (0 as u8) {
+            let _z: i32 = xmlFail(d, XML_ERR_ENCODING, k)
+            return d[0].error
+        }
+    }
+    if not str_utf8_valid(text as string) {
+        let _u: i32 = xmlFail(d, XML_ERR_ENCODING, 0)
+        return d[0].error
+    }
+    let mut i: i32 = 0
+    if n >= 3 and t[0] == (239 as u8) and t[1] == (187 as u8) and t[2] == (191 as u8) {
+        i = 3
+    }
+    if xmlHasPrefix(t, n, i, "<?xml") and i + 5 < n and xmlIsSpace(t[i + 5]) {
+        i = xmlReadDeclaration(d, t, n, i)
+        if i < 0 {
+            return d[0].error
+        }
+    }
+    let mut current: i32 = -1
+    let mut rootDone: bool = false
+    while true {
+        let s: i32 = xmlSkipSpace(t, n, i)
+        if s >= n {
+            if current >= 0 {
+                let _e: i32 = xmlFail(d, XML_ERR_END_TAG, s)
+                return d[0].error
+            }
+            if not rootDone {
+                let _r: i32 = xmlFail(d, XML_ERR_ROOT, s)
+                return d[0].error
+            }
+            return XML_OK
+        }
+        if t[s] != (60 as u8) {
+            let _x: i32 = xmlFail(d, XML_ERR_TEXT, s)
+            return d[0].error
+        }
+        if xmlHasPrefix(t, n, s, "<!--") or xmlHasPrefix(t, n, s, "<?") {
+            i = xmlSkipMisc(d, t, n, s)
+            if i < 0 {
+                return d[0].error
+            }
+        } elif xmlHasPrefix(t, n, s, "<!") {
+            let _v: i32 = xmlFail(d, XML_ERR_UNSUPPORTED, s)
+            return d[0].error
+        } elif xmlHasPrefix(t, n, s, "</") {
+            if current < 0 {
+                let _w: i32 = xmlFail(d, XML_ERR_END_TAG, s)
+                return d[0].error
+            }
+            let ne: i32 = xmlNameEnd(t, n, s + 2)
+            let el: XmlElement = d[0].elems[current]
+            if not xmlBytesEq(&t[s + 2], ne - s - 2, &d[0].pool[el.name], el.nameLen) {
+                let _m: i32 = xmlFail(d, XML_ERR_END_TAG, s)
+                return d[0].error
+            }
+            let gt: i32 = xmlSkipSpace(t, n, ne)
+            if gt >= n or t[gt] != (62 as u8) {
+                let _g: i32 = xmlFail(d, XML_ERR_SYNTAX, gt)
+                return d[0].error
+            }
+            i = gt + 1
+            current = el.parent
+            if current < 0 {
+                rootDone = true
+            }
+        } else {
+            if current < 0 and rootDone {
+                let _a: i32 = xmlFail(d, XML_ERR_ROOT, s)
+                return d[0].error
+            }
+            let mut e: array<i32, 1> = [-1]
+            let mut closed: array<bool, 1> = [false]
+            i = xmlReadStartTag(d, t, n, s, current, &e[0], &closed[0])
+            if i < 0 {
+                return d[0].error
+            }
+            if closed[0] {
+                if current < 0 {
+                    rootDone = true
+                }
+            } else {
+                current = e[0]
+            }
+        }
+    }
+    return d[0].error
+}
+
+# ---- writer ----
+
+export function xmlWriterPutByte(w: ptr<XmlWriter>, c: u8) -> void {
+    if w[0].len >= w[0].cap - 1 {
+        w[0].overflow = true
+        return
+    }
+    w[0].buf[w[0].len] = c
+    w[0].len = w[0].len + 1
+    w[0].buf[w[0].len] = 0 as u8
+}
+
+export function xmlWriterPut(w: ptr<XmlWriter>, s: string) -> void {
+    let p: ptr<u8> = s as ptr<u8>
+    let mut i: i32 = 0
+    while p[i] != (0 as u8) {
+        xmlWriterPutByte(w, p[i])
+        i = i + 1
+    }
+}
+
+function xmlWriterPutBytes(w: ptr<XmlWriter>, p: ptr<u8>, n: i32) -> void {
+    for i in 0 to n {
+        xmlWriterPutByte(w, p[i])
+    }
+}
+
+function xmlWriterPutEscaped(w: ptr<XmlWriter>, p: ptr<u8>, n: i32) -> void {
+    for i in 0 to n {
+        let c: i32 = p[i] as i32
+        if c == 38 {
+            xmlWriterPut(w, "&amp;")
+        } elif c == 60 {
+            xmlWriterPut(w, "&lt;")
+        } elif c == 62 {
+            xmlWriterPut(w, "&gt;")
+        } elif c == 34 {
+            xmlWriterPut(w, "&quot;")
+        } elif c == 9 {
+            xmlWriterPut(w, "&#9;")
+        } elif c == 10 {
+            xmlWriterPut(w, "&#10;")
+        } elif c == 13 {
+            xmlWriterPut(w, "&#13;")
+        } else {
+            xmlWriterPutByte(w, p[i])
+        }
+    }
+}
+
+function xmlWriteElement(d: XmlDoc, e: i32, w: ptr<XmlWriter>) -> void {
+    let el: XmlElement = d.elems[e]
+    for k in 0 to el.depth {
+        xmlWriterPut(w, "  ")
+    }
+    xmlWriterPutByte(w, 60 as u8)
+    xmlWriterPutBytes(w, &d.pool[el.name], el.nameLen)
+    for k in 0 to el.attrCount {
+        let a: XmlAttribute = d.attrs[el.firstAttr + k]
+        xmlWriterPutByte(w, 32 as u8)
+        xmlWriterPutBytes(w, &d.pool[a.name], a.nameLen)
+        xmlWriterPut(w, "=\"")
+        xmlWriterPutEscaped(w, &d.pool[a.value], a.valueLen)
+        xmlWriterPutByte(w, 34 as u8)
+    }
+    if el.childCount == 0 {
+        xmlWriterPut(w, "/>\n")
+        return
+    }
+    xmlWriterPut(w, ">\n")
+    let mut c: i32 = el.firstChild
+    while c >= 0 {
+        xmlWriteElement(d, c, w)
+        c = d.elems[c].nextSibling
+    }
+    for k in 0 to el.depth {
+        xmlWriterPut(w, "  ")
+    }
+    xmlWriterPut(w, "</")
+    xmlWriterPutBytes(w, &d.pool[el.name], el.nameLen)
+    xmlWriterPut(w, ">\n")
+}
+
+# Canonical serialisation of the whole document. Returns false on overflow.
+export function xmlWrite(d: XmlDoc, w: ptr<XmlWriter>) -> bool {
+    xmlWriterPut(w, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+    if d.elemCount > 0 {
+        xmlWriteElement(d, 0, w)
+    }
+    return not w[0].overflow
+}
