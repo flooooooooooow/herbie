@@ -8,7 +8,8 @@ import herbie.drive {
 }
 import herbie.pwm {
     PhaseDuties, PhaseSwitches, PwmTimebase,
-    svpwmDuties, pwmCarrierAt, pwmCompare, pwmSwitchState, pwmPhaseVoltages, pwmDcLinkCurrent, pwmTimebase
+    svpwmDuties, pwmCarrierAt, pwmCompare, pwmSwitchState, pwmPhaseVoltages, pwmDcLinkCurrent, pwmTimebase,
+    LegDevices, deadTimePoleVoltageAt, deadTimePhaseVoltages
 }
 
 function near(a: f64, b: f64, eps: f64) -> bool {
@@ -296,6 +297,84 @@ function testFocSwitchedVsAveraged() -> i32 {
     return 0
 }
 
+function poleOf(on: bool, dcLinkVoltage: f64) -> f64 {
+    if on {
+        return dcLinkVoltage
+    }
+    return 0.0
+}
+
+# With zero dead time and ideal devices the dead-time leg is the carrier compare: every
+# sub-step pole voltage equals pwmCompare against pwmCarrierAt, for both current signs.
+function testDeadTimeZeroIsCompare() -> i32 {
+    let ideal: LegDevices = LegDevices { switchThreshold: 0.0, switchResistance: 0.0, diodeThreshold: 0.0, diodeResistance: 0.0 }
+    let vdc: f64 = 400.0
+    let n: i32 = 100
+    let mut checked: i32 = 0
+    for di in 0 to 41 {
+        let d: f64 = (di as f64) / 40.0
+        let duties: PhaseDuties = PhaseDuties { a: d, b: d, c: d, saturated: false }
+        for k in 0 to n {
+            let idealOn: bool = pwmCompare(duties, pwmCarrierAt(k, n)).a
+            let want: f64 = poleOf(idealOn, vdc)
+            let up: f64 = deadTimePoleVoltageAt(d, 10.0, vdc, ideal, k, n, 0)
+            let down: f64 = deadTimePoleVoltageAt(d, -10.0, vdc, ideal, k, n, 0)
+            if not near(up, want, 1e-12) or not near(down, want, 1e-12) {
+                return 1
+            }
+            checked = checked + 1
+        }
+    }
+    if checked != 4100 {
+        return 2
+    }
+    return 0
+}
+
+# A three-leg bridge driven by SVPWM duties: each dead-time leg with D blanking sub-steps
+# loses exactly D/N of a period of +Vdc (current out of the pole) or gains it (current
+# into the pole) against the ideal compare, so the period-average phase-voltage error is
+# the star transform of (-sign(ia), -sign(ib), -sign(ic))·(D/N)·Vdc.
+function testDeadTimeBridgeError() -> i32 {
+    let ideal: LegDevices = LegDevices { switchThreshold: 0.0, switchResistance: 0.0, diodeThreshold: 0.0, diodeResistance: 0.0 }
+    let vdc: f64 = 400.0
+    let n: i32 = 200
+    let dead: i32 = 4
+    let mut currents: array<f64, 3> = [12.0, -5.0, -7.0]
+    for step in 0 to 12 {
+        let theta: f64 = (step as f64) * 0.5235987755982988
+        let ref: AlphaBeta = AlphaBeta { alpha: 150.0 * cos(theta), beta: 150.0 * sin(theta) }
+        let duties: PhaseDuties = svpwmDuties(ref, vdc)
+        let mut sumA: f64 = 0.0
+        let mut sumB: f64 = 0.0
+        let mut sumC: f64 = 0.0
+        let mut idealA: f64 = 0.0
+        let mut idealB: f64 = 0.0
+        let mut idealC: f64 = 0.0
+        for k in 0 to n {
+            let sw: PhaseSwitches = pwmCompare(duties, pwmCarrierAt(k, n))
+            let v0: ClarkeABC = pwmPhaseVoltages(sw, vdc)
+            idealA = idealA + v0.a
+            idealB = idealB + v0.b
+            idealC = idealC + v0.c
+            let pa: f64 = deadTimePoleVoltageAt(duties.a, currents[0], vdc, ideal, k, n, dead)
+            let pb: f64 = deadTimePoleVoltageAt(duties.b, currents[1], vdc, ideal, k, n, dead)
+            let pc: f64 = deadTimePoleVoltageAt(duties.c, currents[2], vdc, ideal, k, n, dead)
+            let v: ClarkeABC = deadTimePhaseVoltages(pa, pb, pc)
+            sumA = sumA + v.a
+            sumB = sumB + v.b
+            sumC = sumC + v.c
+        }
+        let e: f64 = (dead as f64) / (n as f64) * vdc
+        # Signs (+, -, -): pole errors (-e, +e, +e) give phase errors (-4e/3, 2e/3, 2e/3).
+        let fn: f64 = n as f64
+        if not near((sumA - idealA) / fn, -4.0 * e / 3.0, 1e-9) or not near((sumB - idealB) / fn, 2.0 * e / 3.0, 1e-9) or not near((sumC - idealC) / fn, 2.0 * e / 3.0, 1e-9) {
+            return 1 + step
+        }
+    }
+    return 0
+}
+
 function main() -> i32 {
     let a: i32 = testHexagon()
     if a != 0 {
@@ -321,6 +400,14 @@ function main() -> i32 {
     if f != 0 {
         return 60 + f
     }
-    println("PASS switching SVPWM: hexagon, linear limit, volt-seconds, timebase, switched vs averaged")
+    let g: i32 = testDeadTimeZeroIsCompare()
+    if g != 0 {
+        return 70 + g
+    }
+    let h: i32 = testDeadTimeBridgeError()
+    if h != 0 {
+        return 80 + h
+    }
+    println("PASS switching SVPWM: hexagon, linear limit, volt-seconds, timebase, switched vs averaged, dead-time legs")
     return 0
 }
