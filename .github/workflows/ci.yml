@@ -37,6 +37,8 @@ jobs:
         run: flow run tests/engine_battery.flow
       - name: Check DC nodal circuit solver
         run: flow run tests/circuit_network.flow
+      - name: Verify contactor bounce and weld detection
+        run: flow run tests/contactor.flow
       - name: Run electric-drive demonstration
         run: flow run examples/electric_drive_demo.flow
       - name: Run mapped-engine demonstration

@@ -20,6 +20,7 @@ src/
   ideal_sw.flow      Dense DC MNA with zero-Ron ideal switches
   transient.flow     Shared Flow-backend linear RLC transient facade
   electrical.flow    Lumped passive RC/RL/RLC
+  contactor.flow     HV contactor closing bounce and weld detection
   mechanics.flow     Single-axis rotation and ideal gear
   driveline.flow     Pendulum, torsional shaft, differential, clutch
   motors.flow        Coupled armature/rotor DC motor
