@@ -1,0 +1,41 @@
+# @module herbie.graphgen_demo
+# Fixed demonstration block graph shared by the codegen test, example and regeneration
+# script: a 1 ms discrete proportional controller with a feed-forward term.
+#   inputs[0] = reference r, inputs[1] = measurement y (same unit tag 1)
+#   e = r + (−1)·y; u = (3/2)·e + r·(1/4); outputs[0] = u, outputs[1] = e
+
+import herbie.graph { GraphNode, GraphEdge }
+import herbie.graphgen {
+    GraphBlock, GEN_OP_INPUT, GEN_OP_CONST, GEN_OP_GAIN, GEN_OP_SUM, GEN_OP_PRODUCT, GEN_OP_OUTPUT
+}
+
+export const DEMO_NODE_COUNT: i32 = 10
+export const DEMO_EDGE_COUNT: i32 = 10
+
+# Caller supplies DEMO_NODE_COUNT nodes/blocks and DEMO_EDGE_COUNT edges.
+export function graphDemoFill(nodes: ptr<GraphNode>, edges: ptr<GraphEdge>, blocks: ptr<GraphBlock>) -> void {
+    let ids: array<i32, 10> = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    for i in 0 to 10 {
+        nodes[i] = GraphNode { id: ids[i], samplePeriodUs: 1000, kind: 1 }
+    }
+    blocks[0] = GraphBlock { id: 1, op: GEN_OP_INPUT, num: 0, den: 1, port: 0 }
+    blocks[1] = GraphBlock { id: 2, op: GEN_OP_INPUT, num: 0, den: 1, port: 1 }
+    blocks[2] = GraphBlock { id: 3, op: GEN_OP_GAIN, num: -1, den: 1, port: 0 }
+    blocks[3] = GraphBlock { id: 4, op: GEN_OP_SUM, num: 0, den: 1, port: 0 }
+    blocks[4] = GraphBlock { id: 5, op: GEN_OP_GAIN, num: 3, den: 2, port: 0 }
+    blocks[5] = GraphBlock { id: 6, op: GEN_OP_CONST, num: 1, den: 4, port: 0 }
+    blocks[6] = GraphBlock { id: 7, op: GEN_OP_PRODUCT, num: 0, den: 1, port: 0 }
+    blocks[7] = GraphBlock { id: 8, op: GEN_OP_SUM, num: 0, den: 1, port: 0 }
+    blocks[8] = GraphBlock { id: 9, op: GEN_OP_OUTPUT, num: 0, den: 1, port: 0 }
+    blocks[9] = GraphBlock { id: 10, op: GEN_OP_OUTPUT, num: 0, den: 1, port: 1 }
+    edges[0] = GraphEdge { fromId: 2, toId: 3, unitTag: 1 }
+    edges[1] = GraphEdge { fromId: 1, toId: 4, unitTag: 1 }
+    edges[2] = GraphEdge { fromId: 3, toId: 4, unitTag: 1 }
+    edges[3] = GraphEdge { fromId: 4, toId: 5, unitTag: 1 }
+    edges[4] = GraphEdge { fromId: 1, toId: 7, unitTag: 1 }
+    edges[5] = GraphEdge { fromId: 6, toId: 7, unitTag: 0 }
+    edges[6] = GraphEdge { fromId: 5, toId: 8, unitTag: 2 }
+    edges[7] = GraphEdge { fromId: 7, toId: 8, unitTag: 2 }
+    edges[8] = GraphEdge { fromId: 8, toId: 9, unitTag: 2 }
+    edges[9] = GraphEdge { fromId: 4, toId: 10, unitTag: 1 }
+}

@@ -44,6 +44,7 @@ src/
   fluids.flow        Incompressible pipe/orifice/pump, NTU HX, cooling loop
   calibrate.flow     Train/val split, MAD outliers, affine fit, holdout RMSE
   graph.flow         Typed block graph, schedule, loop/rate checks, round-trip
+  graphgen.flow      Block semantics, reference interpreter, Flow codegen and header parse-back
   control.flow       Bounded-output PID
 tests/
   engineering_smoke.flow
@@ -88,7 +89,7 @@ A later spatial geometry and manufacturing layer can support meshes, element ass
 
 Interoperability should be layered: CSV/Parquet and unit-tagged datasets; parameter/config schemas; FMU/FMI import/export; CAN/CAN FD, XCP and automotive Ethernet adapters; test bench and sensor bindings; ROS 2/Middleware adapters where useful; and APIs for optimization and CAD/CAE geometry. None of these adapters is implemented in the first release.
 
-`herbie.graph` provides a typed block-graph scaffold with sample-rate/unit tags, Kahn topological scheduling, algebraic-loop detection and a canonical i32 buffer round-trip. A full front end still needs Flow module codegen, graph↔source text round-trip, interactive plotting and native WASM execution of compiled plants.
+`herbie.graph` provides a typed block-graph scaffold with sample-rate/unit tags, Kahn topological scheduling, algebraic-loop detection and a canonical i32 buffer round-trip. `herbie.graphgen` adds block semantics (input, rational constant and gain, sum, product, output), a reference interpreter and Flow module generation whose header parses back to the same graph. A full front end still needs unit delays and feedback, continuous states in generated code, interactive plotting and native WASM execution of compiled plants.
 
 ## Truss and statistical assumptions
 

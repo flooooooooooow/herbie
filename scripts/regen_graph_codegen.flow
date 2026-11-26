@@ -1,0 +1,33 @@
+# Regenerate src/generated/graph_demo_step.flow from herbie.graphgen_demo.
+# Run from the repository root: flow run scripts/regen_graph_codegen.flow
+# tests/graph_codegen.flow fails if the checked-in file drifts from the generator.
+
+import "stdlib/io.flow"
+import herbie.graph { GraphNode, GraphEdge, GraphView }
+import herbie.graphgen { GraphBlock, GraphBlockView, GenWriter, graphEmitFlow }
+import herbie.graphgen_demo { graphDemoFill }
+
+function main() -> i32 {
+    let mut nodes: array<GraphNode, 10> = [GraphNode { id: 0, samplePeriodUs: 0, kind: 0 }; 10]
+    let mut edges: array<GraphEdge, 10> = [GraphEdge { fromId: 0, toId: 0, unitTag: 0 }; 10]
+    let mut blocks: array<GraphBlock, 10> = [GraphBlock { id: 0, op: 0, num: 0, den: 1, port: 0 }; 10]
+    graphDemoFill(&nodes[0], &edges[0], &blocks[0])
+    let g: GraphView = GraphView { nodes: &nodes[0], nodeCount: 10, edges: &edges[0], edgeCount: 10 }
+    let b: GraphBlockView = GraphBlockView { blocks: &blocks[0], count: 10 }
+    let mut text: array<u8, 4096> = [0 as u8; 4096]
+    let mut w: array<GenWriter, 1> = [GenWriter { buf: &text[0], cap: 4096, len: 0, overflow: false }]
+    let mut order: array<i32, 10> = [0; 10]
+    let mut scratch: array<i32, 30> = [0; 30]
+    let mut serial: array<i32, 64> = [0; 64]
+    let n: i32 = graphEmitFlow(g, b, "herbie.generated.graph_demo_step", "graphDemoStep", &w[0], &order[0], &scratch[0], &serial[0], 64)
+    if n <= 0 {
+        println("FAIL emit")
+        return 1
+    }
+    if not io_write_bytes("src/generated/graph_demo_step.flow", &text[0], n as i64) {
+        println("FAIL write src/generated/graph_demo_step.flow")
+        return 2
+    }
+    println("wrote src/generated/graph_demo_step.flow")
+    return 0
+}

@@ -75,7 +75,15 @@ This establishes one model/solver/kernel agreement slice but **not** broad numer
 - Algebraic loop (cycle) rejected with fault 2; discrete rate down-sampling only by integer multiples
 - Canonical i32 serialize → deserialize preserves schedule order
 
-Visual authoring UI, Flow module codegen, graph↔code round-trip text and native WASM execution remain open under [#8](https://github.com/flooooooooooow/herbie/issues/8).
+`tests/graph_codegen.flow` checks block semantics and Flow code generation in `herbie.graphgen`:
+
+- Block faults: wrong input count for the op, a sum mixing unit tags, a non-positive rational denominator, duplicated input/output ports, a block table that does not match the nodes, an algebraic loop that the scheduler rejects before emission, and writer overflow
+- Drift gate: `src/generated/graph_demo_step.flow`, emitted from the shared demo graph in `herbie.graphgen_demo`, equals the generator output byte-for-byte (regenerate with `flow run scripts/regen_graph_codegen.flow`)
+- Graph → code → graph: the generated header parses back to identical nodes, edges and blocks, and re-emitting the parsed graph reproduces the same bytes
+- Native execution: the compiled generated module matches the reference interpreter bit-for-bit on 200 input pairs and matches the hand-derived u = 1.5(r − y) + r/4
+- A truncated header line is rejected
+
+Unit delays and feedback, continuous states and solver selection in generated code, a visual authoring UI, plotting/tuning, and native WASM execution remain open under [#8](https://github.com/flooooooooooow/herbie/issues/8).
 
 ## Calibration pipeline (issue #17)
 

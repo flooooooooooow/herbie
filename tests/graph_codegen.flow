@@ -1,0 +1,222 @@
+# Block graph → Flow code → block graph: block validation faults, reference interpreter,
+# checked-in generated module drift gate, header parse-back equality, byte-identical
+# re-emission, and native execution of the generated module against the interpreter.
+
+import "stdlib/io.flow"
+import herbie.graph { GraphNode, GraphEdge, GraphView }
+import herbie.graphgen {
+    GraphBlock, GraphBlockView, GenWriter,
+    GEN_OP_INPUT, GEN_OP_CONST, GEN_OP_GAIN, GEN_OP_SUM, GEN_OP_OUTPUT,
+    graphBlocksValidate, graphEvaluate, graphEmitFlow, graphParseGenerated
+}
+import herbie.graphgen_demo { graphDemoFill }
+import herbie.generated.graph_demo_step { graphDemoStep }
+
+function emitDemo(g: GraphView, b: GraphBlockView, text: ptr<u8>, cap: i32) -> i32 {
+    let mut w: array<GenWriter, 1> = [GenWriter { buf: text, cap: cap, len: 0, overflow: false }]
+    let mut order: array<i32, 10> = [0; 10]
+    let mut scratch: array<i32, 30> = [0; 30]
+    let mut serial: array<i32, 64> = [0; 64]
+    return graphEmitFlow(g, b, "herbie.generated.graph_demo_step", "graphDemoStep", &w[0], &order[0], &scratch[0], &serial[0], 64)
+}
+
+function testBlockFaults() -> i32 {
+    let mut nodes: array<GraphNode, 3> = [
+        GraphNode { id: 1, samplePeriodUs: 1000, kind: 1 },
+        GraphNode { id: 2, samplePeriodUs: 1000, kind: 1 },
+        GraphNode { id: 3, samplePeriodUs: 1000, kind: 1 }
+    ]
+    let mut edges: array<GraphEdge, 2> = [
+        GraphEdge { fromId: 1, toId: 3, unitTag: 1 },
+        GraphEdge { fromId: 2, toId: 3, unitTag: 1 }
+    ]
+    let g: GraphView = GraphView { nodes: &nodes[0], nodeCount: 3, edges: &edges[0], edgeCount: 2 }
+    let mut blocks: array<GraphBlock, 3> = [
+        GraphBlock { id: 1, op: GEN_OP_INPUT, num: 0, den: 1, port: 0 },
+        GraphBlock { id: 2, op: GEN_OP_CONST, num: 5, den: 2, port: 0 },
+        GraphBlock { id: 3, op: GEN_OP_SUM, num: 0, den: 1, port: 0 }
+    ]
+    let b: GraphBlockView = GraphBlockView { blocks: &blocks[0], count: 3 }
+    if graphBlocksValidate(g, b) != 0 {
+        return 1
+    }
+    # A gain with two inputs has the wrong arity.
+    blocks[2] = GraphBlock { id: 3, op: GEN_OP_GAIN, num: 2, den: 1, port: 0 }
+    if graphBlocksValidate(g, b) != 7 {
+        return 2
+    }
+    # A sum mixing unit tags is dimensionally inconsistent.
+    blocks[2] = GraphBlock { id: 3, op: GEN_OP_SUM, num: 0, den: 1, port: 0 }
+    edges[1] = GraphEdge { fromId: 2, toId: 3, unitTag: 2 }
+    if graphBlocksValidate(g, b) != 8 {
+        return 3
+    }
+    edges[1] = GraphEdge { fromId: 2, toId: 3, unitTag: 1 }
+    blocks[1] = GraphBlock { id: 2, op: GEN_OP_CONST, num: 5, den: 0, port: 0 }
+    if graphBlocksValidate(g, b) != 9 {
+        return 4
+    }
+    blocks[1] = GraphBlock { id: 2, op: GEN_OP_INPUT, num: 0, den: 1, port: 0 }
+    if graphBlocksValidate(g, b) != 10 {
+        return 5
+    }
+    blocks[1] = GraphBlock { id: 9, op: GEN_OP_INPUT, num: 0, den: 1, port: 1 }
+    if graphBlocksValidate(g, b) != 6 {
+        return 6
+    }
+    # Algebraic loop 2 ↔ 3 is rejected by the scheduler before any code is emitted.
+    blocks[1] = GraphBlock { id: 2, op: GEN_OP_GAIN, num: 1, den: 1, port: 0 }
+    blocks[2] = GraphBlock { id: 3, op: GEN_OP_SUM, num: 0, den: 1, port: 0 }
+    let mut loopEdges: array<GraphEdge, 3> = [
+        GraphEdge { fromId: 1, toId: 3, unitTag: 1 },
+        GraphEdge { fromId: 2, toId: 3, unitTag: 1 },
+        GraphEdge { fromId: 3, toId: 2, unitTag: 1 }
+    ]
+    let lg: GraphView = GraphView { nodes: &nodes[0], nodeCount: 3, edges: &loopEdges[0], edgeCount: 3 }
+    let mut text: array<u8, 512> = [0 as u8; 512]
+    let mut w: array<GenWriter, 1> = [GenWriter { buf: &text[0], cap: 512, len: 0, overflow: false }]
+    let mut order: array<i32, 3> = [0; 3]
+    let mut scratch: array<i32, 9> = [0; 9]
+    let mut serial: array<i32, 32> = [0; 32]
+    if graphEmitFlow(lg, b, "m", "f", &w[0], &order[0], &scratch[0], &serial[0], 32) != -2 {
+        println("FAIL loop emitted")
+        return 7
+    }
+    # A buffer too small for the module reports overflow.
+    let mut tiny: array<u8, 32> = [0 as u8; 32]
+    let mut wt: array<GenWriter, 1> = [GenWriter { buf: &tiny[0], cap: 32, len: 0, overflow: false }]
+    blocks[1] = GraphBlock { id: 2, op: GEN_OP_CONST, num: 5, den: 2, port: 0 }
+    if graphEmitFlow(g, b, "m", "f", &wt[0], &order[0], &scratch[0], &serial[0], 32) != -11 {
+        return 8
+    }
+    return 0
+}
+
+function testRoundTripAndExecution() -> i32 {
+    let mut nodes: array<GraphNode, 10> = [GraphNode { id: 0, samplePeriodUs: 0, kind: 0 }; 10]
+    let mut edges: array<GraphEdge, 10> = [GraphEdge { fromId: 0, toId: 0, unitTag: 0 }; 10]
+    let mut blocks: array<GraphBlock, 10> = [GraphBlock { id: 0, op: 0, num: 0, den: 1, port: 0 }; 10]
+    graphDemoFill(&nodes[0], &edges[0], &blocks[0])
+    let g: GraphView = GraphView { nodes: &nodes[0], nodeCount: 10, edges: &edges[0], edgeCount: 10 }
+    let b: GraphBlockView = GraphBlockView { blocks: &blocks[0], count: 10 }
+    let mut textA: array<u8, 4096> = [0 as u8; 4096]
+    let na: i32 = emitDemo(g, b, &textA[0], 4096)
+    if na <= 0 {
+        println("FAIL emit")
+        return 1
+    }
+    # Drift gate: the checked-in generated module equals the generator output byte-for-byte.
+    let f: FileRead = io_read_file("src/generated/graph_demo_step.flow")
+    if not f.ok or (f.len as i32) != na {
+        println("FAIL generated module drifted; run flow run scripts/regen_graph_codegen.flow")
+        return 2
+    }
+    let fp: ptr<u8> = f.data as ptr<u8>
+    for i in 0 to na {
+        if fp[i] != textA[i] {
+            println("FAIL generated module drifted; run flow run scripts/regen_graph_codegen.flow")
+            return 3
+        }
+    }
+    # Code → graph: the header parses back to the identical nodes, edges and blocks.
+    let mut serial: array<i32, 64> = [0; 64]
+    let mut pn: array<GraphNode, 16> = [GraphNode { id: 0, samplePeriodUs: 0, kind: 0 }; 16]
+    let mut pe: array<GraphEdge, 16> = [GraphEdge { fromId: 0, toId: 0, unitTag: 0 }; 16]
+    let mut pb: array<GraphBlock, 16> = [GraphBlock { id: 0, op: 0, num: 0, den: 1, port: 0 }; 16]
+    let mut pview: array<GraphView, 1> = [g]
+    let mut pblocks: array<GraphBlockView, 1> = [b]
+    let textStr: string = (&textA[0]) as string
+    if not graphParseGenerated(textStr, &serial[0], 64, &pn[0], 16, &pe[0], 16, &pview[0], &pb[0], 16, &pblocks[0]) {
+        println("FAIL parse generated header")
+        return 4
+    }
+    let g2: GraphView = pview[0]
+    let b2: GraphBlockView = pblocks[0]
+    if g2.nodeCount != 10 or g2.edgeCount != 10 or b2.count != 10 {
+        return 5
+    }
+    for i in 0 to 10 {
+        if pn[i].id != nodes[i].id or pn[i].samplePeriodUs != nodes[i].samplePeriodUs or pn[i].kind != nodes[i].kind {
+            return 6
+        }
+        if pe[i].fromId != edges[i].fromId or pe[i].toId != edges[i].toId or pe[i].unitTag != edges[i].unitTag {
+            return 7
+        }
+        if pb[i].id != blocks[i].id or pb[i].op != blocks[i].op or pb[i].num != blocks[i].num
+            or pb[i].den != blocks[i].den or pb[i].port != blocks[i].port {
+            return 8
+        }
+    }
+    # Graph → code again is a fixed point.
+    let mut textB: array<u8, 4096> = [0 as u8; 4096]
+    let nb: i32 = emitDemo(g2, b2, &textB[0], 4096)
+    if nb != na {
+        return 9
+    }
+    for i in 0 to na {
+        if textB[i] != textA[i] {
+            println("FAIL re-emission differs")
+            return 10
+        }
+    }
+    # Native execution: the compiled generated module matches the interpreter bit-for-bit
+    # and the hand-derived u = 1.5(r − y) + r/4, e = r − y.
+    let mut order: array<i32, 10> = [0; 10]
+    let mut scratch: array<i32, 30> = [0; 30]
+    let mut values: array<f64, 10> = [0.0; 10]
+    let mut inp: array<f64, 2> = [0.0, 0.0]
+    let mut outGen: array<f64, 2> = [0.0, 0.0]
+    let mut outRef: array<f64, 2> = [0.0, 0.0]
+    for k in 0 to 200 {
+        inp[0] = 0.37 * (k as f64) - 11.0
+        inp[1] = 5.0 - 0.113 * ((k * k) % 97) as f64
+        graphDemoStep(&inp[0], &outGen[0])
+        if graphEvaluate(g, b, &inp[0], &outRef[0], &order[0], &scratch[0], &values[0]) != 0 {
+            return 11
+        }
+        if outGen[0] != outRef[0] or outGen[1] != outRef[1] {
+            println("FAIL generated vs interpreter")
+            return 12
+        }
+        let e: f64 = inp[0] - inp[1]
+        let u: f64 = 1.5 * e + inp[0] * 0.25
+        if outGen[1] != e or outGen[0] < u - 1.0e-12 * (1.0 + u * u) or outGen[0] > u + 1.0e-12 * (1.0 + u * u) {
+            println("FAIL generated vs hand formula")
+            return 13
+        }
+    }
+    # Tampered header: truncating the graph line is rejected.
+    let mut bad: array<u8, 4096> = [0 as u8; 4096]
+    for i in 0 to na {
+        bad[i] = textA[i]
+    }
+    let mut cut: i32 = 0
+    let mut lines: i32 = 0
+    while lines < 3 {
+        if bad[cut] == (10 as u8) {
+            lines = lines + 1
+        }
+        cut = cut + 1
+    }
+    # cut is the start of the blocks line; overwrite the last token of the graph line.
+    bad[cut - 2] = 10 as u8
+    bad[cut - 1] = 32 as u8
+    if graphParseGenerated((&bad[0]) as string, &serial[0], 64, &pn[0], 16, &pe[0], 16, &pview[0], &pb[0], 16, &pblocks[0]) {
+        println("FAIL tampered header accepted")
+        return 14
+    }
+    return 0
+}
+
+function main() -> i32 {
+    let a: i32 = testBlockFaults()
+    if a != 0 {
+        return 10 + a
+    }
+    let b: i32 = testRoundTripAndExecution()
+    if b != 0 {
+        return 30 + b
+    }
+    println("PASS graph codegen: block faults, graph→code→graph, fixed point, native execution")
+    return 0
+}

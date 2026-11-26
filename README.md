@@ -115,6 +115,7 @@ flow run tests/calibration_pipeline.flow
 flow run examples/calibration_demo.flow
 flow run tests/block_graph.flow
 flow run examples/block_graph_demo.flow
+flow run tests/graph_codegen.flow
 flow run tests/ac_phasor_mna.flow
 flow run examples/ac_phasor_demo.flow
 flow run tests/sparse_mna.flow

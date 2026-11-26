@@ -2,7 +2,8 @@
 # Typed block-graph scaffold: nodes with sample rates, directed signal edges with
 # unit tags, topological execution order, algebraic-loop (cycle) detection and
 # rate/unit compatibility checks. Canonical flat i32 buffer round-trip.
-# Not a visual editor, WASM runtime or Flow codegen emitter.
+# Block semantics and Flow code generation live in herbie.graphgen. Not a visual
+# editor or WASM runtime.
 
 export struct GraphNode {
     id: i32,
