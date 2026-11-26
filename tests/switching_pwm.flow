@@ -1,0 +1,326 @@
+# Switched SVPWM inverter: hexagon states, linear limit, volt-second balance, DC-link power
+# identity, control/PWM/plant timebase gate, and switched vs averaged PMSM current agreement.
+
+import herbie.drive {
+    ClarkeABC, AlphaBeta, Dq, PmsmParameters, PmsmState, AveragedInverter, FocPiGains, FocState,
+    clarkeAbcToAlphaBeta, clarkeAlphaBetaToAbc, parkAlphaBetaToDq, parkDqToAlphaBeta,
+    pmsmStep, inverterApplyDq, focCurrentStep
+}
+import herbie.pwm {
+    PhaseDuties, PhaseSwitches, PwmTimebase,
+    svpwmDuties, pwmCarrierAt, pwmCompare, pwmSwitchState, pwmPhaseVoltages, pwmDcLinkCurrent, pwmTimebase
+}
+
+function near(a: f64, b: f64, eps: f64) -> bool {
+    return a >= b - eps and a <= b + eps
+}
+
+function absf(x: f64) -> f64 {
+    if x < 0.0 {
+        return -x
+    }
+    return x
+}
+
+function plantParams() -> PmsmParameters {
+    return PmsmParameters {
+        statorResistance: 0.05, inductanceD: 0.0008, inductanceQ: 0.0012,
+        fluxLinkage: 0.08, polePairs: 4.0, rotorInertia: 0.02, viscousDamping: 0.0
+    }
+}
+
+# Eight states: 000 and 111 give zero; six active vectors have |v_αβ| = 2/3·Vdc, 60° apart.
+function testHexagon() -> i32 {
+    let vdc: f64 = 400.0
+    for k in 0 to 8 {
+        let v: ClarkeABC = pwmPhaseVoltages(pwmSwitchState(k), vdc)
+        if not near(v.a + v.b + v.c, 0.0, 1.0e-12) {
+            println("FAIL phase voltage sum")
+            return 1
+        }
+        let ab: AlphaBeta = clarkeAbcToAlphaBeta(v)
+        let mag: f64 = sqrt(ab.alpha * ab.alpha + ab.beta * ab.beta)
+        if k == 0 or k == 7 {
+            if not near(mag, 0.0, 1.0e-12) {
+                return 2
+            }
+        } else {
+            if not near(mag, 2.0 / 3.0 * vdc, 1.0e-9) {
+                println("FAIL active vector magnitude")
+                println(mag)
+                return 3
+            }
+        }
+    }
+    # State 1 (a high) lies on +α.
+    let v1: AlphaBeta = clarkeAbcToAlphaBeta(pwmPhaseVoltages(pwmSwitchState(1), vdc))
+    if not near(v1.alpha, 2.0 / 3.0 * vdc, 1.0e-9) or not near(v1.beta, 0.0, 1.0e-9) {
+        return 4
+    }
+    # Lossless bridge: Vdc·i_dc = Σ v_x i_x for balanced currents in every state.
+    let iab: AlphaBeta = parkDqToAlphaBeta(Dq { d: -12.0, q: 37.0 }, 0.9)
+    let iabc: ClarkeABC = clarkeAlphaBetaToAbc(iab)
+    for k in 0 to 8 {
+        let sw: PhaseSwitches = pwmSwitchState(k)
+        let v: ClarkeABC = pwmPhaseVoltages(sw, vdc)
+        let pAc: f64 = v.a * iabc.a + v.b * iabc.b + v.c * iabc.c
+        let pDc: f64 = vdc * pwmDcLinkCurrent(sw, iabc)
+        if not near(pAc, pDc, 1.0e-9) {
+            println("FAIL DC/AC power identity")
+            return 5
+        }
+    }
+    return 0
+}
+
+# Inscribed-circle limit Vdc/√3 is linear at every angle; 5% above it clamps somewhere.
+function testLinearLimit() -> i32 {
+    let vdc: f64 = 400.0
+    let r: f64 = vdc / 1.7320508075688772
+    let mut anySat: bool = false
+    for i in 0 to 360 {
+        let th: f64 = (i as f64) * 3.141592653589793 / 180.0
+        let d: PhaseDuties = svpwmDuties(AlphaBeta { alpha: r * cos(th), beta: r * sin(th) }, vdc)
+        if d.saturated {
+            println("FAIL saturated inside linear range")
+            return 1
+        }
+        if d.a < 0.0 or d.a > 1.0 or d.b < 0.0 or d.b > 1.0 or d.c < 0.0 or d.c > 1.0 {
+            return 2
+        }
+        let over: PhaseDuties = svpwmDuties(AlphaBeta { alpha: 1.05 * r * cos(th), beta: 1.05 * r * sin(th) }, vdc)
+        if over.saturated {
+            anySat = true
+        }
+    }
+    if not anySat {
+        println("FAIL over-modulation not flagged")
+        return 3
+    }
+    let bad: PhaseDuties = svpwmDuties(AlphaBeta { alpha: 1.0, beta: 0.0 }, 0.0)
+    if not bad.saturated or bad.a == bad.a {
+        return 4
+    }
+    return 0
+}
+
+# Average switched phase voltage over one carrier period equals the commanded vector
+# (min-max injection is pure common mode, which cancels in phase-to-neutral voltages).
+function testVoltSecondBalance() -> i32 {
+    let vdc: f64 = 400.0
+    let n: i32 = 4000
+    for i in 0 to 24 {
+        let th: f64 = (i as f64) * 0.27 + 0.05
+        let mag: f64 = 0.9 * vdc / 1.7320508075688772 * ((i % 5) as f64 + 1.0) / 5.0
+        let cmd: AlphaBeta = AlphaBeta { alpha: mag * cos(th), beta: mag * sin(th) }
+        let duties: PhaseDuties = svpwmDuties(cmd, vdc)
+        let mut sa: f64 = 0.0
+        let mut sb: f64 = 0.0
+        let mut sc: f64 = 0.0
+        for k in 0 to n {
+            let v: ClarkeABC = pwmPhaseVoltages(pwmCompare(duties, pwmCarrierAt(k, n)), vdc)
+            sa = sa + v.a
+            sb = sb + v.b
+            sc = sc + v.c
+        }
+        let avg: AlphaBeta = clarkeAbcToAlphaBeta(ClarkeABC {
+            a: sa / (n as f64), b: sb / (n as f64), c: sc / (n as f64)
+        })
+        # Duty quantisation 1/n per phase bounds the error by (4/3)·Vdc/n.
+        let tol: f64 = 4.0 / 3.0 * vdc / (n as f64)
+        if not near(avg.alpha, cmd.alpha, tol) or not near(avg.beta, cmd.beta, tol) {
+            println("FAIL volt-second balance")
+            println(avg.alpha - cmd.alpha)
+            println(avg.beta - cmd.beta)
+            return 1
+        }
+    }
+    return 0
+}
+
+function testTimebase() -> i32 {
+    let ok: PwmTimebase = pwmTimebase(10000.0, 10000.0, 2000000.0)
+    if ok.fault != 0 or ok.stepsPerCarrier != 200 or ok.carriersPerControl != 1 {
+        return 1
+    }
+    let dbl: PwmTimebase = pwmTimebase(5000.0, 20000.0, 2000000.0)
+    if dbl.fault != 0 or dbl.carriersPerControl != 4 or dbl.stepsPerCarrier != 100 {
+        return 2
+    }
+    if pwmTimebase(0.0, 10000.0, 1.0e6).fault != 1 {
+        return 3
+    }
+    # 8 kHz control on a 10 kHz carrier would sample mid-period.
+    if pwmTimebase(8000.0, 10000.0, 1.0e6).fault != 2 {
+        return 4
+    }
+    # 1.025 MHz plant does not land on 10 kHz carrier edges.
+    if pwmTimebase(10000.0, 10000.0, 1025000.0).fault != 3 {
+        return 5
+    }
+    # 100 kHz plant gives only 10 steps per carrier period.
+    if pwmTimebase(10000.0, 10000.0, 100000.0).fault != 4 {
+        return 6
+    }
+    return 0
+}
+
+# Locked rotor (θe = 0, ω = 0): switched bridge driven by a fixed command converges to the
+# averaged ohmic currents vd/R, vq/R within the duty-quantisation bound (4/3·Vdc/m)/R of a
+# plant that resolves the carrier with m steps; per-period current ripple is present and bounded.
+function testLockedRotorSwitchedVsAveraged() -> i32 {
+    let p: PmsmParameters = PmsmParameters {
+        statorResistance: 1.0, inductanceD: 0.0008, inductanceQ: 0.0012,
+        fluxLinkage: 0.08, polePairs: 4.0, rotorInertia: 0.02, viscousDamping: 0.0
+    }
+    let vdc: f64 = 400.0
+    let tb: PwmTimebase = pwmTimebase(10000.0, 10000.0, 10000000.0)
+    if tb.fault != 0 {
+        return 1
+    }
+    let m: i32 = tb.stepsPerCarrier
+    let dt: f64 = 1.0 / tb.plantHz
+    let vd: f64 = 40.0
+    let vq: f64 = 60.0
+    let duties: PhaseDuties = svpwmDuties(parkDqToAlphaBeta(Dq { d: vd, q: vq }, 0.0), vdc)
+    let mut s: PmsmState = PmsmState { currentD: 0.0, currentQ: 0.0, electricalAngle: 0.0, mechanicalSpeed: 0.0 }
+    let periods: i32 = 500
+    let mut sumD: f64 = 0.0
+    let mut sumQ: f64 = 0.0
+    let mut minQ: f64 = 1.0e30
+    let mut maxQ: f64 = -1.0e30
+    for k in 0 to periods * m {
+        let v: ClarkeABC = pwmPhaseVoltages(pwmCompare(duties, pwmCarrierAt(k, m)), vdc)
+        let vdq: Dq = parkAlphaBetaToDq(clarkeAbcToAlphaBeta(v), 0.0)
+        let r = pmsmStep(s, p, vdq.d, vdq.q, 0.0, dt)
+        s = PmsmState { currentD: r.state.currentD, currentQ: r.state.currentQ, electricalAngle: 0.0, mechanicalSpeed: 0.0 }
+        if k >= (periods - 1) * m {
+            sumD = sumD + s.currentD
+            sumQ = sumQ + s.currentQ
+            if s.currentQ < minQ {
+                minQ = s.currentQ
+            }
+            if s.currentQ > maxQ {
+                maxQ = s.currentQ
+            }
+        }
+    }
+    let meanD: f64 = sumD / (m as f64)
+    let meanQ: f64 = sumQ / (m as f64)
+    # 50 ms ≈ 40 τq; analytic steady values 40 A and 60 A.
+    let tolI: f64 = 4.0 / 3.0 * vdc / (m as f64) / p.statorResistance
+    if absf(meanD - vd / p.statorResistance) > tolI or absf(meanQ - vq / p.statorResistance) > tolI {
+        println("FAIL switched locked-rotor mean current")
+        println(meanD)
+        println(meanQ)
+        return 2
+    }
+    let ripple: f64 = maxQ - minQ
+    # Upper bound: full active-vector voltage 2/3·Vdc over a whole period across Lq.
+    let bound: f64 = 2.0 / 3.0 * vdc / (p.inductanceQ * tb.carrierHz)
+    if ripple <= 1.0e-3 or ripple >= bound {
+        println("FAIL switched ripple out of range")
+        println(ripple)
+        return 3
+    }
+    return 0
+}
+
+# FOC at 10 kHz, synchronised with a 10 kHz carrier, plant at 2 MHz, rotor spinning at
+# 50 rad/s with θe advancing: switched mean currents track the same references as the
+# averaged inverter run with an identical controller.
+function testFocSwitchedVsAveraged() -> i32 {
+    let p: PmsmParameters = plantParams()
+    let vdc: f64 = 400.0
+    let inv: AveragedInverter = AveragedInverter { dcLinkVoltage: vdc, maxModulation: 1.0 }
+    let gains: FocPiGains = FocPiGains { kp: 2.0, ki: 150.0, voltageLimit: 200.0 }
+    let tb: PwmTimebase = pwmTimebase(10000.0, 10000.0, 2000000.0)
+    let m: i32 = tb.stepsPerCarrier * tb.carriersPerControl
+    let dt: f64 = 1.0 / tb.plantHz
+    let dtc: f64 = 1.0 / tb.controlHz
+    let wm: f64 = 50.0
+    let idRef: f64 = -5.0
+    let iqRef: f64 = 30.0
+    let controls: i32 = 1500
+    let mut sw: PmsmState = PmsmState { currentD: 0.0, currentQ: 0.0, electricalAngle: 0.0, mechanicalSpeed: wm }
+    let mut av: PmsmState = sw
+    let mut focSw: FocState = FocState { integralD: 0.0, integralQ: 0.0 }
+    let mut focAv: FocState = focSw
+    let mut duties: PhaseDuties = PhaseDuties { a: 0.5, b: 0.5, c: 0.5, saturated: false }
+    let mut vAv: Dq = Dq { d: 0.0, q: 0.0 }
+    let mut sumD: f64 = 0.0
+    let mut sumQ: f64 = 0.0
+    for k in 0 to controls * m {
+        if k % m == 0 {
+            let ref: Dq = Dq { d: idRef, q: iqRef }
+            let cs = focCurrentStep(focSw, gains, p, Dq { d: sw.currentD, q: sw.currentQ }, ref, wm, dtc, true)
+            focSw = cs.state
+            let vcmd: Dq = inverterApplyDq(inv, Dq { d: cs.voltageD, q: cs.voltageQ })
+            duties = svpwmDuties(parkDqToAlphaBeta(vcmd, sw.electricalAngle), vdc)
+            let ca = focCurrentStep(focAv, gains, p, Dq { d: av.currentD, q: av.currentQ }, ref, wm, dtc, true)
+            focAv = ca.state
+            vAv = inverterApplyDq(inv, Dq { d: ca.voltageD, q: ca.voltageQ })
+        }
+        let v: ClarkeABC = pwmPhaseVoltages(pwmCompare(duties, pwmCarrierAt(k, tb.stepsPerCarrier)), vdc)
+        let vdq: Dq = parkAlphaBetaToDq(clarkeAbcToAlphaBeta(v), sw.electricalAngle)
+        let rs = pmsmStep(sw, p, vdq.d, vdq.q, 0.0, dt)
+        sw = PmsmState {
+            currentD: rs.state.currentD, currentQ: rs.state.currentQ,
+            electricalAngle: rs.state.electricalAngle, mechanicalSpeed: wm
+        }
+        let ra = pmsmStep(av, p, vAv.d, vAv.q, 0.0, dt)
+        av = PmsmState {
+            currentD: ra.state.currentD, currentQ: ra.state.currentQ,
+            electricalAngle: ra.state.electricalAngle, mechanicalSpeed: wm
+        }
+        if k >= (controls - 20) * m {
+            sumD = sumD + sw.currentD
+            sumQ = sumQ + sw.currentQ
+        }
+    }
+    let meanD: f64 = sumD / ((20 * m) as f64)
+    let meanQ: f64 = sumQ / ((20 * m) as f64)
+    if absf(av.currentD - idRef) > 0.1 or absf(av.currentQ - iqRef) > 0.1 {
+        println("FAIL averaged FOC reference")
+        println(av.currentD)
+        println(av.currentQ)
+        return 1
+    }
+    # Switched mean within 1 A of the averaged model (ripple, sampling delay, rotation in-period).
+    if absf(meanD - av.currentD) > 1.0 or absf(meanQ - av.currentQ) > 1.0 {
+        println("FAIL switched vs averaged FOC")
+        println(meanD)
+        println(meanQ)
+        return 2
+    }
+    return 0
+}
+
+function main() -> i32 {
+    let a: i32 = testHexagon()
+    if a != 0 {
+        return 10 + a
+    }
+    let b: i32 = testLinearLimit()
+    if b != 0 {
+        return 20 + b
+    }
+    let c: i32 = testVoltSecondBalance()
+    if c != 0 {
+        return 30 + c
+    }
+    let d: i32 = testTimebase()
+    if d != 0 {
+        return 40 + d
+    }
+    let e: i32 = testLockedRotorSwitchedVsAveraged()
+    if e != 0 {
+        return 50 + e
+    }
+    let f: i32 = testFocSwitchedVsAveraged()
+    if f != 0 {
+        return 60 + f
+    }
+    println("PASS switching SVPWM: hexagon, linear limit, volt-seconds, timebase, switched vs averaged")
+    return 0
+}

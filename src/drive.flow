@@ -1,7 +1,8 @@
 # @module herbie.drive
 # Three-phase Clarke/Park, salient PMSM in dq, averaged DC-link inverter and FOC PI.
 # Amplitude-invariant transforms (peak phase = peak αβ = peak dq). Positive iq produces
-# motoring torque for ψf > 0. Switching PWM, BLDC six-step and induction are out of scope.
+# motoring torque for ψf > 0. Switched SVPWM lives in herbie.pwm; BLDC six-step and
+# induction are out of scope.
 
 export struct ClarkeABC {
     a: f64,
