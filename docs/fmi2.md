@@ -32,10 +32,19 @@ The official XSD checks element and attribute grammar. `fmi2Validate` checks the
 | 19 | Each `Derivatives` entry is a `Real` with `derivative`, listed once; this marks the states |
 | 20 | `InitialUnknowns` is exactly the section 2.2.8 set (outputs and states or derivatives with approx or calculated `initial`, plus every `calculatedParameter`) in index order |
 | 21 | `dependencies` are in range and strictly ascending, and `dependenciesKind` has one valid kind per dependency |
+| 22 | Alias sets (same value reference within Real, Integer/Enumeration, Boolean or String): no two parameters or inputs, no parameter or input aliased to the independent variable, at most one non-constant member with `start`, constants only aliased to constants with numerically equal `start`, and the same unit (own or declared) or none |
+| 23 | `min`, `max`, `start` and `nominal` are valid `xs:double` (Real) or `xs:int` (Integer, Enumeration) literals; `min ≤ max` and `min ≤ start ≤ max`, with `min` and `max` inherited from the declared type when the variable does not set them |
+| 25 | `SimpleType` names are unique and differ from every variable name; `Item` values are unique within an `Enumeration` |
 
 The XSD alone accepts files that break these rules. For example, `xmllint` validates a description with a `continuous` parameter, two variables of the same name and an `Outputs` index pointing past the last variable. `fmi2Validate` rejects all three.
 
-Not checked yet: `valueReference` uniqueness per base type (aliases make it legal to repeat), `min ≤ start ≤ max`, the meaning of each dependency (which knowns are legal per mode), `canHandleMultipleSetPerTimeInstant`, and the structured-name grammar.
+### Dependency legality (`fmi2CheckDependencyKnowns`, code 24)
+
+A separate pass, run after `fmi2Validate`, checks that every listed dependency is a known of its mode (section 2.2.8). For `Outputs` and `Derivatives` the knowns are inputs, continuous states, the independent variable and tunable parameters (the `p_tune` argument of `f_der`). For `InitialUnknowns` they are inputs, the independent variable and variables with `initial="exact"`.
+
+It is kept out of `fmi2Validate` because the official Reference FMUs don't follow it. `BouncingBall` (in the vendored descriptions and in the v0.0.42 release `.fmu`) lists the fixed parameter `g` as a dependency of `der(v)` under `Derivatives`, and the specification says dependencies on variables that are fixed in Event and Continuous-Time Mode are not shown. The test asserts that exact finding and that the other five Reference FMUs pass.
+
+Not checked yet: `canHandleMultipleSetPerTimeInstant`, the structured-name grammar, and whether an alias set mixes variabilities as section 2.2.7 recommends.
 
 ## Export (`fmi2BuildRealModel`)
 
@@ -50,6 +59,7 @@ Not checked yet: `valueReference` uniqueness per base type (aliases make it lega
 - `BouncingBall` facts: variable indices, the `der(h)` to `h` state link, class A default `initial` for `v_min`, and `g`'s start value;
 - the 30 cells of the causality and variability table;
 - every XML and FMI fault code, with at least one case each;
+- alias sets (parameter and calculatedParameter aliasing allowed; two parameters, input and parameter, independent and input, constant and non-constant, unequal constant starts, two starts and unit mismatches rejected; Integer and Enumeration sharing one space), value ranges with declared-type inheritance and lexical checks, type-definition uniqueness, and dependency legality including the `BouncingBall` finding;
 - reference decoding, attribute-value normalisation and writer escaping;
 - export of the `herbie.vehicle` quarter-car interface (18 variables, 4 states, 3 outputs, 5 initial unknowns), its round trip, a rejected continuous parameter and a capacity fault.
 
