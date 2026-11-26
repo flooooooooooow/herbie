@@ -54,12 +54,12 @@ function setPreset(kind){
  if(!s)return;
  for(const id of ["throttle","brake","steer","spring","damper","antiroll","roughness","mu","grade"])$(id).value=s[id];
  readControls();reset(s.speed);
- for(const b of document.querySelectorAll("[data-preset]"))b.classList.toggle("active",b.dataset.preset===kind);
+ for(const b of document.querySelectorAll("[data-preset]")){const active=b.dataset.preset===kind;b.classList.toggle("active",active);b.setAttribute("aria-pressed",String(active));}
 }
 function setFocus(part){
  focus=part;
  viewer?.setFocus(part);
- for(const b of document.querySelectorAll(".scene-modes [data-view]"))b.classList.toggle("active",b.dataset.view===part);
+ for(const b of document.querySelectorAll("[data-view]")){const active=b.dataset.view===part;b.classList.toggle("active",active);if(b.tagName==="BUTTON")b.setAttribute("aria-pressed",String(active));}
  for(const b of document.querySelectorAll(".corner-card"))b.classList.toggle("active",b.dataset.corner===part);
  updateInspector();
 }
@@ -113,21 +113,22 @@ function canvas(id){
 }
 function drawGraph(){
  const {ctx,w,h}=canvas("graph"),left=46,right=w-14,top=19,bottom=h-29;
- ctx.fillStyle="#0d1b28";ctx.fillRect(0,0,w,h);
+ ctx.fillStyle="#ffffff";ctx.fillRect(0,0,w,h);
  const recent=history.slice(-700),time=state.base.time,start=Math.max(0,time-30);
- const data=recent.filter(x=>x.t>=start);
+ const data=recent.filter(x=>x.t>=start),duration=Math.max(1,time-start);
  const maxAbs=Math.max(25,...data.map(p=>Math.max(Math.abs(p.heave),Math.abs(p.fl),Math.abs(p.rr))));
  const bound=Math.ceil(maxAbs/20)*20;
  ctx.lineWidth=1;ctx.font="10px ui-sans-serif, sans-serif";
  for(let i=0;i<=4;i++){
   const y=top+(bottom-top)*i/4;
-  ctx.strokeStyle="#284253";ctx.beginPath();ctx.moveTo(left,y);ctx.lineTo(right,y);ctx.stroke();
-  ctx.fillStyle="#8caabc";ctx.fillText(fmt(bound*(1-i/2),0),6,y+3);
+  ctx.strokeStyle="#dce3eb";ctx.beginPath();ctx.moveTo(left,y);ctx.lineTo(right,y);ctx.stroke();
+  ctx.fillStyle="#465b70";ctx.fillText(fmt(bound*(1-i/2),0),6,y+3);
  }
- ctx.fillText("mm",8,12);ctx.fillText(fmt(start,0)+" s",left,bottom+18);ctx.fillText(fmt(time,1)+" s",right-42,bottom+18);
- for(const [key,color] of [["heave","#80e3d1"],["fl","#f4bb7e"],["rr","#a99bfa"]]){
+ ctx.fillText("mm",8,12);
+ for(let i=0;i<=5;i++){const x=left+(right-left)*i/5;ctx.strokeStyle="#dce3eb";ctx.beginPath();ctx.moveTo(x,top);ctx.lineTo(x,bottom);ctx.stroke();ctx.textAlign=i===0?"left":i===5?"right":"center";ctx.fillText(fmt(start+duration*i/5,1),x,bottom+13);}ctx.textAlign="center";ctx.fillText("Time (s)",(left+right)/2,h-3);ctx.textAlign="left";
+ for(const [key,color] of [["heave","#0072bd"],["fl","#d95319"],["rr","#7e2f8e"]]){
   ctx.beginPath();data.forEach((p,i)=>{
-   const x=left+(p.t-start)/30*(right-left);
+   const x=left+(p.t-start)/duration*(right-left);
    const y=top+(1-(p[key]/bound+1)*0.5)*(bottom-top);
    if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);
   });ctx.strokeStyle=color;ctx.lineWidth=1.9;ctx.stroke();
@@ -145,20 +146,20 @@ function updateTolerances(){
 function drawHistogram(){
  if(!samples)return;
  const {ctx,w,h}=canvas("histogram"),bins=40,lo=-0.10,hi=0.30,left=32,right=w-15,top=20,bottom=h-34;
- ctx.fillStyle="#0c1c29";ctx.fillRect(0,0,w,h);
+ ctx.fillStyle="#ffffff";ctx.fillRect(0,0,w,h);
  const counts=new Array(bins).fill(0);
  for(const x of samples.samples){const i=Math.floor((x-lo)/(hi-lo)*bins);if(i>=0&&i<bins)counts[i]++;}
  const xTo=v=>left+(v-lo)/(hi-lo)*(right-left);
- ctx.fillStyle="#234b50";ctx.fillRect(xTo(0),top,xTo(0.15)-xTo(0),bottom-top);
+ ctx.fillStyle="#e0eef8";ctx.fillRect(xTo(0),top,xTo(0.15)-xTo(0),bottom-top);
  const max=Math.max(1,...counts),bw=(right-left)/bins;
  for(let i=0;i<bins;i++){
   const bh=counts[i]/max*(bottom-top-16);
-  ctx.fillStyle=i<Math.floor((0-lo)/(hi-lo)*bins)||i>Math.ceil((0.15-lo)/(hi-lo)*bins)?"#d78f73":"#70d7c5";
+  ctx.fillStyle=i<Math.floor((0-lo)/(hi-lo)*bins)||i>Math.ceil((0.15-lo)/(hi-lo)*bins)?"#c95d36":"#347bb3";
   ctx.fillRect(left+i*bw+1,bottom-bh,Math.max(1,bw-2),bh);
  }
- ctx.strokeStyle="#efb777";ctx.setLineDash([5,4]);ctx.lineWidth=1;
+ ctx.strokeStyle="#a54b20";ctx.setLineDash([5,4]);ctx.lineWidth=1;
  for(const x of [0,0.15]){ctx.beginPath();ctx.moveTo(xTo(x),top);ctx.lineTo(xTo(x),bottom);ctx.stroke();}
- ctx.setLineDash([]);ctx.font="11px ui-sans-serif, sans-serif";ctx.fillStyle="#90afbd";
+ ctx.setLineDash([]);ctx.font="11px ui-sans-serif, sans-serif";ctx.fillStyle="#465b70";
  for(const v of [-.05,0,.05,.10,.15,.2,.25])ctx.fillText(fmt(v,2),xTo(v)-12,h-14);
  ctx.fillText("FIT CLEARANCE / mm",left,12);
 }
@@ -195,7 +196,7 @@ function frame(timestamp){
   accumulator+=delta;let n=0;
   while(accumulator>=0.01&&n<6){
    try{state=fullCarStep(state,input,0.01,stepVehicle);}
-   catch(error){running=false;$("toggle").textContent="Resume simulation";console.error("Physics stopped",error);break;}
+   catch(error){running=false;updateRunStatus("error");console.error("Physics stopped",error);break;}
    accumulator-=0.01;n++;traceClock+=0.01;
    if(traceClock>=0.05){
     history.push({t:state.time,heave:state.ride.heaveM*1000,
@@ -207,18 +208,39 @@ function frame(timestamp){
   if(history.length>1500)history.splice(0,history.length-1500);
   updateTelemetry();
  }
- viewer?.render(state,input);
- drawGraph();
+ if(!document.querySelector('[data-workspace="vehicle"]').hidden){viewer?.render(state,input);drawGraph();}
  requestAnimationFrame(frame);
 }
 for(const id of sliderIds)$(id).addEventListener("input",readControls);
 for(const button of document.querySelectorAll("[data-preset]"))button.addEventListener("click",()=>setPreset(button.dataset.preset));
-for(const button of document.querySelectorAll("[data-view]"))button.addEventListener("click",()=>setFocus(button.dataset.view));
+for(const button of document.querySelectorAll("[data-view]"))button.addEventListener("click",()=>{setFocus(button.dataset.view);if(document.querySelector('[data-workspace="vehicle"]').hidden)location.hash="lab";});
 for(const button of document.querySelectorAll("[data-corner]"))button.addEventListener("click",()=>setFocus(button.dataset.corner));
-$("toggle").addEventListener("click",()=>{running=!running;$("toggle").innerHTML=running?'Pause simulation <span aria-hidden="true">Ⅱ</span>':'Resume simulation <span aria-hidden="true">▶</span>';});
+function updateRunStatus(status=running?"running":"paused"){
+ const el=$("solver-status");
+ el.textContent=status==="error"?"Solver error":running?"Running":"Paused";
+ el.parentElement.dataset.state=status;
+ $("toggle").textContent=running?"Pause simulation":"Resume simulation";
+}
+$("toggle").addEventListener("click",()=>{running=!running;updateRunStatus();});
 $("reset").addEventListener("click",()=>reset());
 $("csv").addEventListener("click",downloadTrace);
 $("cutaway").addEventListener("change",()=>viewer?.setCutaway($("cutaway").checked));
 $("forces").addEventListener("change",()=>viewer?.setForces($("forces").checked));
 window.addEventListener("resize",()=>{drawGraph();drawHistogram();});
+function showWorkspace(){
+ const hash=location.hash.slice(1);
+ const name=hash==="manufacturing"?"manufacturing":hash==="method"?"method":"vehicle";
+ for(const panel of document.querySelectorAll("[data-workspace]"))panel.hidden=panel.dataset.workspace!==name;
+ for(const link of document.querySelectorAll("[data-workspace-link]")){
+  if(link.dataset.workspaceLink===name)link.setAttribute("aria-current","page");
+  else link.removeAttribute("aria-current");
+ }
+ requestAnimationFrame(()=>{
+  if(name==="vehicle")drawGraph();else if(name==="manufacturing")drawHistogram();
+  if(hash)document.getElementById(hash)?.scrollIntoView({block:"nearest"});
+ });
+}
+window.addEventListener("hashchange",showWorkspace);
+for(const link of document.querySelectorAll(".model-tree a[data-view]"))link.addEventListener("click",()=>{if(location.hash==="#lab")showWorkspace();});
+showWorkspace();setFocus("overview");updateRunStatus();
 readControls();updateTelemetry();installViewer();requestAnimationFrame(frame);

@@ -26,6 +26,16 @@ assert(viewer.includes("setRod"));
 assert(physics.includes("rideDerivatives"));
 assert(css.includes(".viewport"));
 assert(css.includes(".lab-frame"));
+assert(html.includes('class="toolstrip"'));
+assert(html.includes('class="model-tree"'));
+assert(html.includes('id="solver-status"'));
+for(const workspace of ["vehicle","manufacturing","method"]){
+ assert(html.includes('data-workspace="'+workspace+'"'));
+ assert(html.includes('data-workspace-link="'+workspace+'"'));
+}
+const ids=Array.from(html.matchAll(/\bid="([^"]+)"/g),match=>match[1]);
+assert.equal(new Set(ids).size,ids.length,"HTML IDs must be unique");
+for(const match of app.matchAll(/\$\("([^"]+)"\)/g))assert(ids.includes(match[1]),"Missing control "+match[1]);
 assert(redirect.includes("./site/"));
 assert(statSync("site/.nojekyll").isFile());
 assert(statSync(".nojekyll").isFile());
