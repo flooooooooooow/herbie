@@ -1,7 +1,8 @@
 # @module herbie.fluids
 # Incompressible lumped thermo-fluid kernels: laminar pipe, orifice, linear pump,
 # hydraulic volume, effectiveness-NTU exchanger and a closed cooling-loop balance.
-# Compressible flow, cavitation, DAE networks and map-based turbomachinery are out of scope.
+# Valve maps and the liquid cavitation/choked-flow envelope live in herbie.valves.
+# Compressible flow, DAE networks and map-based turbomachinery are out of scope.
 # SI units throughout. Positive flow is port A → B.
 
 export struct FluidProperties {

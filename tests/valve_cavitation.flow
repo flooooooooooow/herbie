@@ -1,0 +1,228 @@
+# Valve opening maps, stroke saturation and leakage floor, actuator lag/slew, and the
+# IEC 60534-2-1 liquid cavitation / choked-flow envelope built on herbie.fluids orifices.
+
+import herbie.fluids { FluidProperties, OrificeParameters, orificeVolumeFlow }
+import herbie.valves {
+    ValveMap, ValveLimits, ValveActuator, CavitationProperties, ValveFlowResult,
+    valveMapValid, valveMapArea, valveEqualPercentageArea, valveActuatorStep,
+    valveLiquidCriticalRatio, valveChokedPressureDrop, valveLiquidFlow
+}
+
+function near(a: f64, b: f64, eps: f64) -> bool {
+    return a >= b - eps and a <= b + eps
+}
+
+function water() -> FluidProperties {
+    return FluidProperties { density: 998.2, dynamicViscosity: 0.001002, specificHeat: 4182.0 }
+}
+
+function waterCavitation() -> CavitationProperties {
+    # Water at 20 °C: pv = 2339 Pa, pc = 22.064 MPa; globe valve FL = 0.9, σ_i = 2.
+    return CavitationProperties {
+        vapourPressure: 2339.0, criticalPressure: 22064000.0, pressureRecovery: 0.9, incipientIndex: 2.0
+    }
+}
+
+function testMaps() -> i32 {
+    let mut stroke: array<f64, 4> = [0.0, 0.25, 0.5, 1.0]
+    let mut area: array<f64, 4> = [0.0, 0.00001, 0.00004, 0.0001]
+    let m: ValveMap = ValveMap { stroke: &stroke[0], area: &area[0], count: 4 }
+    let lim: ValveLimits = ValveLimits { dischargeCoefficient: 0.7, leakageArea: 0.00000001 }
+    if not valveMapValid(m) {
+        return 1
+    }
+    if not near(valveMapArea(m, lim, 0.375), 0.000025, 1.0e-18) {
+        println("FAIL map interpolation")
+        return 2
+    }
+    if not near(valveMapArea(m, lim, 1.5), 0.0001, 1.0e-18) or not near(valveMapArea(m, lim, 0.75), 0.00007, 1.0e-18) {
+        println("FAIL stroke saturation")
+        return 3
+    }
+    if not near(valveMapArea(m, lim, -1.0), 0.00000001, 1.0e-20) {
+        println("FAIL leakage floor")
+        return 4
+    }
+    let mut badArea: array<f64, 4> = [0.0, 0.00004, 0.00001, 0.0001]
+    let bad: ValveMap = ValveMap { stroke: &stroke[0], area: &badArea[0], count: 4 }
+    let a: f64 = valveMapArea(bad, lim, 0.5)
+    if valveMapValid(bad) or a == a {
+        return 5
+    }
+    let mut shortStroke: array<f64, 2> = [0.0, 0.9]
+    let mut shortArea: array<f64, 2> = [0.0, 0.0001]
+    if valveMapValid(ValveMap { stroke: &shortStroke[0], area: &shortArea[0], count: 2 }) {
+        return 6
+    }
+    # Equal percentage: equal stroke increments give equal area ratios R^Δx.
+    let amax: f64 = 0.0001
+    if not near(valveEqualPercentageArea(amax, 50.0, 1.0), amax, 1.0e-18) {
+        return 7
+    }
+    if not near(valveEqualPercentageArea(amax, 50.0, 0.0), amax / 50.0, 1.0e-18) {
+        return 8
+    }
+    let r1: f64 = valveEqualPercentageArea(amax, 50.0, 0.4) / valveEqualPercentageArea(amax, 50.0, 0.3)
+    let r2: f64 = valveEqualPercentageArea(amax, 50.0, 0.8) / valveEqualPercentageArea(amax, 50.0, 0.7)
+    if not near(r1, exp(0.1 * log(50.0)), 1.0e-12) or not near(r2, r1, 1.0e-12) {
+        return 9
+    }
+    return 0
+}
+
+function testActuator() -> i32 {
+    # Lag only: x(t) = 1 − e^{−t/τ} independent of step size.
+    let lag: ValveActuator = ValveActuator { maxRate: 1000.0, timeConstant: 0.2 }
+    let mut x: f64 = 0.0
+    for i in 0 to 300 {
+        x = valveActuatorStep(x, 1.0, lag, 0.001)
+    }
+    if not near(x, 1.0 - exp(-0.3 / 0.2), 1.0e-12) {
+        println("FAIL actuator lag")
+        return 1
+    }
+    # Slew only: 2 /s full-stroke in 0.5 s; command above 1 saturates.
+    let slew: ValveActuator = ValveActuator { maxRate: 2.0, timeConstant: 0.0 }
+    x = 0.0
+    for i in 0 to 250 {
+        x = valveActuatorStep(x, 1.7, slew, 0.001)
+    }
+    if not near(x, 0.5, 1.0e-9) {
+        println("FAIL actuator slew")
+        return 2
+    }
+    for i in 0 to 400 {
+        x = valveActuatorStep(x, 1.7, slew, 0.001)
+    }
+    if x != 1.0 {
+        return 3
+    }
+    let bad: f64 = valveActuatorStep(0.0, 1.0, slew, 0.0)
+    if bad == bad {
+        return 4
+    }
+    return 0
+}
+
+function testCavitationEnvelope() -> i32 {
+    let fluid: FluidProperties = water()
+    let cav: CavitationProperties = waterCavitation()
+    let lim: ValveLimits = ValveLimits { dischargeCoefficient: 0.7, leakageArea: 0.0 }
+    let area: f64 = 0.0001
+    let p1: f64 = 300000.0
+    let ff: f64 = 0.96 - 0.28 * sqrt(2339.0 / 22064000.0)
+    if not near(valveLiquidCriticalRatio(cav), ff, 1.0e-15) {
+        return 1
+    }
+    let dpc: f64 = 0.81 * (p1 - ff * 2339.0)
+    if not near(valveChokedPressureDrop(cav, p1), dpc, 1.0e-9) {
+        return 2
+    }
+    let orifice: OrificeParameters = OrificeParameters { dischargeCoefficient: 0.7, area: area }
+    # Small Δp: plain orifice law, no cavitation (σ ≈ 14.9).
+    let r0: ValveFlowResult = valveLiquidFlow(area, lim, fluid, cav, p1, 280000.0)
+    if r0.regime != 0 or not near(r0.volumeFlow, orificeVolumeFlow(orifice, fluid, 20000.0), 1.0e-15) {
+        println("FAIL non-cavitating flow")
+        return 3
+    }
+    if not near(r0.cavitationIndex, (p1 - 2339.0) / 20000.0, 1.0e-12) {
+        return 4
+    }
+    # σ = 1.98 < σ_i but Δp < Δp_choked: incipient, flow still on the orifice law.
+    let r1: ValveFlowResult = valveLiquidFlow(area, lim, fluid, cav, p1, 150000.0)
+    if r1.regime != 1 or not near(r1.volumeFlow, orificeVolumeFlow(orifice, fluid, 150000.0), 1.0e-15) {
+        println("FAIL incipient regime")
+        return 5
+    }
+    # Beyond choke the flow plateaus at Cd·A·√(2Δp_choked/ρ).
+    let qChoked: f64 = 0.7 * area * sqrt(2.0 * dpc / 998.2)
+    let r2: ValveFlowResult = valveLiquidFlow(area, lim, fluid, cav, p1, 50000.0)
+    let r3: ValveFlowResult = valveLiquidFlow(area, lim, fluid, cav, p1, 10000.0)
+    if r2.regime != 2 or r3.regime != 2 or not near(r2.volumeFlow, qChoked, 1.0e-15) or r3.volumeFlow != r2.volumeFlow {
+        println("FAIL choked plateau")
+        return 6
+    }
+    # Outlet below vapour pressure is flagged outside the liquid envelope, flow still capped.
+    let r4: ValveFlowResult = valveLiquidFlow(area, lim, fluid, cav, p1, 1000.0)
+    if r4.regime != 4 or r4.volumeFlow != qChoked {
+        return 7
+    }
+    # Sweep p2 from p1 to 0: Q non-decreasing, continuous at the choke point, never above qChoked.
+    let mut prev: f64 = 0.0
+    let mut maxJump: f64 = 0.0
+    for i in 0 to 301 {
+        let p2: f64 = p1 - (i as f64) * 1000.0
+        let r: ValveFlowResult = valveLiquidFlow(area, lim, fluid, cav, p1, p2)
+        if r.volumeFlow < prev - 1.0e-18 or r.volumeFlow > qChoked + 1.0e-18 {
+            println("FAIL sweep monotonicity")
+            return 8
+        }
+        if i > 1 and r.volumeFlow - prev > maxJump {
+            maxJump = r.volumeFlow - prev
+        }
+        prev = r.volumeFlow
+    }
+    # The largest per-kPa increment is the first sweep steps' (√ law), not a jump at choke.
+    let firstStep: f64 = orificeVolumeFlow(orifice, fluid, 2000.0) - orificeVolumeFlow(orifice, fluid, 1000.0)
+    if maxJump > firstStep {
+        return 9
+    }
+    # Reverse Δp is plain reverse orifice flow.
+    let rr: ValveFlowResult = valveLiquidFlow(area, lim, fluid, cav, p1, 320000.0)
+    if rr.regime != 0 or not near(rr.volumeFlow, orificeVolumeFlow(orifice, fluid, -20000.0), 1.0e-15) or rr.volumeFlow >= 0.0 {
+        return 10
+    }
+    # Invalid: FL > 1, inlet at or below vapour pressure.
+    let badCav: CavitationProperties = CavitationProperties {
+        vapourPressure: 2339.0, criticalPressure: 22064000.0, pressureRecovery: 1.2, incipientIndex: 2.0
+    }
+    if valveLiquidFlow(area, lim, fluid, badCav, p1, 1.0e5).regime != 3 {
+        return 11
+    }
+    if valveLiquidFlow(area, lim, fluid, cav, 2000.0, 1000.0).regime != 3 {
+        return 12
+    }
+    return 0
+}
+
+function testMapDrivenFlow() -> i32 {
+    # Stroke drives area through the map; choked flow scales with area at fixed pressures.
+    let mut stroke: array<f64, 3> = [0.0, 0.5, 1.0]
+    let mut area: array<f64, 3> = [0.0, 0.00003, 0.0001]
+    let m: ValveMap = ValveMap { stroke: &stroke[0], area: &area[0], count: 3 }
+    let lim: ValveLimits = ValveLimits { dischargeCoefficient: 0.7, leakageArea: 0.0000001 }
+    let fluid: FluidProperties = water()
+    let cav: CavitationProperties = waterCavitation()
+    let qa: f64 = valveLiquidFlow(valveMapArea(m, lim, 0.5), lim, fluid, cav, 300000.0, 10000.0).volumeFlow
+    let qb: f64 = valveLiquidFlow(valveMapArea(m, lim, 1.0), lim, fluid, cav, 300000.0, 10000.0).volumeFlow
+    if not near(qb / qa, 0.0001 / 0.00003, 1.0e-12) {
+        return 1
+    }
+    let qClosed: f64 = valveLiquidFlow(valveMapArea(m, lim, 0.0), lim, fluid, cav, 300000.0, 280000.0).volumeFlow
+    let lk: OrificeParameters = OrificeParameters { dischargeCoefficient: 0.7, area: 0.0000001 }
+    if not near(qClosed, orificeVolumeFlow(lk, fluid, 20000.0), 1.0e-18) or qClosed <= 0.0 {
+        return 2
+    }
+    return 0
+}
+
+function main() -> i32 {
+    let a: i32 = testMaps()
+    if a != 0 {
+        return 10 + a
+    }
+    let b: i32 = testActuator()
+    if b != 0 {
+        return 30 + b
+    }
+    let c: i32 = testCavitationEnvelope()
+    if c != 0 {
+        return 40 + c
+    }
+    let d: i32 = testMapDrivenFlow()
+    if d != 0 {
+        return 70 + d
+    }
+    println("PASS valves: maps, saturation, actuator, cavitation and choked-flow envelope")
+    return 0
+}

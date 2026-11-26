@@ -111,6 +111,7 @@ flow run examples/pmsm_foc_demo.flow
 flow run tests/switching_pwm.flow
 flow run tests/thermo_fluid.flow
 flow run examples/cooling_loop_demo.flow
+flow run tests/valve_cavitation.flow
 flow run tests/calibration_pipeline.flow
 flow run examples/calibration_demo.flow
 flow run tests/block_graph.flow
