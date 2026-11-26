@@ -1,0 +1,214 @@
+# Valve-controlled hydraulic cylinder: metering-edge flows from the herbie.fluids orifice
+# law, analytic steady extension speed under load, hydraulic natural frequency and static
+# stiffness of the trapped oil, end stops and cavitation clamping.
+
+import herbie.fluids { FluidProperties, OrificeParameters, orificeVolumeFlow }
+import herbie.hydraulics {
+    CylinderParameters, ServoValve, CylinderState, CylinderResult,
+    cylinderParametersOk, servoValveOk, servoValveFlows, cylinderStep,
+    cylinderHydraulicStiffness, cylinderSymmetricSteadySpeed
+}
+
+function near(a: f64, b: f64, eps: f64) -> bool {
+    return a >= b - eps and a <= b + eps
+}
+
+function oil() -> FluidProperties {
+    return FluidProperties { density: 870.0, dynamicViscosity: 0.03, specificHeat: 1900.0 }
+}
+
+function cylinder(friction: f64) -> CylinderParameters {
+    # Through-rod cylinder, 1200 mm² each side, 300 mm stroke, 50 cm³ dead volumes, 50 kg.
+    return CylinderParameters {
+        areaA: 0.0012, areaB: 0.0012, stroke: 0.3, deadVolumeA: 0.00005, deadVolumeB: 0.00005,
+        movingMass: 50.0, viscousFriction: friction, bulkModulus: 1.4e9
+    }
+}
+
+function valve() -> ServoValve {
+    return ServoValve { dischargeCoefficient: 0.61, maxArea: 0.000002, supplyPressure: 15.0e6, tankPressure: 0.0 }
+}
+
+function testValveFlows() -> i32 {
+    let v: ServoValve = valve()
+    let f: FluidProperties = oil()
+    if not servoValveOk(v) or not cylinderParametersOk(cylinder(0.0)) {
+        return 1
+    }
+    let mut q: array<f64, 2> = [0.0, 0.0]
+    servoValveFlows(v, f, 0.4, 9.0e6, 2.0e6, &q[0])
+    let edge: OrificeParameters = OrificeParameters { dischargeCoefficient: 0.61, area: 0.0000008 }
+    if not near(q[0], orificeVolumeFlow(edge, f, 6.0e6), 1.0e-15) or not near(q[1], -orificeVolumeFlow(edge, f, 2.0e6), 1.0e-15) {
+        println("FAIL metering edges u > 0")
+        return 2
+    }
+    servoValveFlows(v, f, -0.4, 9.0e6, 2.0e6, &q[0])
+    if not near(q[1], orificeVolumeFlow(edge, f, 13.0e6), 1.0e-15) or not near(q[0], -orificeVolumeFlow(edge, f, 9.0e6), 1.0e-15) {
+        return 3
+    }
+    servoValveFlows(v, f, 0.0, 9.0e6, 2.0e6, &q[0])
+    if q[0] != 0.0 or q[1] != 0.0 {
+        return 4
+    }
+    # Spool beyond full stroke saturates.
+    let mut q2: array<f64, 2> = [0.0, 0.0]
+    servoValveFlows(v, f, 3.0, 9.0e6, 2.0e6, &q[0])
+    servoValveFlows(v, f, 1.0, 9.0e6, 2.0e6, &q2[0])
+    if q[0] != q2[0] or q[1] != q2[1] {
+        return 5
+    }
+    return 0
+}
+
+function testSteadySpeed() -> i32 {
+    let c: CylinderParameters = cylinder(0.0)
+    let v: ServoValve = valve()
+    let f: FluidProperties = oil()
+    let load: f64 = 2000.0
+    let mut s: CylinderState = CylinderState { position: 0.1, velocity: 0.0, pressureA: 7.5e6, pressureB: 7.5e6 }
+    let dt: f64 = 0.00001
+    for k in 0 to 50000 {
+        s = cylinderStep(s, c, v, f, 0.0, 0.5, load, dt).state
+    }
+    let expected: f64 = cylinderSymmetricSteadySpeed(c, v, f, 0.5, load)
+    if not near(s.velocity, expected, 1.0e-4 * expected) {
+        println("FAIL steady speed")
+        println(s.velocity)
+        println(expected)
+        return 1
+    }
+    # Residual lightly damped ringing leaves ≈ 1e-4 relative; gate at 1e-3.
+    if not near(s.pressureA - s.pressureB, load / 0.0012, 1.0e-3 * load / 0.0012) {
+        println("FAIL load pressure")
+        return 2
+    }
+    # Edge drops are equal: p_S − p_A = p_B − p_T.
+    if not near(15.0e6 - s.pressureA, s.pressureB, 1.0e-3 * s.pressureB) {
+        return 3
+    }
+    return 0
+}
+
+function testNaturalFrequencyAndStiffness() -> i32 {
+    let c: CylinderParameters = cylinder(0.0)
+    let v: ServoValve = valve()
+    let f: FluidProperties = oil()
+    let x0: f64 = 0.15
+    let k: f64 = cylinderHydraulicStiffness(c, x0)
+    let vol: f64 = 0.00005 + 0.0012 * 0.15
+    if not near(k, 1.4e9 * 0.0012 * 0.0012 * 2.0 / vol, 1.0e-6 * k) {
+        return 1
+    }
+    # Closed valve, small velocity kick: oscillation period 2π·√(m/k).
+    let mut s: CylinderState = CylinderState { position: x0, velocity: 0.01, pressureA: 5.0e6, pressureB: 5.0e6 }
+    let dt: f64 = 0.000001
+    let mut crossings: i32 = 0
+    let mut firstT: f64 = 0.0
+    let mut lastT: f64 = 0.0
+    let mut prevV: f64 = s.velocity
+    for i in 0 to 200000 {
+        s = cylinderStep(s, c, v, f, 0.0, 0.0, 0.0, dt).state
+        if prevV < 0.0 and s.velocity >= 0.0 {
+            let t: f64 = ((i + 1) as f64) * dt
+            if crossings == 0 {
+                firstT = t
+            }
+            lastT = t
+            crossings = crossings + 1
+        }
+        prevV = s.velocity
+    }
+    if crossings < 10 {
+        return 2
+    }
+    let period: f64 = (lastT - firstT) / ((crossings - 1) as f64)
+    let expected: f64 = 2.0 * 3.141592653589793 * sqrt(50.0 / k)
+    if not near(period, expected, 0.002 * expected) {
+        println("FAIL hydraulic natural frequency")
+        println(period)
+        println(expected)
+        return 3
+    }
+    # Static deflection under 1 kN with the valve closed and damping: Δx ≈ −F/k.
+    let cd: CylinderParameters = cylinder(20000.0)
+    let mut st: CylinderState = CylinderState { position: x0, velocity: 0.0, pressureA: 5.0e6, pressureB: 5.0e6 }
+    for i in 0 to 100000 {
+        st = cylinderStep(st, cd, v, f, 0.0, 0.0, 1000.0, 0.00001).state
+    }
+    let dx: f64 = st.position - x0
+    if not near(dx, -1000.0 / k, 0.01 * 1000.0 / k) {
+        println("FAIL static stiffness")
+        println(dx)
+        return 4
+    }
+    return 0
+}
+
+function testEndStopAndCavitation() -> i32 {
+    let c: CylinderParameters = cylinder(500.0)
+    let v: ServoValve = valve()
+    let f: FluidProperties = oil()
+    let mut s: CylinderState = CylinderState { position: 0.29, velocity: 0.0, pressureA: 7.5e6, pressureB: 7.5e6 }
+    let mut hitStop: bool = false
+    for i in 0 to 50000 {
+        let r: CylinderResult = cylinderStep(s, c, v, f, 0.0, 1.0, 0.0, 0.00001)
+        s = r.state
+        if r.status == 2 {
+            hitStop = true
+        }
+        if s.position > 0.3 {
+            return 1
+        }
+    }
+    if not hitStop or s.position != 0.3 or s.velocity != 0.0 {
+        println("FAIL end stop")
+        return 2
+    }
+    # Stalled at the stop, A rises to supply and B drains to tank.
+    if s.pressureA < 0.999 * 15.0e6 or s.pressureB > 0.001 * 15.0e6 {
+        println("FAIL stalled pressures")
+        return 3
+    }
+    # Overrunning 40 kN pulling load at full extend command: chamber A is starved and clamps.
+    let mut o: CylinderState = CylinderState { position: 0.05, velocity: 0.0, pressureA: 7.5e6, pressureB: 7.5e6 }
+    let mut cavitated: bool = false
+    for i in 0 to 20000 {
+        let r: CylinderResult = cylinderStep(o, c, v, f, 0.0, 1.0, -40000.0, 0.00001)
+        o = r.state
+        if r.status == 3 {
+            cavitated = true
+        }
+        if o.pressureA < 0.0 or o.pressureB < 0.0 {
+            return 4
+        }
+    }
+    if not cavitated {
+        println("FAIL cavitation not flagged")
+        return 5
+    }
+    if cylinderStep(o, c, v, f, 0.0, 1.0, 0.0, 0.0).status != 1 {
+        return 6
+    }
+    return 0
+}
+
+function main() -> i32 {
+    let a: i32 = testValveFlows()
+    if a != 0 {
+        return 10 + a
+    }
+    let b: i32 = testSteadySpeed()
+    if b != 0 {
+        return 20 + b
+    }
+    let c: i32 = testNaturalFrequencyAndStiffness()
+    if c != 0 {
+        return 30 + c
+    }
+    let d: i32 = testEndStopAndCavitation()
+    if d != 0 {
+        return 40 + d
+    }
+    println("PASS hydraulic cylinder: valve edges, steady speed, natural frequency, stiffness, stops, cavitation")
+    return 0
+}
