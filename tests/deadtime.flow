@@ -1,0 +1,181 @@
+# Inverter leg dead time and device drops: classic td·f·Vdc error, switched sub-step model
+# against the exact period average (including dropped pulses), device-drop-only average,
+# exact duty compensation, star-load phase voltages and invalid timing.
+
+import herbie.drive { ClarkeABC }
+import herbie.deadtime {
+    LegDevices, DeadTimeTiming,
+    deadTimeTimingOk, legSwitchDrop, legDiodeDrop, deadTimeAveragePoleVoltage,
+    deadTimePoleVoltageAt, deadTimeCompensatedDuty, deadTimePhaseVoltages
+}
+
+function near(a: f64, b: f64, eps: f64) -> bool {
+    return a >= b - eps and a <= b + eps
+}
+
+function idealDevices() -> LegDevices {
+    return LegDevices { switchThreshold: 0.0, switchResistance: 0.0, diodeThreshold: 0.0, diodeResistance: 0.0 }
+}
+
+function igbtDevices() -> LegDevices {
+    return LegDevices { switchThreshold: 1.0, switchResistance: 0.01, diodeThreshold: 0.8, diodeResistance: 0.005 }
+}
+
+function testClassicError() -> i32 {
+    # 400 V, 10 kHz, 2 μs: ΔV = td·f·Vdc = 8 V, opposing the current.
+    let t: DeadTimeTiming = DeadTimeTiming { dcLinkVoltage: 400.0, carrierHz: 10000.0, deadTime: 0.000002 }
+    let dev: LegDevices = idealDevices()
+    if not near(deadTimeAveragePoleVoltage(0.5, 10.0, t, dev), 192.0, 1.0e-9) {
+        println("FAIL positive-current dead-time error")
+        return 1
+    }
+    if not near(deadTimeAveragePoleVoltage(0.5, -10.0, t, dev), 208.0, 1.0e-9) {
+        return 2
+    }
+    # Without dead time and drops the leg is ideal.
+    let t0: DeadTimeTiming = DeadTimeTiming { dcLinkVoltage: 400.0, carrierHz: 10000.0, deadTime: 0.0 }
+    if not near(deadTimeAveragePoleVoltage(0.3, 5.0, t0, dev), 120.0, 1.0e-9) {
+        return 3
+    }
+    # 0 % and 100 % duty have no edges, so no dead-time error.
+    if not near(deadTimeAveragePoleVoltage(1.0, 10.0, t, dev), 400.0, 1.0e-9) or not near(deadTimeAveragePoleVoltage(0.0, -10.0, t, dev), 0.0, 1.0e-9) {
+        return 4
+    }
+    return 0
+}
+
+function testDeviceDrops() -> i32 {
+    let t0: DeadTimeTiming = DeadTimeTiming { dcLinkVoltage: 400.0, carrierHz: 10000.0, deadTime: 0.0 }
+    let dev: LegDevices = igbtDevices()
+    let i: f64 = 50.0
+    let vce: f64 = 1.0 + 0.01 * 50.0
+    let vf: f64 = 0.8 + 0.005 * 50.0
+    if not near(legSwitchDrop(dev, -i), vce, 1.0e-15) or not near(legDiodeDrop(dev, i), vf, 1.0e-15) {
+        return 1
+    }
+    let d: f64 = 0.62
+    if not near(deadTimeAveragePoleVoltage(d, i, t0, dev), d * (400.0 - vce) - (1.0 - d) * vf, 1.0e-9) {
+        println("FAIL device drops i > 0")
+        return 2
+    }
+    if not near(deadTimeAveragePoleVoltage(d, -i, t0, dev), (1.0 - d) * vce + d * (400.0 + vf), 1.0e-9) {
+        println("FAIL device drops i < 0")
+        return 3
+    }
+    return 0
+}
+
+# Sub-step switched pole voltage averaged over one period equals the exact average model
+# when duty and dead time land on sub-step boundaries, for both current signs, normal
+# duties and duties where one switch's pulse is shorter than the dead time.
+function testSwitchedMatchesAverage() -> i32 {
+    let n: i32 = 500
+    let deadSteps: i32 = 10
+    let carrierHz: f64 = 10000.0
+    let t: DeadTimeTiming = DeadTimeTiming {
+        dcLinkVoltage: 400.0, carrierHz: carrierHz, deadTime: (deadSteps as f64) / ((n as f64) * carrierHz)
+    }
+    let dev: LegDevices = igbtDevices()
+    let counts: array<i32, 8> = [4, 10, 16, 124, 250, 376, 490, 496]
+    let currents: array<f64, 3> = [35.0, -35.0, 0.0]
+    for ci in 0 to 3 {
+        for di in 0 to 8 {
+            let m: i32 = counts[di]
+            # The carrier samples are ±odd/N, so a duty of (m + ½)/N with even m switches on
+            # exactly m sub-steps; the average model is evaluated at the realised duty m/N.
+            let duty: f64 = ((m as f64) + 0.5) / (n as f64)
+            let mut sum: f64 = 0.0
+            for k in 0 to n {
+                sum = sum + deadTimePoleVoltageAt(duty, currents[ci], 400.0, dev, k, n, deadSteps)
+            }
+            let switched: f64 = sum / (n as f64)
+            let avg: f64 = deadTimeAveragePoleVoltage((m as f64) / (n as f64), currents[ci], t, dev)
+            if not near(switched, avg, 1.0e-9) {
+                println("FAIL switched vs average")
+                println(m)
+                println(currents[ci])
+                println(switched)
+                println(avg)
+                return 1 + ci
+            }
+        }
+    }
+    return 0
+}
+
+function testCompensation() -> i32 {
+    let t: DeadTimeTiming = DeadTimeTiming { dcLinkVoltage: 400.0, carrierHz: 10000.0, deadTime: 0.000002 }
+    let dev: LegDevices = igbtDevices()
+    let currents: array<f64, 4> = [20.0, -20.0, 80.0, -80.0]
+    for ci in 0 to 4 {
+        for j in 1 to 10 {
+            let target: f64 = (j as f64) * 0.1
+            let dc: f64 = deadTimeCompensatedDuty(target, currents[ci], t, dev)
+            let v: f64 = deadTimeAveragePoleVoltage(dc, currents[ci], t, dev)
+            if not near(v, target * 400.0, 1.0e-9) {
+                println("FAIL compensation")
+                println(target)
+                println(currents[ci])
+                return 1
+            }
+            # Uncompensated error is the dead-time plus drop error, opposing the current.
+            let raw: f64 = deadTimeAveragePoleVoltage(target, currents[ci], t, dev)
+            if currents[ci] > 0.0 and raw >= target * 400.0 {
+                return 2
+            }
+            if currents[ci] < 0.0 and raw <= target * 400.0 {
+                return 3
+            }
+        }
+    }
+    # Requests outside the reachable range clamp to [τ, 1 − τ].
+    if not near(deadTimeCompensatedDuty(1.0, 20.0, t, dev), 0.98, 1.0e-12) {
+        return 4
+    }
+    return 0
+}
+
+function testPhaseVoltagesAndValidity() -> i32 {
+    let v: ClarkeABC = deadTimePhaseVoltages(392.0, 208.0, 8.0)
+    if not near(v.a + v.b + v.c, 0.0, 1.0e-12) or not near(v.a - v.b, 184.0, 1.0e-12) or not near(v.b - v.c, 200.0, 1.0e-12) {
+        return 1
+    }
+    let bad: DeadTimeTiming = DeadTimeTiming { dcLinkVoltage: 400.0, carrierHz: 10000.0, deadTime: 0.00005 }
+    if deadTimeTimingOk(bad) {
+        return 2
+    }
+    let x: f64 = deadTimeAveragePoleVoltage(0.5, 1.0, bad, idealDevices())
+    if x == x {
+        return 3
+    }
+    let y: f64 = deadTimePoleVoltageAt(0.5, 1.0, 400.0, idealDevices(), 0, 20, 10)
+    if y == y {
+        return 4
+    }
+    return 0
+}
+
+function main() -> i32 {
+    let a: i32 = testClassicError()
+    if a != 0 {
+        return 10 + a
+    }
+    let b: i32 = testDeviceDrops()
+    if b != 0 {
+        return 20 + b
+    }
+    let c: i32 = testSwitchedMatchesAverage()
+    if c != 0 {
+        return 30 + c
+    }
+    let d: i32 = testCompensation()
+    if d != 0 {
+        return 40 + d
+    }
+    let e: i32 = testPhaseVoltagesAndValidity()
+    if e != 0 {
+        return 50 + e
+    }
+    println("PASS dead time: td·f·Vdc error, switched vs average, device drops, compensation")
+    return 0
+}

@@ -23,6 +23,7 @@ src/
   mechanics.flow     Single-axis rotation and ideal gear
   driveline.flow     Pendulum, torsional shaft, differential, clutch
   motors.flow        Coupled armature/rotor DC motor
+  deadtime.flow      Inverter leg dead time, device drops and duty compensation
   drive.flow         Clarke/Park, salient PMSM, averaged inverter, FOC
   battery.flow       Thevenin RC battery and SOC
   pack.flow          Ns×Np pack, BMS limits, heating/thermal, SOH input

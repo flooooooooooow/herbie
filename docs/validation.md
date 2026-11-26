@@ -93,7 +93,7 @@ DOE planners, multi-map fitting with regularization catalogs, and full uncertain
 `tests/thermo_fluid.flow` checks:
 
 - Hagen–Poiseuille Δp, orifice √(2Δp/ρ) with sign, linear pump shutoff
-- Analytic pump–pipe operating point (Q and Δp match)
+- Analytic pump-pipe operating point (Q and Δp match)
 - Hydraulic volume integration; balanced ε-NTU = NTU/(1+NTU); closed-loop T = Tamb + Q/UA
 - Coolant node transient converges to the steady radiator balance
 
@@ -130,6 +130,18 @@ Coolant network, pre-charge, Kalman SOC/SOH estimators, cycle degradation and ch
 - No emissions maps or invented emission factors
 
 Turbo, crank-angle combustion and ECU faults remain open under [#13](https://github.com/flooooooooooow/herbie/issues/13).
+
+## Inverter dead time and device drops (issue #12)
+
+`tests/deadtime.flow` checks the two-level leg model in `herbie.deadtime`:
+
+- The classic dead-time error td·f·Vdc: 400 V, 10 kHz and 2 μs give 192 V and 208 V average pole voltage at 50 % duty for positive and negative current, with no error at 0 % or 100 % duty
+- Switch (V0 + r·|i|) and diode (Vf0 + rf·|i|) drops in the period average for both current signs
+- The sub-step switched leg with gate blanking averages to the exact period-average model for both current signs, at zero current, and where one switch's pulse is shorter than the dead time
+- Duty compensation inverts the average model exactly across 10 % to 90 % duty and ±20/±80 A, and clamps to [τ, 1 − τ]; uncompensated error always opposes the current
+- Star-load phase voltages remove the common mode; dead time of half a period or more is rejected
+
+Zero-current clamping, temperature-dependent device drops, switching losses and coupling to the switched SVPWM bridge remain open.
 
 ## Driveline kernels (issue #15)
 
