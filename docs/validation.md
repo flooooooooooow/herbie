@@ -115,8 +115,10 @@ Compressible flow, cavitation, valve maps, hydraulic actuators and DAE fluid net
 - Control/PWM/plant timebase gate: control must update on carrier boundaries (integer carrier/control ratio) and the plant must resolve the carrier with an integer m ≥ 20 steps per period
 - Locked rotor driven through the switched bridge settles to the ohmic vd/R, vq/R currents within (4/3·Vdc/m)/R, with non-zero per-period ripple below 2/3·Vdc/(Lq·f_carrier)
 - FOC at 10 kHz synchronised to a 10 kHz carrier with a 2 MHz plant and a spinning rotor: switched mean currents agree with the averaged-inverter run within 1 A
+- The dead-time leg with zero dead time and ideal devices reproduces the carrier compare at every sub-step (41 duties × 100 sub-steps, both current signs)
+- A three-leg SVPWM bridge with 4 of 200 sub-steps of dead time: over each of 12 reference angles the period-average phase-voltage error against the ideal bridge is the star transform of (−sign i)·(D/N)·Vdc per leg, within 1e-9 V
 
-Dead time, device voltage drops, conduction/switching loss maps, DC-link ripple, BLDC six-step, induction machines, observers and thermal saturation remain open under [#12](https://github.com/flooooooooooow/herbie/issues/12).
+Conduction/switching loss maps, DC-link ripple, BLDC six-step, induction machines, observers and thermal saturation remain open under [#12](https://github.com/flooooooooooow/herbie/issues/12).
 
 ## Battery pack / BMS / thermal (issue #14)
 
@@ -142,7 +144,7 @@ Turbo, crank-angle combustion and ECU faults remain open under [#13](https://git
 
 ## Inverter dead time and device drops (issue #12)
 
-`tests/deadtime.flow` checks the two-level leg model in `herbie.deadtime`:
+`tests/deadtime.flow` checks the two-level leg model, which lives in `herbie.pwm` and is imported here through the `herbie.deadtime` re-export:
 
 - The classic dead-time error td·f·Vdc: 400 V, 10 kHz and 2 μs give 192 V and 208 V average pole voltage at 50 % duty for positive and negative current, with no error at 0 % or 100 % duty
 - Switch (V0 + r·|i|) and diode (Vf0 + rf·|i|) drops in the period average for both current signs
@@ -150,7 +152,7 @@ Turbo, crank-angle combustion and ECU faults remain open under [#13](https://git
 - Duty compensation inverts the average model exactly across 10 % to 90 % duty and ±20/±80 A, and clamps to [τ, 1 − τ]; uncompensated error always opposes the current
 - Star-load phase voltages remove the common mode; dead time of half a period or more is rejected
 
-Zero-current clamping, temperature-dependent device drops, switching losses and coupling to the switched SVPWM bridge remain open.
+Zero-current clamping, temperature-dependent device drops and switching losses remain open. The coupling to the switched SVPWM bridge is checked in `tests/switching_pwm.flow`.
 
 ## Driveline kernels (issue #15)
 
