@@ -43,6 +43,7 @@ src/
   thermal.flow       Lumped temperature evolution
   fluids.flow        Incompressible pipe/orifice/pump, NTU HX, cooling loop
   calibrate.flow     Train/val split, MAD outliers, affine fit, holdout RMSE
+  relief.flow        Direct-acting relief valve, spool dynamics, protected volume
   graph.flow         Typed block graph, schedule, loop/rate checks, round-trip
   control.flow       Bounded-output PID
 tests/

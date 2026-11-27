@@ -1,0 +1,180 @@
+# @module herbie.relief
+# Direct-acting spring-loaded pressure relief valve with spool dynamics, and a pump
+# feeding a compressible volume that the valve protects.
+#
+# The spool (or poppet) has pressure area A, spring rate k, spring preload F0, moving
+# mass m and viscous damping b. Inlet pressure p and tank pressure pT act across A, so
+#   m·ẍ = (p − pT)·A − F0 − k·x − b·ẋ,
+# with inelastic stops at x = 0 (seated) and x = maxLift. The valve cracks at
+# pc = pT + F0/A. The metering area grows linearly with lift, a = w·x (w is the area
+# gradient, for a spool w = π·d), and the relieved flow is the orifice law of
+# herbie.fluids, Q = Cd·a·√(2(p − pT)/ρ), zero while seated. Steady-state flow forces,
+# leakage at the seat and hysteresis from friction are left out.
+#
+# The protected volume has hydraulic capacitance C = V/β and obeys C·ṗ = Qpump − Q.
+# The coupled state (p, x, ẋ, relieved volume) is integrated with fixed-step RK4; the
+# stops are applied after each step. The relieved volume is integrated with the same
+# RK4 stages as the pressure, so C·Δp = Qpump·t − V_relieved holds to rounding.
+# SI units throughout.
+
+import herbie.fluids { FluidProperties, OrificeParameters, fluidPropertiesOk, orificeVolumeFlow }
+
+export struct ReliefValve {
+    pressureArea: f64,
+    springRate: f64,
+    preload: f64,
+    mass: f64,
+    damping: f64,
+    maxLift: f64,
+    areaGradient: f64,
+    dischargeCoefficient: f64,
+    tankPressure: f64
+}
+
+export struct ReliefState {
+    pressure: f64,
+    lift: f64,
+    velocity: f64,
+    relievedVolume: f64
+}
+
+export function reliefValveOk(v: ReliefValve) -> bool {
+    return v.pressureArea > 0.0 and v.springRate > 0.0 and v.preload >= 0.0 and v.mass > 0.0 and v.damping >= 0.0
+        and v.maxLift > 0.0 and v.areaGradient > 0.0 and v.dischargeCoefficient > 0.0
+}
+
+export function reliefCrackingPressure(v: ReliefValve) -> f64 {
+    if not reliefValveOk(v) {
+        return 0.0 / 0.0
+    }
+    return v.tankPressure + v.preload / v.pressureArea
+}
+
+export function reliefNaturalFrequency(v: ReliefValve) -> f64 {
+    return sqrt(v.springRate / v.mass)
+}
+
+export function reliefDampingRatio(v: ReliefValve) -> f64 {
+    return v.damping / (2.0 * sqrt(v.springRate * v.mass))
+}
+
+# Quasi-static lift at inlet pressure p: force balance clamped to [0, maxLift].
+export function reliefSteadyLift(v: ReliefValve, pressure: f64) -> f64 {
+    if not reliefValveOk(v) {
+        return 0.0 / 0.0
+    }
+    let x: f64 = ((pressure - v.tankPressure) * v.pressureArea - v.preload) / v.springRate
+    if x < 0.0 {
+        return 0.0
+    }
+    if x > v.maxLift {
+        return v.maxLift
+    }
+    return x
+}
+
+# Relieved flow at lift x and inlet pressure p.
+export function reliefFlow(v: ReliefValve, fluid: FluidProperties, lift: f64, pressure: f64) -> f64 {
+    if not reliefValveOk(v) or not fluidPropertiesOk(fluid) {
+        return 0.0 / 0.0
+    }
+    let dp: f64 = pressure - v.tankPressure
+    if lift <= 0.0 or dp <= 0.0 {
+        return 0.0
+    }
+    let orifice: OrificeParameters = OrificeParameters { dischargeCoefficient: v.dischargeCoefficient, area: v.areaGradient * lift }
+    return orificeVolumeFlow(orifice, fluid, dp)
+}
+
+# Quasi-static pressure-flow characteristic.
+export function reliefSteadyFlow(v: ReliefValve, fluid: FluidProperties, pressure: f64) -> f64 {
+    return reliefFlow(v, fluid, reliefSteadyLift(v, pressure), pressure)
+}
+
+# Inlet pressure at which the quasi-static valve passes `flow` (> 0), by bisection on the
+# monotone characteristic. The cracking pressure for zero flow; NaN for negative flow.
+export function reliefPressureForFlow(v: ReliefValve, fluid: FluidProperties, flow: f64) -> f64 {
+    let pc: f64 = reliefCrackingPressure(v)
+    if not (pc == pc) or not fluidPropertiesOk(fluid) or flow < 0.0 {
+        return 0.0 / 0.0
+    }
+    if flow == 0.0 {
+        return pc
+    }
+    let mut lo: f64 = pc
+    let mut hi: f64 = pc + 1.0
+    while reliefSteadyFlow(v, fluid, hi) < flow {
+        hi = pc + 2.0 * (hi - pc)
+        if hi > 1.0e12 {
+            return 0.0 / 0.0
+        }
+    }
+    for k in 0 to 200 {
+        let mid: f64 = 0.5 * (lo + hi)
+        if mid <= lo or mid >= hi {
+            break
+        }
+        if reliefSteadyFlow(v, fluid, mid) < flow {
+            lo = mid
+        } else {
+            hi = mid
+        }
+    }
+    return 0.5 * (lo + hi)
+}
+
+struct ReliefRate {
+    dp: f64,
+    dx: f64,
+    dv: f64,
+    dq: f64
+}
+
+function reliefRate(v: ReliefValve, fluid: FluidProperties, capacitance: f64, pumpFlow: f64, s: ReliefState) -> ReliefRate {
+    let q: f64 = reliefFlow(v, fluid, s.lift, s.pressure)
+    let force: f64 = (s.pressure - v.tankPressure) * v.pressureArea - v.preload - v.springRate * s.lift - v.damping * s.velocity
+    return ReliefRate { dp: (pumpFlow - q) / capacitance, dx: s.velocity, dv: force / v.mass, dq: q }
+}
+
+function reliefAdd(s: ReliefState, r: ReliefRate, h: f64) -> ReliefState {
+    return ReliefState { pressure: s.pressure + h * r.dp, lift: s.lift + h * r.dx, velocity: s.velocity + h * r.dv, relievedVolume: s.relievedVolume + h * r.dq }
+}
+
+function reliefStops(v: ReliefValve, s: ReliefState) -> ReliefState {
+    if s.lift < 0.0 {
+        return ReliefState { pressure: s.pressure, lift: 0.0, velocity: 0.0, relievedVolume: s.relievedVolume }
+    }
+    if s.lift > v.maxLift {
+        return ReliefState { pressure: s.pressure, lift: v.maxLift, velocity: 0.0, relievedVolume: s.relievedVolume }
+    }
+    return s
+}
+
+# One RK4 step of the pump-volume-valve circuit. capacitance = V/β; pumpFlow is a
+# constant source over the step. NaN state for invalid inputs.
+export function reliefCircuitStep(v: ReliefValve, fluid: FluidProperties, capacitance: f64, pumpFlow: f64, s: ReliefState, dt: f64) -> ReliefState {
+    if not reliefValveOk(v) or not fluidPropertiesOk(fluid) or not (capacitance > 0.0) or not (dt > 0.0) {
+        let n: f64 = 0.0 / 0.0
+        return ReliefState { pressure: n, lift: n, velocity: n, relievedVolume: n }
+    }
+    let k1: ReliefRate = reliefRate(v, fluid, capacitance, pumpFlow, s)
+    let k2: ReliefRate = reliefRate(v, fluid, capacitance, pumpFlow, reliefAdd(s, k1, 0.5 * dt))
+    let k3: ReliefRate = reliefRate(v, fluid, capacitance, pumpFlow, reliefAdd(s, k2, 0.5 * dt))
+    let k4: ReliefRate = reliefRate(v, fluid, capacitance, pumpFlow, reliefAdd(s, k3, dt))
+    let w: f64 = dt / 6.0
+    let next: ReliefState = ReliefState {
+        pressure: s.pressure + w * (k1.dp + 2.0 * k2.dp + 2.0 * k3.dp + k4.dp),
+        lift: s.lift + w * (k1.dx + 2.0 * k2.dx + 2.0 * k3.dx + k4.dx),
+        velocity: s.velocity + w * (k1.dv + 2.0 * k2.dv + 2.0 * k3.dv + k4.dv),
+        relievedVolume: s.relievedVolume + w * (k1.dq + 2.0 * k2.dq + 2.0 * k3.dq + k4.dq)
+    }
+    return reliefStops(v, next)
+}
+
+# Spool motion at a held inlet pressure (no volume coupling). The circuit step runs with
+# a negligible pressure rate and the pressure is then reset to the held value.
+export function reliefSpoolStep(v: ReliefValve, fluid: FluidProperties, pressure: f64, s: ReliefState, dt: f64) -> ReliefState {
+    let held: ReliefState = ReliefState { pressure: pressure, lift: s.lift, velocity: s.velocity, relievedVolume: s.relievedVolume }
+    let next: ReliefState = reliefCircuitStep(v, fluid, 1.0e300, 0.0, held, dt)
+    return ReliefState { pressure: pressure, lift: next.lift, velocity: next.velocity, relievedVolume: next.relievedVolume }
+}

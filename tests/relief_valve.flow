@@ -1,0 +1,214 @@
+# Direct-acting relief valve (herbie.relief): cracking pressure and the quasi-static
+# pressure-flow characteristic, its inverse, the spool step response against the
+# closed-form damped oscillator, the seat and full-lift stops, and a pump charging a
+# 1 L volume that the valve protects, with an exact volume audit.
+
+import herbie.fluids { FluidProperties }
+import herbie.relief {
+    ReliefValve, ReliefState, reliefValveOk, reliefCrackingPressure, reliefNaturalFrequency, reliefDampingRatio,
+    reliefSteadyLift, reliefFlow, reliefSteadyFlow, reliefPressureForFlow, reliefCircuitStep, reliefSpoolStep
+}
+
+function near(a: f64, b: f64, eps: f64) -> bool {
+    let d: f64 = a - b
+    return d <= eps and d >= 0.0 - eps
+}
+
+function rel(a: f64, b: f64, r: f64) -> bool {
+    let mut s: f64 = b
+    if s < 0.0 {
+        s = 0.0 - s
+    }
+    return near(a, b, r * s)
+}
+
+function oil() -> FluidProperties {
+    return FluidProperties { density: 850.0, dynamicViscosity: 0.03, specificHeat: 1900.0 }
+}
+
+# 6 mm spool, 100 bar cracking, 50 kN/m spring, 20 g, damping ratio `zeta`, 3 mm lift.
+function valve(zeta: f64) -> ReliefValve {
+    let area: f64 = 0.25 * 3.141592653589793 * 0.006 * 0.006
+    return ReliefValve {
+        pressureArea: area, springRate: 50000.0, preload: 10000000.0 * area, mass: 0.02,
+        damping: zeta * 2.0 * sqrt(50000.0 * 0.02), maxLift: 0.003,
+        areaGradient: 3.141592653589793 * 0.006, dischargeCoefficient: 0.65, tankPressure: 0.0
+    }
+}
+
+function testCharacteristic() -> i32 {
+    let v: ReliefValve = valve(0.2)
+    let f: FluidProperties = oil()
+    if not reliefValveOk(v) or not near(reliefCrackingPressure(v), 10000000.0, 1e-6) {
+        return 1
+    }
+    if not near(reliefNaturalFrequency(v), 1581.1388300841897, 1e-9) or not near(reliefDampingRatio(v), 0.2, 1e-12) {
+        return 2
+    }
+    if reliefSteadyFlow(v, f, 9999999.0) != 0.0 or reliefSteadyLift(v, 5000000.0) != 0.0 {
+        return 3
+    }
+    # 110 bar: lift = A·(p − pc)/k, flow = Cd·w·x·√(2p/ρ).
+    let area: f64 = v.pressureArea
+    let x110: f64 = area * 1000000.0 / 50000.0
+    if not rel(reliefSteadyLift(v, 11000000.0), x110, 1e-12) {
+        return 4
+    }
+    let q110: f64 = 0.65 * v.areaGradient * x110 * sqrt(2.0 * 11000000.0 / 850.0)
+    if not rel(reliefSteadyFlow(v, f, 11000000.0), q110, 1e-12) {
+        return 5
+    }
+    # Full lift is reached at pc + k·xmax/A; beyond it the valve is a fixed orifice.
+    let pFull: f64 = 10000000.0 + 50000.0 * 0.003 / area
+    if not rel(reliefSteadyLift(v, pFull * 1.5), 0.003, 1e-12) {
+        return 6
+    }
+    # The inverse reproduces the characteristic below and above full lift.
+    let mut flows: array<f64, 5> = [0.00001, 0.0005, 0.001, 0.003, 0.006]
+    for k in 0 to 5 {
+        let p: f64 = reliefPressureForFlow(v, f, flows[k])
+        if not rel(reliefSteadyFlow(v, f, p), flows[k], 1e-10) {
+            return 7 + k
+        }
+    }
+    if reliefPressureForFlow(v, f, 0.0) != reliefCrackingPressure(v) or reliefFlow(v, f, 0.001, -5.0) != 0.0 {
+        return 13
+    }
+    return 0
+}
+
+# Step to a held 110 bar from the seat: x(t) = xe·(1 − e^(−ζωt)(cos ωd·t + ζ/√(1−ζ²)·sin ωd·t)).
+# The peak 1 + e^(−ζπ/√(1−ζ²)) = 1.527 of xe stays below full lift, and x never goes negative.
+function testSpoolStep() -> i32 {
+    let v: ReliefValve = valve(0.2)
+    let f: FluidProperties = oil()
+    let p: f64 = 11000000.0
+    let xe: f64 = reliefSteadyLift(v, p)
+    let wn: f64 = reliefNaturalFrequency(v)
+    let z: f64 = 0.2
+    let wd: f64 = wn * sqrt(1.0 - z * z)
+    let mut s: ReliefState = ReliefState { pressure: p, lift: 0.0, velocity: 0.0, relievedVolume: 0.0 }
+    let dt: f64 = 0.000001
+    let mut worst: f64 = 0.0
+    let mut peak: f64 = 0.0
+    for k in 0 to 20000 {
+        s = reliefSpoolStep(v, f, p, s, dt)
+        let t: f64 = ((k + 1) as f64) * dt
+        let exact: f64 = xe * (1.0 - exp(0.0 - z * wn * t) * (cos(wd * t) + z / sqrt(1.0 - z * z) * sin(wd * t)))
+        let err: f64 = s.lift - exact
+        if err > worst {
+            worst = err
+        }
+        if 0.0 - err > worst {
+            worst = 0.0 - err
+        }
+        if s.lift > peak {
+            peak = s.lift
+        }
+    }
+    if worst > 1e-9 * xe {
+        return 1
+    }
+    if not rel(peak, xe * (1.0 + exp(0.0 - z * 3.141592653589793 / sqrt(1.0 - z * z))), 1e-4) {
+        return 2
+    }
+    # The spool relieves the flow integral of its own lift history.
+    if not (s.relievedVolume > 0.0) {
+        return 3
+    }
+    return 0
+}
+
+function testStops() -> i32 {
+    let v: ReliefValve = valve(0.2)
+    let f: FluidProperties = oil()
+    let dt: f64 = 0.000001
+    # Below cracking the seated spool does not move.
+    let mut s: ReliefState = ReliefState { pressure: 9000000.0, lift: 0.0, velocity: 0.0, relievedVolume: 0.0 }
+    for k in 0 to 1000 {
+        s = reliefSpoolStep(v, f, 9000000.0, s, dt)
+    }
+    if s.lift != 0.0 or s.velocity != 0.0 or s.relievedVolume != 0.0 {
+        return 1
+    }
+    # Far above full-lift pressure the spool hits the stop and stays there at rest.
+    let high: f64 = 40000000.0
+    for k in 0 to 5000 {
+        s = reliefSpoolStep(v, f, high, s, dt)
+    }
+    if s.lift != 0.003 or s.velocity != 0.0 {
+        return 2
+    }
+    # Back below cracking it returns to the seat and stays.
+    for k in 0 to 20000 {
+        s = reliefSpoolStep(v, f, 5000000.0, s, dt)
+    }
+    if s.lift != 0.0 or s.velocity != 0.0 {
+        return 3
+    }
+    return 0
+}
+
+# 30 L/min into 1 L of oil (β = 1.5 GPa, C = V/β) from 0 bar. Closed valve: p = Qp·t/C up
+# to the crack time C·pc/Qp = 13.3 ms. Then the pressure settles at the static
+# characteristic pressure for 30 L/min, and C·Δp = Qp·t − V_relieved throughout.
+function testProtectedVolume() -> i32 {
+    let v: ReliefValve = valve(0.7)
+    let f: FluidProperties = oil()
+    let cap: f64 = 0.001 / 1500000000.0
+    let qp: f64 = 0.0005
+    let dt: f64 = 0.0000002
+    let mut s: ReliefState = ReliefState { pressure: 0.0, lift: 0.0, velocity: 0.0, relievedVolume: 0.0 }
+    let tCrack: f64 = cap * 10000000.0 / qp
+    let mut crackSeen: f64 = -1.0
+    let steps: i32 = 500000
+    for k in 0 to steps {
+        s = reliefCircuitStep(v, f, cap, qp, s, dt)
+        let t: f64 = ((k + 1) as f64) * dt
+        if crackSeen < 0.0 {
+            if s.lift > 0.0 {
+                crackSeen = t
+            } elif not rel(s.pressure, qp * t / cap, 1e-12) {
+                return 1
+            }
+        }
+        if k % 1000 == 999 {
+            if not near(cap * s.pressure, qp * t - s.relievedVolume, 1e-12 * qp * t) {
+                return 2
+            }
+        }
+    }
+    if not near(crackSeen, tCrack, 2.0 * dt) {
+        return 3
+    }
+    let pStar: f64 = reliefPressureForFlow(v, f, qp)
+    if not rel(s.pressure, pStar, 1e-6) or not rel(s.lift, reliefSteadyLift(v, pStar), 1e-5) {
+        print("  p ")
+        print(s.pressure)
+        print(" p* ")
+        println(pStar)
+        return 4
+    }
+    return 0
+}
+
+function main() -> i32 {
+    let a: i32 = testCharacteristic()
+    if a != 0 {
+        return 10 + a
+    }
+    let b: i32 = testSpoolStep()
+    if b != 0 {
+        return 30 + b
+    }
+    let c: i32 = testStops()
+    if c != 0 {
+        return 40 + c
+    }
+    let d: i32 = testProtectedVolume()
+    if d != 0 {
+        return 50 + d
+    }
+    println("PASS relief valve: characteristic, spool step, stops, protected volume")
+    return 0
+}

@@ -145,6 +145,8 @@ jobs:
         run: flow run examples/quarter_car_demo.flow
       - name: Run manufacturing demo
         run: flow run examples/manufacturing_demo.flow
+      - name: Verify relief valve characteristic, spool dynamics and protected volume
+        run: flow run tests/relief_valve.flow
 
   browser-vehicle-lab:
     runs-on: ubuntu-latest
