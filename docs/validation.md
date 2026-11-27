@@ -185,6 +185,17 @@ Beams, plates, solids, plasticity and mesh-convergence suites remain open under 
 
 This is **not** a GD&T datum solver, gauge R&R ANOVA package or certified SPC system. See [issue #6](https://github.com/flooooooooooow/herbie/issues/6).
 
+## Inverter conduction and switching losses (issue #12)
+
+`tests/inverter_losses.flow` checks the leg loss model in `herbie.losses` (one switch and the opposite diode; a three-phase bridge loses six times as much):
+
+- Energy maps: exact at nodes, linear between them, symmetric in current sign, last segment extended, (Vdc/Vref)^kv voltage scaling (2^1.3 at twice the reference), and invalid maps rejected
+- Conduction: the fundamental-period quadrature matches the closed-form sinusoidal-PWM losses P_T = V0·Ipk·(1/(2π) + m·cos φ/8) + r·Ipk²·(1/8 + m·cos φ/(3π)) and P_D with the signs flipped, within 1e-8 relative at 9 operating points (m 0 to 1, φ 0 to 2.5 rad)
+- Switching: a linear map E = k·i gives f·k·Ipk/π for every modulation index, phase and modulation scheme within 1e-8; a quadratic map tabulated every 1 A stays within its interpolation bound of f·b·Ipk²/4; a lower DC link scales by (V/Vref)^kv
+- Switched reference: 50 Hz, 10 kHz centre-aligned SVPWM with 200 sub-steps per carrier period, counting conducting sub-steps and every gate edge. Conduction, turn-on, turn-off and recovery energies agree with the averaged model within 1 % at m = 0.6 and m = 1.1 (largest deviation 0.6 %, diode conduction at m = 1.1)
+
+Temperature-dependent loss maps, dead time in the loss average, carrier-ripple current and a device thermal network remain open.
+
 ## Modified nodal analysis validation (DC source stamping)
 
 `tests/mna_voltage_sources.flow` independently verifies a 12 V source with two 1 kΩ resistors in series. Node voltage is 6 V at the divider, and the oriented voltage-source current is -6 mA. Two resistors dissipate 72 mW while the source delivers 72 mW (power equality tolerance 10⁻¹² W); the maximum KCL/KVL residual must stay below 10⁻¹² in the SI-form mixed rows. After a 1 mA current injection at the divider, its node rises to 6.5 V and the ideal source current becomes -5.5 mA. Invalid element stamps and floating networks are rejected. The solver is dense and cubic in unknown count, so it is not adequate for large sparse electrical networks, diode nonlinearities, AC admittance or index-1 transient DAE. Those remain in [issue #11](https://github.com/flooooooooooow/herbie/issues/11).

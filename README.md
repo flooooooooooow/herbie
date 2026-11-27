@@ -26,6 +26,7 @@
 | `herbie.driveline` | Simple pendulum, two-inertia torsional shaft, open differential power split, Coulomb clutch limit | Not 6-DOF multibody, torque converters, backlash maps or tire/suspension ports |
 | `herbie.motors` | Brushed permanent-magnet DC motor, coupled armature/rotor RK4, energy and torque | Lumped brushed DC only; three-phase drives live in `herbie.drive` |
 | `herbie.drive` | Amplitude-invariant Clarke/Park, salient PMSM dq, averaged DC-link inverter clip, FOC current PI with decoupling | No switching PWM, BLDC six-step, induction, observers or device loss maps |
+| `herbie.losses` | Inverter leg conduction (V0 + r·i) and switching losses from energy-vs-current maps with DC-link voltage scaling, averaged over a sinusoidal operating point under SPWM or SVPWM | No temperature dependence, dead time or carrier-ripple current; no thermal network |
 | `herbie.battery` | First-order Thevenin OCV + ohmic + polarization RC, coulomb-count SOC | Cell-level only; pack/BMS live in `herbie.pack` |
 | `herbie.pack` | Ns×Np scale, OCV map, current/voltage/temp limits, contactor, ohmic+polarization heat, lumped thermal, balance ΔSOC; SOH as capacity input | No ageing curves, coolant network, pre-charge, Kalman SOC or chemistry ID |
 | `herbie.maps` | Validated monotone two-axis grids, clamped bilinear lookup and strict in-domain bilinear (no extrapolation) | Row-major, linear interpolation only, caller-owned data |
@@ -109,6 +110,7 @@ flow run examples/battery_pack_demo.flow
 flow run tests/electric_drive.flow
 flow run examples/pmsm_foc_demo.flow
 flow run tests/switching_pwm.flow
+flow run tests/inverter_losses.flow
 flow run tests/thermo_fluid.flow
 flow run examples/cooling_loop_demo.flow
 flow run tests/calibration_pipeline.flow

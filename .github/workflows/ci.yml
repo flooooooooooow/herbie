@@ -129,6 +129,8 @@ jobs:
         run: flow run examples/pmsm_foc_demo.flow
       - name: Verify switched SVPWM inverter against the averaged model
         run: flow run tests/switching_pwm.flow
+      - name: Verify inverter conduction and switching loss maps
+        run: flow run tests/inverter_losses.flow
       - name: Verify thermo-fluid pipe, orifice, NTU and cooling loop
         run: flow run tests/thermo_fluid.flow
       - name: Run closed cooling loop demonstration

@@ -26,6 +26,7 @@ src/
   drive.flow         Clarke/Park, salient PMSM, averaged inverter, FOC
   pwm.flow           Switched two-level SVPWM inverter, carrier compare, PWM timebase gate
   battery.flow       Thevenin RC battery and SOC
+  losses.flow        Inverter leg conduction and switching loss maps
   pack.flow          Ns×Np pack, BMS limits, heating/thermal, SOH input
   maps.flow          Clamped bilinear lookup for calibrated models
   engine.flow        Torque-map crank dynamics and fuel flow
