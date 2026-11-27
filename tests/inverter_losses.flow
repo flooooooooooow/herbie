@@ -1,0 +1,244 @@
+# Inverter leg conduction and switching losses (herbie.losses): loss-map interpolation and
+# voltage scaling, the closed-form sinusoidal-PWM conduction losses, closed-form switching
+# losses for linear and quadratic energy maps, and a switched reference that counts every
+# carrier edge and conducting sub-step of the herbie.pwm SVPWM compare.
+
+import herbie.drive { AlphaBeta }
+import herbie.pwm { PhaseDuties, svpwmDuties, pwmCarrierAt, pwmCompare }
+import herbie.losses {
+    ConductionDevice, EnergyMap, LossOperatingPoint, LegLosses,
+    lossEnergyMapOk, lossEnergyAt, lossConductionPower, lossDutyAt, lossLegAverage, lossSpwmConduction
+}
+
+function near(a: f64, b: f64, eps: f64) -> bool {
+    let d: f64 = a - b
+    return d <= eps and d >= 0.0 - eps
+}
+
+function rel(a: f64, b: f64, r: f64) -> bool {
+    let mut s: f64 = b
+    if s < 0.0 {
+        s = 0.0 - s
+    }
+    return near(a, b, r * s)
+}
+
+function igbt() -> ConductionDevice {
+    return ConductionDevice { threshold: 0.9, resistance: 0.008 }
+}
+
+function diode() -> ConductionDevice {
+    return ConductionDevice { threshold: 1.0, resistance: 0.006 }
+}
+
+function op(m: f64, phi: f64, sv: bool) -> LossOperatingPoint {
+    return LossOperatingPoint { dcLinkVoltage: 400.0, peakCurrent: 100.0, modulationIndex: m, phaseAngle: phi, switchingHz: 10000.0, svpwm: sv }
+}
+
+function testEnergyMap() -> i32 {
+    let mut ci: array<f64, 4> = [0.0, 50.0, 100.0, 200.0]
+    let mut ce: array<f64, 4> = [0.0, 0.0015, 0.0035, 0.0080]
+    let m: EnergyMap = EnergyMap { current: &ci[0], energy: &ce[0], count: 4, refVoltage: 300.0, voltageExponent: 1.3 }
+    if not lossEnergyMapOk(m) {
+        return 1
+    }
+    # Nodes, midpoints, sign symmetry, and extension of the last segment.
+    if lossEnergyAt(m, 50.0, 300.0) != 0.0015 or not near(lossEnergyAt(m, 75.0, 300.0), 0.0025, 1e-15) or not near(lossEnergyAt(m, -75.0, 300.0), 0.0025, 1e-15) {
+        return 2
+    }
+    if not near(lossEnergyAt(m, 250.0, 300.0), 0.01025, 1e-15) {
+        return 3
+    }
+    # (600/300)^1.3 = 2^1.3 = 2.4622888266898326.
+    if not near(lossEnergyAt(m, 100.0, 600.0), 0.0035 * 2.4622888266898326, 1e-12) {
+        return 4
+    }
+    let mut bi: array<f64, 3> = [1.0, 50.0, 100.0]
+    let mut be: array<f64, 3> = [0.0, 0.001, 0.002]
+    if lossEnergyMapOk(EnergyMap { current: &bi[0], energy: &be[0], count: 3, refVoltage: 300.0, voltageExponent: 1.0 }) {
+        return 5
+    }
+    let mut di: array<f64, 3> = [0.0, 50.0, 50.0]
+    if lossEnergyMapOk(EnergyMap { current: &di[0], energy: &be[0], count: 3, refVoltage: 300.0, voltageExponent: 1.0 }) {
+        return 6
+    }
+    if lossEnergyAt(m, 10.0, 0.0) == lossEnergyAt(m, 10.0, 0.0) {
+        return 7
+    }
+    if not near(lossConductionPower(igbt(), -50.0), (0.9 + 0.4) * 50.0, 1e-12) {
+        return 8
+    }
+    return 0
+}
+
+function zeroMap(ci: ptr<f64>, ce: ptr<f64>) -> EnergyMap {
+    return EnergyMap { current: ci, energy: ce, count: 2, refVoltage: 400.0, voltageExponent: 1.0 }
+}
+
+# The midpoint quadrature reproduces the closed-form SPWM conduction losses.
+function testSpwmConduction() -> i32 {
+    let mut zi: array<f64, 2> = [0.0, 100.0]
+    let mut ze: array<f64, 2> = [0.0, 0.0]
+    let z: EnergyMap = zeroMap(&zi[0], &ze[0])
+    let mut ms: array<f64, 3> = [0.0, 0.6, 1.0]
+    let mut phis: array<f64, 3> = [0.0, 0.5, 2.5]
+    for a in 0 to 3 {
+        for b in 0 to 3 {
+            let o: LossOperatingPoint = op(ms[a], phis[b], false)
+            let num: LegLosses = lossLegAverage(igbt(), diode(), z, z, z, o, 36000)
+            let ref: LegLosses = lossSpwmConduction(igbt(), diode(), o)
+            if not rel(num.switchConduction, ref.switchConduction, 1e-8) or not rel(num.diodeConduction, ref.diodeConduction, 1e-8) {
+                return 1 + a * 3 + b
+            }
+        }
+    }
+    # m = 0: both devices conduct half the time, V0·Ipk/(2π) + r·Ipk²/8 each.
+    let half: LegLosses = lossSpwmConduction(igbt(), igbt(), op(0.0, 0.3, false))
+    if not near(half.switchConduction, 0.9 * 100.0 / 6.283185307179586 + 0.008 * 10000.0 / 8.0, 1e-12) or half.switchConduction != half.diodeConduction {
+        return 20
+    }
+    # Unity power factor at m = 1: P_T = 0.9·100·(1/(2π) + 1/8) + 0.008·10⁴·(1/8 + 1/(3π)).
+    let full: LegLosses = lossSpwmConduction(igbt(), diode(), op(1.0, 0.0, false))
+    if not near(full.switchConduction, 90.0 * (0.15915494309189535 + 0.125) + 80.0 * (0.125 + 0.10610329539459689), 1e-9) {
+        return 21
+    }
+    if lossSpwmConduction(igbt(), diode(), op(1.1, 0.0, false)).total == lossSpwmConduction(igbt(), diode(), op(1.1, 0.0, false)).total {
+        return 22
+    }
+    return 0
+}
+
+# Linear energy map E = k·i: P = f·k·Ipk/π for any modulation and phase; quadratic map
+# E = b·i² tabulated every 1 A: P = f·b·Ipk²/4 within the interpolation bound f·b/8.
+function testSwitchingClosedForm() -> i32 {
+    let mut li: array<f64, 2> = [0.0, 100.0]
+    let mut le: array<f64, 2> = [0.0, 0.003]
+    let lin: EnergyMap = EnergyMap { current: &li[0], energy: &le[0], count: 2, refVoltage: 400.0, voltageExponent: 1.3 }
+    let mut zi: array<f64, 2> = [0.0, 100.0]
+    let mut ze: array<f64, 2> = [0.0, 0.0]
+    let z: EnergyMap = zeroMap(&zi[0], &ze[0])
+    let pi: f64 = 3.141592653589793
+    let mut ms: array<f64, 3> = [0.2, 0.8, 1.1]
+    let mut phis: array<f64, 3> = [0.0, 0.7, 3.0]
+    for a in 0 to 3 {
+        for b in 0 to 3 {
+            let sv: bool = ms[a] > 1.0
+            let num: LegLosses = lossLegAverage(igbt(), diode(), lin, lin, z, op(ms[a], phis[b], sv), 36000)
+            let want: f64 = 10000.0 * 0.00003 * 100.0 / pi
+            if not rel(num.switchTurnOn, want, 1e-8) or not rel(num.switchTurnOff, want, 1e-8) or num.diodeRecovery != 0.0 {
+                return 1 + a * 3 + b
+            }
+        }
+    }
+    let mut qi: array<f64, 201> = [0.0; 201]
+    let mut qe: array<f64, 201> = [0.0; 201]
+    for k in 0 to 201 {
+        qi[k] = k as f64
+        qe[k] = 0.0000002 * (k as f64) * (k as f64)
+    }
+    let quad: EnergyMap = EnergyMap { current: &qi[0], energy: &qe[0], count: 201, refVoltage: 400.0, voltageExponent: 1.3 }
+    let q: LegLosses = lossLegAverage(igbt(), diode(), z, z, quad, op(0.9, 0.4, true), 36000)
+    let wantQ: f64 = 10000.0 * 0.0000002 * 10000.0 / 4.0
+    # Linear interpolation of b·i² overshoots by at most b·h²/4 (h = 1 A), so the average
+    # power lies in [want, want + f·b/4·½].
+    if not (q.diodeRecovery >= wantQ - 1e-9) or not (q.diodeRecovery <= wantQ + 10000.0 * 0.0000002 / 8.0 + 1e-9) {
+        return 20
+    }
+    # The voltage exponent scales every switching term: 300 V is (0.75)^1.3 of 400 V.
+    let o3: LossOperatingPoint = LossOperatingPoint { dcLinkVoltage: 300.0, peakCurrent: 100.0, modulationIndex: 0.5, phaseAngle: 0.0, switchingHz: 10000.0, svpwm: true }
+    let s3: LegLosses = lossLegAverage(igbt(), diode(), lin, z, z, o3, 36000)
+    if not rel(s3.switchTurnOn, 10000.0 * 0.00003 * 100.0 / pi * exp(1.3 * log(0.75)), 1e-8) {
+        return 21
+    }
+    return 0
+}
+
+# Switched reference: 50 Hz fundamental, 10 kHz centre-aligned carrier, 200 sub-steps
+# per carrier period, the SVPWM duty sampled once per carrier period and compared with
+# pwmCarrierAt. T1 conducts while its gate is on and i > 0, D2 while the gate is off and
+# i > 0. A rising edge at i > 0 costs Eon(i) + Err(i), a falling edge Eoff(i).
+function testSwitchedReference() -> i32 {
+    let mut oi: array<f64, 5> = [0.0, 25.0, 50.0, 100.0, 200.0]
+    let mut onE: array<f64, 5> = [0.0, 0.0006, 0.0013, 0.0030, 0.0076]
+    let mut offE: array<f64, 5> = [0.0, 0.0009, 0.0017, 0.0034, 0.0070]
+    let mut rrE: array<f64, 5> = [0.0, 0.0004, 0.0007, 0.0012, 0.0019]
+    let on: EnergyMap = EnergyMap { current: &oi[0], energy: &onE[0], count: 5, refVoltage: 300.0, voltageExponent: 1.3 }
+    let off: EnergyMap = EnergyMap { current: &oi[0], energy: &offE[0], count: 5, refVoltage: 300.0, voltageExponent: 1.3 }
+    let rr: EnergyMap = EnergyMap { current: &oi[0], energy: &rrE[0], count: 5, refVoltage: 300.0, voltageExponent: 0.6 }
+    let mut ms: array<f64, 2> = [0.6, 1.1]
+    let mut phis: array<f64, 2> = [0.4, -0.3]
+    for a in 0 to 2 {
+        let o: LossOperatingPoint = op(ms[a], phis[a], true)
+        let avg: LegLosses = lossLegAverage(igbt(), diode(), on, off, rr, o, 36000)
+        let f1: f64 = 50.0
+        let carriers: i32 = 200
+        let n: i32 = 200
+        let dt: f64 = 1.0 / (f1 * (carriers as f64) * (n as f64))
+        let amp: f64 = o.modulationIndex * o.dcLinkVoltage * 0.5
+        let mut et: f64 = 0.0
+        let mut ed: f64 = 0.0
+        let mut eon: f64 = 0.0
+        let mut eoff: f64 = 0.0
+        let mut err: f64 = 0.0
+        let mut prev: bool = false
+        for c in 0 to carriers {
+            let theta0: f64 = 6.283185307179586 * (c as f64) / (carriers as f64)
+            # Sample the reference at the carrier-period centre.
+            let thetaS: f64 = theta0 + 3.141592653589793 / (carriers as f64)
+            let duties: PhaseDuties = svpwmDuties(AlphaBeta { alpha: amp * cos(thetaS), beta: amp * sin(thetaS) }, o.dcLinkVoltage)
+            for k in 0 to n {
+                let t: f64 = ((c * n + k) as f64 + 0.5) * dt
+                let theta: f64 = 6.283185307179586 * f1 * t
+                let i: f64 = o.peakCurrent * cos(theta - o.phaseAngle)
+                let gate: bool = pwmCompare(duties, pwmCarrierAt(k, n)).a
+                if i > 0.0 {
+                    if gate {
+                        et = et + lossConductionPower(igbt(), i) * dt
+                    } else {
+                        ed = ed + lossConductionPower(diode(), i) * dt
+                    }
+                    if gate and not prev {
+                        eon = eon + lossEnergyAt(on, i, 400.0)
+                        err = err + lossEnergyAt(rr, i, 400.0)
+                    }
+                    if prev and not gate {
+                        eoff = eoff + lossEnergyAt(off, i, 400.0)
+                    }
+                }
+                prev = gate
+            }
+        }
+        # Energy per fundamental period times f1 is average power.
+        if not rel(et * f1, avg.switchConduction, 0.01) or not rel(ed * f1, avg.diodeConduction, 0.01) {
+            return 1 + 10 * a
+        }
+        if not rel(eon * f1, avg.switchTurnOn, 0.01) or not rel(eoff * f1, avg.switchTurnOff, 0.01) or not rel(err * f1, avg.diodeRecovery, 0.01) {
+            return 2 + 10 * a
+        }
+        if not near(avg.total, avg.switchConduction + avg.diodeConduction + avg.switchTurnOn + avg.switchTurnOff + avg.diodeRecovery, 1e-9) {
+            return 3 + 10 * a
+        }
+    }
+    return 0
+}
+
+function main() -> i32 {
+    let a: i32 = testEnergyMap()
+    if a != 0 {
+        return 10 + a
+    }
+    let b: i32 = testSpwmConduction()
+    if b != 0 {
+        return 40 + b
+    }
+    let c: i32 = testSwitchingClosedForm()
+    if c != 0 {
+        return 70 + c
+    }
+    let d: i32 = testSwitchedReference()
+    if d != 0 {
+        return 100 + d
+    }
+    println("PASS inverter losses: loss maps, SPWM conduction closed form, switching closed forms, switched SVPWM reference")
+    return 0
+}

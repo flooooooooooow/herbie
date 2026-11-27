@@ -1,0 +1,201 @@
+# @module herbie.losses
+# Conduction and switching losses of a two-level inverter leg from device loss maps.
+#
+# One switch-diode pair is evaluated: the upper switch T1 and the lower diode D2 that
+# carry positive phase current (out of the pole). By the half-wave symmetry of a balanced
+# sinusoidal operating point the other five switches and five diodes of a three-phase
+# bridge dissipate the same, so a bridge loses six times the pair total.
+#
+# Conduction: a device drops V0 + r·|i| while conducting, so it dissipates (V0 + r·|i|)·|i|.
+# Switching: turn-on, turn-off and diode reverse-recovery energies are tables of energy
+# against current at a reference DC-link voltage, interpolated linearly in current and
+# scaled by (Vdc / Vref)^kv. T1 turns on (D2 recovers) and turns off once per carrier
+# period while the current is positive.
+#
+# Operating point: phase-a reference voltage V̂·cos θ with V̂ = m·Vdc/2, phase current
+# Ipk·cos(θ − φ). The duty is sinusoidal PWM, d = (1 + m·cos θ)/2, or the min-max
+# injected SVPWM duty of herbie.pwm. Averages are over one fundamental period with the
+# carrier ripple of the current neglected. Dead time and temperature dependence are left
+# out; the dead-time leg model is a separate module.
+
+import herbie.drive { AlphaBeta }
+import herbie.pwm { PhaseDuties, svpwmDuties }
+
+export struct ConductionDevice {
+    threshold: f64,
+    resistance: f64
+}
+
+# Energy against current at refVoltage. current[0] must be 0 with energy[0] = 0,
+# currents strictly increasing; beyond the last point the last segment is extended.
+export struct EnergyMap {
+    current: ptr<f64>,
+    energy: ptr<f64>,
+    count: i32,
+    refVoltage: f64,
+    voltageExponent: f64
+}
+
+export struct LossOperatingPoint {
+    dcLinkVoltage: f64,
+    peakCurrent: f64,
+    modulationIndex: f64,
+    # Current lag behind the reference voltage, radians.
+    phaseAngle: f64,
+    switchingHz: f64,
+    svpwm: bool
+}
+
+# Average power in watts for one switch-diode pair.
+export struct LegLosses {
+    switchConduction: f64,
+    diodeConduction: f64,
+    switchTurnOn: f64,
+    switchTurnOff: f64,
+    diodeRecovery: f64,
+    total: f64
+}
+
+function lossAbs(x: f64) -> f64 {
+    if x < 0.0 {
+        return -x
+    }
+    return x
+}
+
+function lossNan() -> LegLosses {
+    let n: f64 = 0.0 / 0.0
+    return LegLosses { switchConduction: n, diodeConduction: n, switchTurnOn: n, switchTurnOff: n, diodeRecovery: n, total: n }
+}
+
+export function lossConductionDeviceOk(d: ConductionDevice) -> bool {
+    return d.threshold >= 0.0 and d.resistance >= 0.0
+}
+
+export function lossEnergyMapOk(m: EnergyMap) -> bool {
+    if m.count < 2 or not (m.refVoltage > 0.0) or not (m.voltageExponent >= 0.0) {
+        return false
+    }
+    if m.current[0] != 0.0 or m.energy[0] != 0.0 {
+        return false
+    }
+    for k in 1 to m.count {
+        if not (m.current[k] > m.current[k - 1]) or not (m.energy[k] >= 0.0) {
+            return false
+        }
+    }
+    return true
+}
+
+# Switching energy for |current| at DC-link voltage `voltage`. NaN for an invalid map or
+# a non-positive voltage.
+export function lossEnergyAt(m: EnergyMap, current: f64, voltage: f64) -> f64 {
+    if not lossEnergyMapOk(m) or not (voltage > 0.0) {
+        return 0.0 / 0.0
+    }
+    let i: f64 = lossAbs(current)
+    let mut k: i32 = 1
+    while k < m.count - 1 and i > m.current[k] {
+        k = k + 1
+    }
+    let i0: f64 = m.current[k - 1]
+    let i1: f64 = m.current[k]
+    let e0: f64 = m.energy[k - 1]
+    let e1: f64 = m.energy[k]
+    let e: f64 = e0 + (e1 - e0) * (i - i0) / (i1 - i0)
+    let ratio: f64 = voltage / m.refVoltage
+    if ratio == 1.0 or m.voltageExponent == 0.0 {
+        return e
+    }
+    return e * exp(m.voltageExponent * log(ratio))
+}
+
+export function lossConductionPower(d: ConductionDevice, current: f64) -> f64 {
+    let i: f64 = lossAbs(current)
+    return (d.threshold + d.resistance * i) * i
+}
+
+export function lossOperatingPointOk(op: LossOperatingPoint) -> bool {
+    if not (op.dcLinkVoltage > 0.0) or not (op.peakCurrent >= 0.0) or not (op.switchingHz > 0.0) or not (op.modulationIndex >= 0.0) {
+        return false
+    }
+    # Linear modulation range: 1 for sinusoidal PWM, 2/√3 for SVPWM.
+    if op.svpwm {
+        return op.modulationIndex <= 1.1547005383792517
+    }
+    return op.modulationIndex <= 1.0
+}
+
+# Phase-a duty at fundamental angle theta.
+export function lossDutyAt(op: LossOperatingPoint, theta: f64) -> f64 {
+    let amplitude: f64 = op.modulationIndex * op.dcLinkVoltage * 0.5
+    if op.svpwm {
+        let d: PhaseDuties = svpwmDuties(AlphaBeta { alpha: amplitude * cos(theta), beta: amplitude * sin(theta) }, op.dcLinkVoltage)
+        return d.a
+    }
+    return 0.5 * (1.0 + op.modulationIndex * cos(theta))
+}
+
+# Fundamental-period average by the midpoint rule over `samples` angles.
+export function lossLegAverage(
+    sw: ConductionDevice,
+    diode: ConductionDevice,
+    turnOn: EnergyMap,
+    turnOff: EnergyMap,
+    recovery: EnergyMap,
+    op: LossOperatingPoint,
+    samples: i32
+) -> LegLosses {
+    if not lossConductionDeviceOk(sw) or not lossConductionDeviceOk(diode) or not lossOperatingPointOk(op) or samples < 6 {
+        return lossNan()
+    }
+    if not lossEnergyMapOk(turnOn) or not lossEnergyMapOk(turnOff) or not lossEnergyMapOk(recovery) {
+        return lossNan()
+    }
+    let twoPi: f64 = 6.283185307179586
+    let h: f64 = twoPi / (samples as f64)
+    let mut ct: f64 = 0.0
+    let mut cd: f64 = 0.0
+    let mut eon: f64 = 0.0
+    let mut eoff: f64 = 0.0
+    let mut err: f64 = 0.0
+    for k in 0 to samples {
+        let theta: f64 = ((k as f64) + 0.5) * h
+        let i: f64 = op.peakCurrent * cos(theta - op.phaseAngle)
+        if i > 0.0 {
+            let d: f64 = lossDutyAt(op, theta)
+            ct = ct + d * lossConductionPower(sw, i)
+            cd = cd + (1.0 - d) * lossConductionPower(diode, i)
+            # No edges while the duty is pinned at 0 or 1.
+            if d > 0.0 and d < 1.0 {
+                eon = eon + lossEnergyAt(turnOn, i, op.dcLinkVoltage)
+                eoff = eoff + lossEnergyAt(turnOff, i, op.dcLinkVoltage)
+                err = err + lossEnergyAt(recovery, i, op.dcLinkVoltage)
+            }
+        }
+    }
+    let n: f64 = samples as f64
+    let f: f64 = op.switchingHz
+    let pct: f64 = ct / n
+    let pcd: f64 = cd / n
+    let pon: f64 = f * eon / n
+    let poff: f64 = f * eoff / n
+    let prr: f64 = f * err / n
+    return LegLosses { switchConduction: pct, diodeConduction: pcd, switchTurnOn: pon, switchTurnOff: poff, diodeRecovery: prr, total: pct + pcd + pon + poff + prr }
+}
+
+# Closed-form conduction losses under sinusoidal PWM:
+#   P_T = V0·Ipk·(1/(2π) + m·cos φ/8) + r·Ipk²·(1/8 + m·cos φ/(3π))
+#   P_D = V0·Ipk·(1/(2π) − m·cos φ/8) + r·Ipk²·(1/8 − m·cos φ/(3π))
+# Switching fields are zero.
+export function lossSpwmConduction(sw: ConductionDevice, diode: ConductionDevice, op: LossOperatingPoint) -> LegLosses {
+    if not lossConductionDeviceOk(sw) or not lossConductionDeviceOk(diode) or not lossOperatingPointOk(op) or op.svpwm {
+        return lossNan()
+    }
+    let pi: f64 = 3.141592653589793
+    let ip: f64 = op.peakCurrent
+    let mc: f64 = op.modulationIndex * cos(op.phaseAngle)
+    let pt: f64 = sw.threshold * ip * (1.0 / (2.0 * pi) + mc / 8.0) + sw.resistance * ip * ip * (0.125 + mc / (3.0 * pi))
+    let pd: f64 = diode.threshold * ip * (1.0 / (2.0 * pi) - mc / 8.0) + diode.resistance * ip * ip * (0.125 - mc / (3.0 * pi))
+    return LegLosses { switchConduction: pt, diodeConduction: pd, switchTurnOn: 0.0, switchTurnOff: 0.0, diodeRecovery: 0.0, total: pt + pd }
+}
