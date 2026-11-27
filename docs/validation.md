@@ -152,7 +152,17 @@ Turbo, crank-angle combustion and ECU faults remain open under [#13](https://git
 - Duty compensation inverts the average model exactly across 10 % to 90 % duty and ±20/±80 A, and clamps to [τ, 1 − τ]; uncompensated error always opposes the current
 - Star-load phase voltages remove the common mode; dead time of half a period or more is rejected
 
-Zero-current clamping, temperature-dependent device drops and switching losses remain open. The coupling to the switched SVPWM bridge is checked in `tests/switching_pwm.flow`.
+The coupling to the switched SVPWM bridge is checked in `tests/switching_pwm.flow`.
+
+`tests/deadtime_clamping.flow` checks zero-current clamping of the same leg driving an R-L load into a back-EMF e (`legRlStep`, `deadTimeSteadyStateCurrent`):
+
+- A diode freewheeling to zero inside one sub-step: the zero time matches the analytic tc·ln((i0 − i∞)/(−i∞)), and the mean pole voltage and current match 2 000 000 explicit Euler steps of the same circuit
+- The flux identity L·Δi = ∫(pole − e − R·i) dt holds to 1e-12 over 60 combinations of gate state, current sign and EMF, and the lossless case ramps to zero after exactly 10 μs and then holds the pole at e
+- Clamp rule at zero current: with no path able to drive current away from zero the current stays at 0 and the pole floats to e; an on gate whose switch threshold is above the drive leaves it at 0 as well; shoot-through is rejected
+- With a very large inductance the integrator reproduces the constant-current switched model at every sub-step (3 duties, both current signs)
+- Steady state at 400 V, 10 kHz, 2 μs dead time, R = 1 Ω, L = 0.5 H across 11 EMFs from 160 V to 240 V: the switched mean current matches the large-inductance solution within 0.05 A. The zero-current band is [191.104, 208.896] V from the period model. Inside it the predicted current is 0, and at the four off-centre points the current rests at zero for part of every period. Outside it there is no clamping, and the affine solution is checked by hand at 180 V.
+
+Temperature-dependent device drops and switching losses remain open.
 
 ## Driveline kernels (issue #15)
 
