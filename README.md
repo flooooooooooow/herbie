@@ -44,6 +44,7 @@
 | `herbie.control` | PID with derivative on measurement, output/integral clamps and conditional anti-windup | Caller must provide valid dt and output limits |
 | `herbie.thermal` | Lumped-capacitance heat balance, fixed-step Euler, thermal time constant | Uniform temperature, constant coefficients |
 | `herbie.fluids` | Hagen–Poiseuille pipe, orifice, linear pump, hydraulic volume, ε-NTU HX, closed cooling-loop balance | Incompressible only; no cavitation, compressible DAE nets or turbomachinery maps |
+| `herbie.relief` | Direct-acting spring-loaded relief valve: cracking pressure, quasi-static pressure-flow characteristic and inverse, spool mass-spring-damper with seat and lift stops, pump-charged protected volume with a volume audit | No flow forces, seat leakage, friction hysteresis or pilot-operated valves |
 | `herbie.calibrate` | Train/val split, MAD outlier gate, affine surface LS fit, holdout RMSE, sensitivity, seeded golden-section slope, CSV load | Affine 2-input surfaces only; no DOE planner, 3D maps or leakage-proof ML stack |
 | `herbie.graph` | Typed block nodes/edges, Kahn schedule, algebraic-loop detect, sample-rate/unit checks, i32 buffer round-trip | Not a visual editor, Flow codegen emitter or WASM plant runner |
 
@@ -131,6 +132,7 @@ flow run tests/dae_mna.flow
 flow run examples/dae_mna_demo.flow
 flow run tests/ideal_switch.flow
 flow run examples/ideal_switch_demo.flow
+flow run tests/relief_valve.flow
 ```
 
 The exact Flow compiler revision used by CI is pinned in [the CI workflow](.github/workflows/ci.yml). To consume a module from another Flow package, use a path dependency on this repository and import, for example, `herbie.vehicle { QuarterCarParameters, QuarterCarState, quarterCarStep }`.

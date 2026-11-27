@@ -221,6 +221,18 @@ This does **not** claim WCET, stack audits, real vehicle datasets or ISO 26262. 
 
 This does **not** deliver implicit stiff DAE, adaptive steppers, general function-pointer plants, WCET measurement or unit-typed state vectors inside the integrator. See [numerical platform issue #3](https://github.com/flooooooooooow/herbie/issues/3).
 
+## Relief valve (issue #16)
+
+`tests/relief_valve.flow` checks the direct-acting relief valve in `herbie.relief` (6 mm spool, 100 bar cracking, 50 kN/m spring, 20 g, 3 mm lift, oil at 850 kg/m³):
+
+- Cracking pressure F0/A + pT, natural frequency √(k/m) and damping ratio; no flow below cracking; at 110 bar the lift A·(p − pc)/k and flow Cd·w·x·√(2p/ρ) from the closed form within 1e-12; full lift beyond pc + k·xmax/A
+- The inverse pressure-for-flow reproduces the characteristic within 1e-10 from 0.6 to 360 L/min, below and above full lift
+- Spool step to a held 110 bar: the RK4 lift matches the closed-form damped oscillator (ζ = 0.2) within 1e-9 of the equilibrium lift over 20 ms, and the first peak matches 1 + e^(−ζπ/√(1−ζ²))
+- Stops: a seated spool below cracking does not move; far above full-lift pressure it rests at 3 mm; it returns to the seat when the pressure falls
+- A 30 L/min pump charging 1 L of oil (β = 1.5 GPa) from 0 bar: the pressure ramp Qp·t/C is exact until the valve cracks at C·pc/Qp = 13.3 ms (within two steps), the pressure then settles at the static characteristic pressure for 30 L/min within 1e-6 (ζ = 0.7), and C·Δp = Qp·t − V_relieved holds within 1e-12 throughout
+
+Flow forces, seat leakage, friction hysteresis, pilot-operated valves and chatter maps remain open under [#16](https://github.com/flooooooooooow/herbie/issues/16).
+
 ## AC phasor MNA validation
 
 `tests/ac_phasor_mna.flow` solves linear R/C/L networks in the frequency domain. A 12 V resistive divider at 1 krad/s reproduces the DC voltages and −6 mA source current with zero imaginary parts (1e-10 V / 1e-12 A) and 36 mW average source/load power balance. Series RC (`R=1 kΩ`, `C=1 µF`, `ω=1000`) matches `|H|=1/√2` and `∠H=−π/4` within 1e-10. Series RL (`R=100 Ω`, `L=0.1 H`) matches `|I|=1/(100√2)` and `∠I=−π/4`. Series RLC at `ω₀=1/√(LC)` yields source current `−1/R` and capacitor voltage magnitude `|I|/(ωC)` with phase `−π/2`. A nodal R‖C driven by 1 mA gives `V=0.5−j0.5` V. Floating networks and invalid stamps are rejected. See [ac-phasor-mna.md](ac-phasor-mna.md). Switches, diodes and SPICE comparisons were completed under [#11](https://github.com/flooooooooooow/herbie/issues/11).
