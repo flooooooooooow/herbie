@@ -208,7 +208,7 @@ export function pwmTimebase(controlHz: f64, carrierHz: f64, plantHz: f64) -> Pwm
 # conducts: i > 0 → lower diode (pole = −Vf), i < 0 → upper diode (pole = Vdc + Vf).
 # Switch drop Vce = V0 + r·|i|; diode drop Vf = Vf0 + rf·|i|. The current is taken as
 # constant over one carrier period, and i = 0 is treated with the i > 0 branch
-# (zero-current clamping is not modelled).
+# (zero-current clamping is modelled by legRlStep with an R-L-EMF load further down).
 
 export struct LegDevices {
     switchThreshold: f64,
@@ -281,21 +281,17 @@ export function deadTimeAveragePoleVoltage(duty: f64, current: f64, t: DeadTimeT
     return lower * vce + (1.0 - lower) * (vdc + vf)
 }
 
-# Switched pole voltage at plant sub-step `subStep` of `stepsPerPeriod`, with the dead
-# time expressed as `deadSteps` whole sub-steps. The ideal centre-aligned on interval is
-# the set of sub-steps whose carrier pwmCarrierAt(k, N) lies below the duty, the same
-# compare as pwmCompare.
-export function deadTimePoleVoltageAt(
-    duty: f64,
-    current: f64,
-    dcLinkVoltage: f64,
-    dev: LegDevices,
-    subStep: i32,
-    stepsPerPeriod: i32,
-    deadSteps: i32
-) -> f64 {
+export struct LegGates {
+    upper: bool,
+    lower: bool
+}
+
+# Gate commands of the leg at plant sub-step `subStep` of `stepsPerPeriod` with
+# `deadSteps` blanking sub-steps after every commanded edge. Both gates are off for
+# invalid arguments.
+export function deadTimeGatesAt(duty: f64, subStep: i32, stepsPerPeriod: i32, deadSteps: i32) -> LegGates {
     if stepsPerPeriod <= 0 or deadSteps < 0 or 2 * deadSteps >= stepsPerPeriod {
-        return 0.0 / 0.0
+        return LegGates { upper: false, lower: false }
     }
     let n: i32 = stepsPerPeriod
     let k: i32 = subStep % n
@@ -325,6 +321,28 @@ export function deadTimePoleVoltageAt(
     } else {
         lowerOn = true
     }
+    return LegGates { upper: upperOn, lower: lowerOn }
+}
+
+# Switched pole voltage at plant sub-step `subStep` of `stepsPerPeriod`, with the dead
+# time expressed as `deadSteps` whole sub-steps. The ideal centre-aligned on interval is
+# the set of sub-steps whose carrier pwmCarrierAt(k, N) lies below the duty, the same
+# compare as pwmCompare.
+export function deadTimePoleVoltageAt(
+    duty: f64,
+    current: f64,
+    dcLinkVoltage: f64,
+    dev: LegDevices,
+    subStep: i32,
+    stepsPerPeriod: i32,
+    deadSteps: i32
+) -> f64 {
+    if stepsPerPeriod <= 0 or deadSteps < 0 or 2 * deadSteps >= stepsPerPeriod {
+        return 0.0 / 0.0
+    }
+    let g: LegGates = deadTimeGatesAt(duty, subStep, stepsPerPeriod, deadSteps)
+    let upperOn: bool = g.upper
+    let lowerOn: bool = g.lower
     let vce: f64 = legSwitchDrop(dev, current)
     let vf: f64 = legDiodeDrop(dev, current)
     if current >= 0.0 {
@@ -363,6 +381,183 @@ export function deadTimeCompensatedDuty(targetDuty: f64, current: f64, t: DeadTi
         return 1.0 - tau
     }
     return d
+}
+
+# Zero-current clamping with an R-L-EMF load
+#
+# The leg drives a series R-L load into a back-EMF e (referenced, like the pole, to the
+# DC-link negative rail). The path for positive current is the upper switch when its gate
+# is on and the lower diode otherwise; for negative current it is the lower switch when
+# its gate is on and the upper diode otherwise. On either path the pole voltage is affine
+# in the current, pole = a - rd·i, so each sub-step is integrated exactly as a sum of
+# exponential segments. When the current reaches zero the diode turns off. It stays at
+# zero while neither path can drive current away from zero (positive-path threshold
+# voltage <= e <= negative-path threshold voltage); the pole then floats to e and the
+# load carries no current. This is the zero-current clamping that the constant-current
+# period model above leaves out.
+
+# 1 - exp(-x) without cancellation for small x (series to x^4 below 1e-3).
+function dtOneMinusExp(x: f64) -> f64 {
+    if x < 0.001 {
+        return x * (1.0 - x * (0.5 - x * (1.0 / 6.0 - x / 24.0)))
+    }
+    return 1.0 - exp(0.0 - x)
+}
+
+export struct LegRlLoad {
+    resistance: f64,
+    inductance: f64,
+    emf: f64
+}
+
+export struct LegRlStep {
+    current: f64,
+    meanPole: f64,
+    meanCurrent: f64,
+    # Time within the step spent clamped at zero current.
+    clampedTime: f64
+}
+
+export struct LegClampBand {
+    # Period-average pole voltage just above and just below zero current. A load EMF in
+    # [low, high] has the zero-current solution in the large-inductance limit.
+    low: f64,
+    high: f64
+}
+
+export function legRlLoadOk(load: LegRlLoad) -> bool {
+    return load.resistance >= 0.0 and load.inductance > 0.0
+}
+
+# One exact sub-step of length dt with fixed gates. NaN fields for invalid inputs.
+export function legRlStep(gates: LegGates, current: f64, dcLinkVoltage: f64, dev: LegDevices, load: LegRlLoad, dt: f64) -> LegRlStep {
+    let nan: f64 = 0.0 / 0.0
+    if not legRlLoadOk(load) or not legDevicesOk(dev) or not (dt > 0.0) or (gates.upper and gates.lower) {
+        return LegRlStep { current: nan, meanPole: nan, meanCurrent: nan, clampedTime: nan }
+    }
+    let e: f64 = load.emf
+    let l: f64 = load.inductance
+    let mut i: f64 = current
+    let mut remaining: f64 = dt
+    let mut poleInt: f64 = 0.0
+    let mut currentInt: f64 = 0.0
+    let mut clamped: f64 = 0.0
+    # At most: one segment to zero, one clamped or reversed segment.
+    for seg in 0 to 3 {
+        if remaining <= 0.0 {
+            break
+        }
+        let mut positive: bool = i > 0.0
+        if i == 0.0 {
+            let mut vp: f64 = 0.0 - dev.diodeThreshold
+            if gates.upper {
+                vp = dcLinkVoltage - dev.switchThreshold
+            }
+            let mut vn: f64 = dcLinkVoltage + dev.diodeThreshold
+            if gates.lower {
+                vn = dev.switchThreshold
+            }
+            if vp > e {
+                positive = true
+            } elif vn < e {
+                positive = false
+            } else {
+                poleInt = poleInt + e * remaining
+                clamped = clamped + remaining
+                remaining = 0.0
+                break
+            }
+        }
+        let mut a: f64 = 0.0
+        let mut rd: f64 = 0.0
+        if positive {
+            if gates.upper {
+                a = dcLinkVoltage - dev.switchThreshold
+                rd = dev.switchResistance
+            } else {
+                a = 0.0 - dev.diodeThreshold
+                rd = dev.diodeResistance
+            }
+        } else {
+            if gates.lower {
+                a = dev.switchThreshold
+                rd = dev.switchResistance
+            } else {
+                a = dcLinkVoltage + dev.diodeThreshold
+                rd = dev.diodeResistance
+            }
+        }
+        let reff: f64 = load.resistance + rd
+        let drive: f64 = a - e
+        # Time to reach zero current; infinite when the current moves away from zero.
+        let mut tZero: f64 = 1.0e300
+        let mut h: f64 = 0.0
+        let mut iEnd: f64 = 0.0
+        let mut iInt: f64 = 0.0
+        if reff > 0.0 {
+            let iInf: f64 = drive / reff
+            let tc: f64 = l / reff
+            if (positive and iInf < 0.0) or (not positive and iInf > 0.0) {
+                tZero = tc * log((i - iInf) / (0.0 - iInf))
+            }
+            h = remaining
+            if tZero < h {
+                h = tZero
+            }
+            let x: f64 = h / tc
+            let gone: f64 = dtOneMinusExp(x)
+            iEnd = iInf + (i - iInf) * (1.0 - gone)
+            iInt = iInf * h + (i - iInf) * tc * gone
+        } else {
+            let slope: f64 = drive / l
+            if (positive and slope < 0.0) or (not positive and slope > 0.0) {
+                tZero = (0.0 - i) / slope
+            }
+            h = remaining
+            if tZero < h {
+                h = tZero
+            }
+            iEnd = i + slope * h
+            iInt = i * h + 0.5 * slope * h * h
+        }
+        if h == tZero {
+            iEnd = 0.0
+        }
+        poleInt = poleInt + a * h - rd * iInt
+        currentInt = currentInt + iInt
+        i = iEnd
+        remaining = remaining - h
+    }
+    return LegRlStep { current: i, meanPole: poleInt / dt, meanCurrent: currentInt / dt, clampedTime: clamped }
+}
+
+export function deadTimeClampBand(duty: f64, t: DeadTimeTiming, dev: LegDevices) -> LegClampBand {
+    return LegClampBand {
+        low: deadTimeAveragePoleVoltage(duty, 0.0, t, dev),
+        high: deadTimeAveragePoleVoltage(duty, -0.0 - 1.0e-300, t, dev)
+    }
+}
+
+# Period-mean load current in the large-inductance limit (current ripple negligible):
+# the solution of deadTimeAveragePoleVoltage(duty, i) = e + R·i. The average pole voltage
+# is affine in i on each side of zero, so each side is solved exactly. A load EMF inside
+# the clamp band gives zero current.
+export function deadTimeSteadyStateCurrent(duty: f64, t: DeadTimeTiming, dev: LegDevices, load: LegRlLoad) -> f64 {
+    let band: LegClampBand = deadTimeClampBand(duty, t, dev)
+    if not (band.low == band.low) or not (band.high == band.high) or load.resistance < 0.0 {
+        return 0.0 / 0.0
+    }
+    let e: f64 = load.emf
+    if e >= band.low and e <= band.high {
+        return 0.0
+    }
+    if e < band.low {
+        # Slope of the average pole voltage in i for i > 0.
+        let k: f64 = band.low - deadTimeAveragePoleVoltage(duty, 1.0, t, dev)
+        return (band.low - e) / (load.resistance + k)
+    }
+    let k: f64 = band.high - deadTimeAveragePoleVoltage(duty, -1.0, t, dev)
+    return (band.high - e) / (load.resistance + k)
 }
 
 # Load phase voltages of a balanced star load from the three pole voltages.

@@ -76,6 +76,7 @@ flow run tests/vehicle_energy.flow
 flow run tests/truss_uncertainty.flow
 flow run tests/electromechanics.flow
 flow run tests/deadtime.flow
+flow run tests/deadtime_clamping.flow
 flow run tests/engine_battery.flow
 flow run tests/circuit_network.flow
 flow run examples/quarter_car_demo.flow

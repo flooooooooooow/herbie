@@ -35,6 +35,8 @@ jobs:
         run: flow run tests/electromechanics.flow
       - name: Verify inverter dead time and device drops
         run: flow run tests/deadtime.flow
+      - name: Verify dead-time zero-current clamping with an R-L-EMF load
+        run: flow run tests/deadtime_clamping.flow
       - name: Check engine map and battery physics
         run: flow run tests/engine_battery.flow
       - name: Check DC nodal circuit solver

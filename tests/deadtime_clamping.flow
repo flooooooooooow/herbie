@@ -1,0 +1,277 @@
+# Zero-current clamping of the dead-time leg (herbie.pwm) with an R-L-EMF load:
+# the exact sub-step integrator against a fine explicit reference, its flux identity, the
+# clamp rule at zero current, agreement with the constant-current pole model, and the
+# steady-state current-EMF characteristic with its zero-current band.
+
+import herbie.pwm {
+    LegDevices, DeadTimeTiming, LegGates, LegRlLoad, LegRlStep, LegClampBand,
+    deadTimeGatesAt, deadTimePoleVoltageAt, legRlStep, deadTimeClampBand, deadTimeSteadyStateCurrent
+}
+
+function near(a: f64, b: f64, eps: f64) -> bool {
+    let d: f64 = a - b
+    return d <= eps and d >= 0.0 - eps
+}
+
+function igbt() -> LegDevices {
+    return LegDevices { switchThreshold: 1.0, switchResistance: 0.01, diodeThreshold: 0.8, diodeResistance: 0.005 }
+}
+
+function gate(upper: bool, lower: bool) -> LegGates {
+    return LegGates { upper: upper, lower: lower }
+}
+
+# Explicit reference: pole voltage from the current sign and gates, clamp when the sign
+# would flip with no path able to drive the reversed current.
+function refPole(g: LegGates, i: f64, vdc: f64, dev: LegDevices, e: f64) -> f64 {
+    let mut ai: f64 = i
+    if ai < 0.0 {
+        ai = 0.0 - ai
+    }
+    if i > 0.0 {
+        if g.upper {
+            return vdc - dev.switchThreshold - dev.switchResistance * ai
+        }
+        return 0.0 - dev.diodeThreshold - dev.diodeResistance * ai
+    }
+    if i < 0.0 {
+        if g.lower {
+            return dev.switchThreshold + dev.switchResistance * ai
+        }
+        return vdc + dev.diodeThreshold + dev.diodeResistance * ai
+    }
+    return e
+}
+
+# A diode freewheeling to zero inside one sub-step, compared with 2 000 000 explicit steps.
+function testSegmentAgainstReference() -> i32 {
+    let dev: LegDevices = igbt()
+    let load: LegRlLoad = LegRlLoad { resistance: 2.0, inductance: 0.001, emf: 50.0 }
+    let g: LegGates = gate(false, false)
+    let dt: f64 = 0.0002
+    let s: LegRlStep = legRlStep(g, 5.0, 400.0, dev, load, dt)
+    let n: i32 = 2000000
+    let h: f64 = dt / (n as f64)
+    let mut i: f64 = 5.0
+    let mut poleSum: f64 = 0.0
+    let mut iSum: f64 = 0.0
+    let mut tZero: f64 = -1.0
+    for k in 0 to n {
+        let v: f64 = refPole(g, i, 400.0, dev, load.emf)
+        poleSum = poleSum + v * h
+        iSum = iSum + i * h
+        let next: f64 = i + h * (v - load.emf - load.resistance * i) / load.inductance
+        if i > 0.0 and next <= 0.0 {
+            i = 0.0
+            tZero = (k as f64) * h
+        } elif i != 0.0 {
+            i = next
+        }
+    }
+    # Analytic zero time: tc·ln((i0 - iInf)/(-iInf)), iInf = (-Vf0 - e)/(R + rf).
+    let reff: f64 = 2.005
+    let iInf: f64 = (-0.8 - 50.0) / reff
+    let tAnalytic: f64 = (0.001 / reff) * log((5.0 - iInf) / (0.0 - iInf))
+    if s.current != 0.0 or not near(s.clampedTime, dt - tAnalytic, 1e-12) {
+        return 1
+    }
+    if not near(tZero, tAnalytic, 2.0 * h) {
+        return 2
+    }
+    if not near(s.meanPole, poleSum / dt, 1e-3) or not near(s.meanCurrent, iSum / dt, 1e-5) {
+        return 3
+    }
+    return 0
+}
+
+# L·(i_end - i_0) = ∫(pole - e - R·i) dt for every gate state, both signs and crossings.
+function testFluxIdentity() -> i32 {
+    let dev: LegDevices = igbt()
+    let mut currents: array<f64, 5> = [-20.0, -0.5, 0.0, 0.5, 20.0]
+    let mut emfs: array<f64, 4> = [-5.0, 120.0, 200.0, 405.0]
+    let mut checked: i32 = 0
+    for gi in 0 to 3 {
+        let g: LegGates = gate(gi == 1, gi == 2)
+        for ci in 0 to 5 {
+            for ei in 0 to 4 {
+                let load: LegRlLoad = LegRlLoad { resistance: 0.5, inductance: 0.0005, emf: emfs[ei] }
+                let dt: f64 = 0.00005
+                let s: LegRlStep = legRlStep(g, currents[ci], 400.0, dev, load, dt)
+                let lhs: f64 = load.inductance * (s.current - currents[ci])
+                let rhs: f64 = (s.meanPole - load.emf - load.resistance * s.meanCurrent) * dt
+                if not near(lhs, rhs, 1e-12) {
+                    return 1
+                }
+                checked = checked + 1
+            }
+        }
+    }
+    # The ideal lossless case (R = 0, ideal devices) takes the linear-ramp branch.
+    let ideal: LegDevices = LegDevices { switchThreshold: 0.0, switchResistance: 0.0, diodeThreshold: 0.0, diodeResistance: 0.0 }
+    let lossless: LegRlLoad = LegRlLoad { resistance: 0.0, inductance: 0.001, emf: 100.0 }
+    let r: LegRlStep = legRlStep(gate(false, false), 1.0, 400.0, ideal, lossless, 0.0001)
+    # Lower diode, pole 0: di/dt = -100 A/ms, zero after 10 μs, then clamped at pole = e.
+    if r.current != 0.0 or not near(r.clampedTime, 0.00009, 1e-15) or not near(r.meanPole, 90.0, 1e-9) {
+        return 2
+    }
+    if checked != 60 {
+        return 3
+    }
+    return 0
+}
+
+function testClampRule() -> i32 {
+    let dev: LegDevices = igbt()
+    let dt: f64 = 0.00001
+    # Both gates off, -Vf0 <= e <= Vdc + Vf0: no path conducts, pole floats to e.
+    let mut emfs: array<f64, 3> = [-0.8, 150.0, 400.8]
+    for k in 0 to 3 {
+        let s: LegRlStep = legRlStep(gate(false, false), 0.0, 400.0, dev, LegRlLoad { resistance: 1.0, inductance: 0.001, emf: emfs[k] }, dt)
+        if s.current != 0.0 or s.meanPole != emfs[k] or s.clampedTime != dt {
+            return 1
+        }
+    }
+    # Upper gate on with e below Vdc - V0 drives current out of the pole.
+    let up: LegRlStep = legRlStep(gate(true, false), 0.0, 400.0, dev, LegRlLoad { resistance: 1.0, inductance: 0.001, emf: 150.0 }, dt)
+    if not (up.current > 0.0) or up.clampedTime != 0.0 {
+        return 2
+    }
+    # Upper gate on but e above Vdc - V0: the switch cannot conduct and the current stays 0.
+    let held: LegRlStep = legRlStep(gate(true, false), 0.0, 400.0, dev, LegRlLoad { resistance: 1.0, inductance: 0.001, emf: 399.5 }, dt)
+    if held.current != 0.0 or held.meanPole != 399.5 {
+        return 3
+    }
+    # Lower gate on with e above V0 pulls current into the pole.
+    let down: LegRlStep = legRlStep(gate(false, true), 0.0, 400.0, dev, LegRlLoad { resistance: 1.0, inductance: 0.001, emf: 150.0 }, dt)
+    if not (down.current < 0.0) {
+        return 4
+    }
+    # Both gates on is a shoot-through command and is rejected.
+    let bad: LegRlStep = legRlStep(gate(true, true), 1.0, 400.0, dev, LegRlLoad { resistance: 1.0, inductance: 0.001, emf: 0.0 }, dt)
+    if bad.current == bad.current {
+        return 5
+    }
+    return 0
+}
+
+# With a very large inductance the current is constant over a sub-step, and the mean pole
+# voltage equals the constant-current switched model at every sub-step.
+function testMatchesConstantCurrentModel() -> i32 {
+    let dev: LegDevices = igbt()
+    let n: i32 = 200
+    let mut duties: array<f64, 3> = [0.3, 0.5, 0.71]
+    let mut currents: array<f64, 2> = [10.0, -10.0]
+    for di in 0 to 3 {
+        for ci in 0 to 2 {
+            for k in 0 to n {
+                let g: LegGates = deadTimeGatesAt(duties[di], k, n, 4)
+                let s: LegRlStep = legRlStep(g, currents[ci], 400.0, dev, LegRlLoad { resistance: 1.0, inductance: 1.0e9, emf: 200.0 }, 0.0000005)
+                let v: f64 = deadTimePoleVoltageAt(duties[di], currents[ci], 400.0, dev, k, n, 4)
+                if not near(s.meanPole, v, 1e-6) {
+                    return 1
+                }
+            }
+        }
+    }
+    return 0
+}
+
+# Steady state at 50 % duty, 400 V, 10 kHz, 2 μs dead time, R = 1 Ω, L = 0.5 H (ripple
+# about Vdc·Ts·d(1-d)/L = 0.02 A). The band edges follow from the period model:
+# low = (d - τ)(Vdc - V0) - (1 - d + τ)Vf0 = 191.104 V and
+# high = (1 - d - τ)V0 + (d + τ)(Vdc + Vf0) = 208.896 V.
+function testSteadyStateBand() -> i32 {
+    let dev: LegDevices = igbt()
+    let t: DeadTimeTiming = DeadTimeTiming { dcLinkVoltage: 400.0, carrierHz: 10000.0, deadTime: 0.000002 }
+    let band: LegClampBand = deadTimeClampBand(0.5, t, dev)
+    if not near(band.low, 191.104, 1e-9) or not near(band.high, 208.896, 1e-9) {
+        return 1
+    }
+    let n: i32 = 200
+    let dt: f64 = 1.0 / (10000.0 * (n as f64))
+    let mut gates: array<LegGates, 200> = [LegGates { upper: false, lower: false }; 200]
+    for k in 0 to n {
+        gates[k] = deadTimeGatesAt(0.5, k, n, 4)
+    }
+    let mut emfs: array<f64, 11> = [160.0, 180.0, 188.0, 192.0, 196.0, 200.0, 204.0, 208.0, 212.0, 220.0, 240.0]
+    let mut inBand: i32 = 0
+    let mut clampedPoints: i32 = 0
+    for ei in 0 to 11 {
+        let load: LegRlLoad = LegRlLoad { resistance: 1.0, inductance: 0.5, emf: emfs[ei] }
+        let pred: f64 = deadTimeSteadyStateCurrent(0.5, t, dev, load)
+        let mut i: f64 = pred
+        let mut iSum: f64 = 0.0
+        let mut clamped: f64 = 0.0
+        for p in 0 to 400 {
+            for k in 0 to n {
+                let s: LegRlStep = legRlStep(gates[k], i, 400.0, dev, load, dt)
+                i = s.current
+                if p >= 300 {
+                    iSum = iSum + s.meanCurrent
+                    clamped = clamped + s.clampedTime
+                }
+            }
+        }
+        let mean: f64 = iSum / (100.0 * (n as f64))
+        if not near(mean, pred, 0.05) {
+            print("  e = ")
+            print(emfs[ei])
+            print(" switched ")
+            print(mean)
+            print(" predicted ")
+            println(pred)
+            return 2 + ei
+        }
+        let isIn: bool = emfs[ei] >= band.low and emfs[ei] <= band.high
+        if isIn {
+            inBand = inBand + 1
+            if pred != 0.0 {
+                return 20 + ei
+            }
+            if clamped > 0.0 {
+                clampedPoints = clampedPoints + 1
+            }
+        } elif clamped != 0.0 or pred == 0.0 {
+            return 40 + ei
+        }
+    }
+    # Off the band centre the ripple reaches zero while both gates are off, and the
+    # current then rests at zero for part of every period. At the centre (e = 200 V) the
+    # ripple is symmetric and crosses zero only while a switch conducts.
+    if inBand != 5 or clampedPoints != 4 {
+        return 60
+    }
+    # Outside the band the solution is affine. For e = 180 V the upper switch conducts for
+    # d - τ = 0.48 of the period and the lower diode for 0.52, so the slope is
+    # 0.48·0.01 + 0.52·0.005 = 0.0074 Ω and i = (191.104 - 180)/(1 + 0.0074).
+    let i180: f64 = deadTimeSteadyStateCurrent(0.5, t, dev, LegRlLoad { resistance: 1.0, inductance: 0.5, emf: 180.0 })
+    if not near(i180, 11.104 / 1.0074, 1e-9) {
+        return 61
+    }
+    return 0
+}
+
+function main() -> i32 {
+    let a: i32 = testSegmentAgainstReference()
+    if a != 0 {
+        return 10 + a
+    }
+    let b: i32 = testFluxIdentity()
+    if b != 0 {
+        return 20 + b
+    }
+    let c: i32 = testClampRule()
+    if c != 0 {
+        return 30 + c
+    }
+    let d: i32 = testMatchesConstantCurrentModel()
+    if d != 0 {
+        return 40 + d
+    }
+    let e: i32 = testSteadyStateBand()
+    if e != 0 {
+        return 100 + e
+    }
+    println("PASS dead-time zero-current clamping: exact sub-step, flux identity, clamp rule, steady-state band")
+    return 0
+}
