@@ -43,6 +43,7 @@
 | `herbie.montecarlo` | Seeded xorshift Monte Carlo for independent/correlated Gaussian and uniform stacks; empirical percentiles; Pp/Ppk; X̄ chart limits | Affine SI stacks only; not 3D GD&T, gauge R&R ANOVA or nonnormal process qualification |
 | `herbie.control` | PID with derivative on measurement, output/integral clamps and conditional anti-windup | Caller must provide valid dt and output limits |
 | `herbie.thermal` | Lumped-capacitance heat balance, fixed-step Euler, thermal time constant | Uniform temperature, constant coefficients |
+| `herbie.devices` | Temperature-dependent conduction drop V0(T)+r(T)·|i| and an exact first-order junction-to-ambient thermal RC, including the closed-form self-heating equilibrium | Linear coefficients only; no switching-energy temperature maps, two-node thermal networks or coupling into herbie.pwm |
 | `herbie.fluids` | Hagen–Poiseuille pipe, orifice, linear pump, hydraulic volume, ε-NTU HX, closed cooling-loop balance | Incompressible only; no cavitation, compressible DAE nets or turbomachinery maps |
 | `herbie.calibrate` | Train/val split, MAD outlier gate, affine surface LS fit, holdout RMSE, sensitivity, seeded golden-section slope, CSV load | Affine 2-input surfaces only; no DOE planner, 3D maps or leakage-proof ML stack |
 | `herbie.graph` | Typed block nodes/edges, Kahn schedule, algebraic-loop detect, sample-rate/unit checks, i32 buffer round-trip | Not a visual editor, Flow codegen emitter or WASM plant runner |
@@ -78,6 +79,7 @@ flow run tests/electromechanics.flow
 flow run tests/engine_battery.flow
 flow run tests/circuit_network.flow
 flow run examples/quarter_car_demo.flow
+flow run tests/device_temp.flow
 flow run examples/manufacturing_demo.flow
 flow run examples/electric_drive_demo.flow
 flow run examples/engine_dyno_demo.flow

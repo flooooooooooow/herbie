@@ -143,6 +143,8 @@ jobs:
         run: flow run examples/block_graph_demo.flow
       - name: Run vehicle demo
         run: flow run examples/quarter_car_demo.flow
+      - name: Verify temperature-dependent device drops and junction thermal RC
+        run: flow run tests/device_temp.flow
       - name: Run manufacturing demo
         run: flow run examples/manufacturing_demo.flow
 
