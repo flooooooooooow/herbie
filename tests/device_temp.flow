@@ -1,0 +1,172 @@
+# Temperature-dependent conduction drops and a first-order junction thermal RC
+# (herbie.devices): V0(T) + r(T)·|i| against the linear laws, the exact constant-power
+# RC step and its energy identity, the closed-form self-heating equilibrium, the exact
+# constant-current transient, and rejection of a negative resistance or thermal runaway.
+
+import herbie.devices {
+    DeviceDrop, ThermalRc,
+    deviceDropOk, deviceThresholdAt, deviceResistanceAt, deviceDropVoltage, deviceConductionLoss,
+    deviceLossTempCoeff, thermalRcOk, thermalRcTimeConstant, thermalRcStep,
+    deviceSteadyTemperature, thermalRcDeviceStep
+}
+
+function near(a: f64, b: f64, eps: f64) -> bool {
+    let d: f64 = a - b
+    return d <= eps and d >= 0.0 - eps
+}
+
+# Binary-exact coefficients so the self-heating numbers are exact rationals:
+# V0 = 1 V, r0 = 1/128 Ω, αV = −1/512 V/K, αR = 1/128 1/K, Tref = 300 K.
+function igbt() -> DeviceDrop {
+    return DeviceDrop {
+        threshold: 1.0, resistance: 0.0078125,
+        thresholdTempCoeff: -0.001953125, resistanceTempCoeff: 0.0078125,
+        refTemperature: 300.0
+    }
+}
+
+# Rth = 2 K/W, Cth = 1/2 J/K, τ = 1 s.
+function rc() -> ThermalRc {
+    return ThermalRc { resistance: 2.0, capacitance: 0.5 }
+}
+
+function testDrops() -> i32 {
+    let d: DeviceDrop = igbt()
+    if not deviceDropOk(d) {
+        return 1
+    }
+    # At Tref, 64 A: V = 1 + 64/128 = 1.5 V, P = 96 W, both current signs.
+    if deviceDropVoltage(d, 300.0, 64.0) != 1.5 or deviceDropVoltage(d, 300.0, -64.0) != 1.5 {
+        return 2
+    }
+    if deviceConductionLoss(d, 300.0, -64.0) != 96.0 {
+        return 3
+    }
+    # ΔT = 64 K: V0 = 1 − 64/512 = 0.875 V, r = (1/128)·(1 + 64/128) = 1.5/128 Ω,
+    # drop 0.875 + 0.75 = 1.625 V, P = 104 W.
+    if not near(deviceThresholdAt(d, 364.0), 0.875, 1e-15) or not near(deviceResistanceAt(d, 364.0), 0.01171875, 1e-15) {
+        return 4
+    }
+    if not near(deviceDropVoltage(d, 364.0, 64.0), 1.625, 1e-15) or not near(deviceConductionLoss(d, 364.0, 64.0), 104.0, 1e-15) {
+        return 5
+    }
+    # dP/dT = αV·I + r0·αR·I² = −0.125 + 0.25 = 0.125 W/K, independent of T and of sign(i).
+    if deviceLossTempCoeff(d, 64.0) != 0.125 or deviceLossTempCoeff(d, 64.0) != deviceLossTempCoeff(d, -64.0) {
+        return 6
+    }
+    # r(T) = 0 at T = Tref − 1/αR = 172 K, and is rejected below that.
+    if deviceResistanceAt(d, 172.0) != 0.0 or deviceResistanceAt(d, 171.0) == deviceResistanceAt(d, 171.0) {
+        return 7
+    }
+    if deviceDropOk(DeviceDrop { threshold: -0.1, resistance: 0.0078125, thresholdTempCoeff: 0.0, resistanceTempCoeff: 0.0, refTemperature: 300.0 }) {
+        return 8
+    }
+    return 0
+}
+
+function testConstantPower() -> i32 {
+    let n: ThermalRc = rc()
+    if not thermalRcOk(n) or thermalRcTimeConstant(n) != 1.0 {
+        return 1
+    }
+    # Passive cooling: T(t) = Tamb + (T0 − Tamb)·e^(−t/τ).
+    let tTau: f64 = thermalRcStep(400.0, n, 300.0, 0.0, 1.0)
+    if not near(tTau, 300.0 + 100.0 * exp(-1.0), 1e-12) {
+        return 2
+    }
+    # Heating from ambient at 50 W: Teq = 400 K, after one τ the gap is 1/e of 100 K.
+    let tHeat: f64 = thermalRcStep(300.0, n, 300.0, 50.0, 1.0)
+    if not near(tHeat, 400.0 - 100.0 * exp(-1.0), 1e-12) {
+        return 3
+    }
+    # Energy identity: C·ΔT = ∫(P − (T − Tamb)/R) dt = C·(Teq − T0)·(1 − e^(−dt/τ)).
+    if not near(0.5 * (tHeat - 300.0), 50.0 * (1.0 - exp(-1.0)), 1e-12) {
+        return 4
+    }
+    # One step of length 2 s equals two steps of 1 s (the step is exact).
+    let once: f64 = thermalRcStep(300.0, n, 300.0, 50.0, 2.0)
+    let twice: f64 = thermalRcStep(tHeat, n, 300.0, 50.0, 1.0)
+    if not near(once, twice, 1e-12) or not near(once, 400.0 - 100.0 * exp(-2.0), 1e-12) {
+        return 5
+    }
+    # A short step matches the closed form to tight tolerance.
+    let tiny: f64 = thermalRcStep(300.0, n, 300.0, 50.0, 0.001)
+    if not near(tiny, 400.0 - 100.0 * exp(-0.001), 1e-13) {
+        return 6
+    }
+    if thermalRcStep(300.0, n, 300.0, 50.0, 0.0) == thermalRcStep(300.0, n, 300.0, 50.0, 0.0) {
+        return 7
+    }
+    return 0
+}
+
+# 64 A through the switch into Rth = 2 K/W, Cth = 1/2 J/K, Tamb = Tref = 300 K.
+# Pref = 96 W, β = 0.125 W/K, Teq = 300 + 96·2/(1 − 0.125·2) = 556 K,
+# g = (1/R − β)/C = 0.75 s⁻¹.
+function testSelfHeating() -> i32 {
+    let d: DeviceDrop = igbt()
+    let n: ThermalRc = rc()
+    let teq: f64 = deviceSteadyTemperature(n, 300.0, d, 64.0)
+    if teq != 556.0 {
+        return 1
+    }
+    # Power balance at equilibrium: P(Teq) = (Teq − Tamb)/Rth = 128 W.
+    if deviceConductionLoss(d, 556.0, 64.0) != 128.0 or not near(deviceConductionLoss(d, teq, 64.0), (teq - 300.0) / 2.0, 1e-12) {
+        return 2
+    }
+    if deviceSteadyTemperature(n, 300.0, d, -64.0) != teq {
+        return 3
+    }
+    # Transient from ambient: T(t) = Teq + (Tamb − Teq)·e^(−g t), g = 3/4.
+    let t1: f64 = thermalRcDeviceStep(300.0, n, 300.0, d, 64.0, 4.0 / 3.0)
+    if not near(t1, 556.0 + (300.0 - 556.0) * exp(-1.0), 1e-12) {
+        return 4
+    }
+    let once: f64 = thermalRcDeviceStep(300.0, n, 300.0, d, 64.0, 8.0 / 3.0)
+    let twice: f64 = thermalRcDeviceStep(t1, n, 300.0, d, 64.0, 4.0 / 3.0)
+    if not near(once, twice, 1e-12) {
+        return 5
+    }
+    if not near(0.5 * (t1 - 300.0), 0.5 * 256.0 * (1.0 - exp(-1.0)), 1e-12) {
+        return 6
+    }
+    # Thermal runaway when dP/dT · Rth ≥ 1: β = 0.125 W/K, so Rth ≥ 8 K/W.
+    let edge: ThermalRc = ThermalRc { resistance: 8.0, capacitance: 0.5 }
+    if deviceSteadyTemperature(edge, 300.0, d, 64.0) == deviceSteadyTemperature(edge, 300.0, d, 64.0) {
+        return 7
+    }
+    let runaway: ThermalRc = ThermalRc { resistance: 10.0, capacitance: 0.5 }
+    if thermalRcDeviceStep(300.0, runaway, 300.0, d, 64.0, 0.01) == thermalRcDeviceStep(300.0, runaway, 300.0, d, 64.0, 0.01) {
+        return 8
+    }
+    # A diode-like drop with αR = 0 and αV < 0 is always stable: β < 0, so
+    # Teq < Tamb + Pref·Rth, and the power balance still holds.
+    let diode: DeviceDrop = DeviceDrop {
+        threshold: 0.8, resistance: 0.0078125,
+        thresholdTempCoeff: -0.001953125, resistanceTempCoeff: 0.0,
+        refTemperature: 300.0
+    }
+    let tDiode: f64 = deviceSteadyTemperature(n, 300.0, diode, 64.0)
+    let pref: f64 = deviceConductionLoss(diode, 300.0, 64.0)
+    if not (tDiode < 300.0 + pref * 2.0) or not near(deviceConductionLoss(diode, tDiode, 64.0), (tDiode - 300.0) / 2.0, 1e-12) {
+        return 9
+    }
+    return 0
+}
+
+function main() -> i32 {
+    let a: i32 = testDrops()
+    if a != 0 {
+        return 10 + a
+    }
+    let b: i32 = testConstantPower()
+    if b != 0 {
+        return 30 + b
+    }
+    let c: i32 = testSelfHeating()
+    if c != 0 {
+        return 50 + c
+    }
+    println("PASS temperature-dependent drops: linear V0(T)+r(T), exact thermal RC, self-heating equilibrium")
+    return 0
+}

@@ -253,3 +253,12 @@ This does **not** deliver implicit stiff DAE, adaptive steppers, general functio
 
 `tests/ideal_switch.flow` checks closed-switch series dividers (exact 6 V, 6 mA branch current, zero voltage drop), open-switch isolation, threshold events with re-solve, source/load power balance, and floating-network rejection. See [ideal-switch.md](ideal-switch.md).
 
+## Temperature-dependent device drops (issue #12)
+
+`tests/device_temp.flow` checks `herbie.devices`. The drop is V(T, i) = V0(T) + r(T)·|i| with V0(T) = V0 + αV·(T − Tref) and r(T) = r0·(1 + αR·(T − Tref)). The junction RC is Cth·dTj/dt = P − (Tj − Tamb)/Rth, integrated exactly for constant power and for conduction at constant current (P affine in Tj). Coefficients are binary-exact so the self-heating numbers are exact rationals (V0 = 1 V, r0 = 1/128 Ω, αV = −1/512 V/K, αR = 1/128 1/K, Rth = 2 K/W, Cth = 1/2 J/K):
+
+- At Tref, 64 A: drop 1.5 V and 96 W, both current signs. At Tref + 64 K: V0 = 0.875 V, r = 1.5/128 Ω, drop 1.625 V, 104 W. dP/dT = 0.125 W/K, independent of T and of the current sign. r(T) is zero at 172 K and rejected below that
+- Constant-power RC (τ = 1 s): passive cooling and 50 W heating match Tamb + (T0 − Teq)·e^(−t/τ) within 1e-12 at t = τ and t = 2τ. The energy identity C·ΔT = ∫(P − (T − Tamb)/R) dt holds. One step of 2 s equals two steps of 1 s
+- Self-heating at 64 A: Pref = 96 W, β = 0.125 W/K, Teq = 300 + 96·2/(1 − 0.125·2) = 556 K exactly, and P(Teq) = 128 W = (Teq − Tamb)/Rth. The transient from ambient matches Teq + (Tamb − Teq)·e^(−g t) with g = 0.75 s⁻¹. Thermal runaway is rejected at Rth ≥ 1/β = 8 K/W. A diode-like drop with αR = 0 and αV < 0 has Teq below the constant-power value Tamb + Pref·Rth, and still satisfies the power balance
+
+Temperature-dependent switching energies, a two-node thermal network and coupling into the dead-time and loss-map models remain open under [#12](https://github.com/flooooooooooow/herbie/issues/12).

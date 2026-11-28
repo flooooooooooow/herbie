@@ -1,0 +1,159 @@
+# @module herbie.devices
+# Temperature-dependent conduction drops of a switch or diode, and a first-order
+# junction-to-ambient thermal RC.
+#
+# The drop is V(T, i) = V0(T) + r(T)·|i|, with
+#   V0(T) = V0 + αV·(T − Tref),
+#   r(T)  = r0·(1 + αR·(T − Tref)).
+# αV is typically negative for a diode forward drop and near zero or slightly
+# negative for an IGBT threshold; αR is positive (resistance rises with temperature).
+# r(T) must stay non-negative.
+#
+# The thermal network is Cth·dTj/dt = P − (Tj − Tamb)/Rth, with τ = Rth·Cth. The
+# constant-power step and the constant-current conduction step (P affine in Tj) are
+# integrated exactly. Steady state is Tj = Tamb + P·Rth, and is unstable when
+# dP/dTj · Rth ≥ 1 (thermal runaway). Temperature-dependent switching energies, a
+# two-node thermal network and coupling into herbie.pwm / herbie.losses are left out.
+# SI units throughout.
+
+export struct DeviceDrop {
+    threshold: f64,
+    resistance: f64,
+    # dV0/dT at the reference temperature, V/K.
+    thresholdTempCoeff: f64,
+    # (1/r0)·dr/dT at the reference temperature, 1/K.
+    resistanceTempCoeff: f64,
+    refTemperature: f64
+}
+
+export struct ThermalRc {
+    # Junction-to-ambient thermal resistance, K/W.
+    resistance: f64,
+    # Thermal capacitance, J/K.
+    capacitance: f64
+}
+
+function devAbs(x: f64) -> f64 {
+    if x < 0.0 {
+        return -x
+    }
+    return x
+}
+
+# 1 − exp(−x) without cancellation for small x (series to x^4 below 1e-3).
+function devOneMinusExp(x: f64) -> f64 {
+    if x < 0.001 {
+        return x * (1.0 - x * (0.5 - x * (1.0 / 6.0 - x / 24.0)))
+    }
+    return 1.0 - exp(0.0 - x)
+}
+
+export function deviceDropOk(d: DeviceDrop) -> bool {
+    return d.threshold >= 0.0 and d.resistance >= 0.0 and d.refTemperature > 0.0
+}
+
+export function thermalRcOk(rc: ThermalRc) -> bool {
+    return rc.resistance > 0.0 and rc.capacitance > 0.0
+}
+
+export function thermalRcTimeConstant(rc: ThermalRc) -> f64 {
+    if not thermalRcOk(rc) {
+        return 0.0 / 0.0
+    }
+    return rc.resistance * rc.capacitance
+}
+
+export function deviceThresholdAt(d: DeviceDrop, temperature: f64) -> f64 {
+    if not deviceDropOk(d) {
+        return 0.0 / 0.0
+    }
+    return d.threshold + d.thresholdTempCoeff * (temperature - d.refTemperature)
+}
+
+export function deviceResistanceAt(d: DeviceDrop, temperature: f64) -> f64 {
+    if not deviceDropOk(d) {
+        return 0.0 / 0.0
+    }
+    let r: f64 = d.resistance * (1.0 + d.resistanceTempCoeff * (temperature - d.refTemperature))
+    if r < 0.0 {
+        return 0.0 / 0.0
+    }
+    return r
+}
+
+# Conduction voltage drop V0(T) + r(T)·|i|. NaN if the resistance would be negative
+# or the arguments are invalid.
+export function deviceDropVoltage(d: DeviceDrop, temperature: f64, current: f64) -> f64 {
+    let v0: f64 = deviceThresholdAt(d, temperature)
+    let r: f64 = deviceResistanceAt(d, temperature)
+    if not (v0 == v0) or not (r == r) {
+        return 0.0 / 0.0
+    }
+    return v0 + r * devAbs(current)
+}
+
+export function deviceConductionLoss(d: DeviceDrop, temperature: f64, current: f64) -> f64 {
+    let v: f64 = deviceDropVoltage(d, temperature, current)
+    if not (v == v) {
+        return 0.0 / 0.0
+    }
+    return v * devAbs(current)
+}
+
+# dP/dT at constant current: αV·|i| + r0·αR·i². Independent of temperature because
+# V0 and r are linear in T.
+export function deviceLossTempCoeff(d: DeviceDrop, current: f64) -> f64 {
+    if not deviceDropOk(d) {
+        return 0.0 / 0.0
+    }
+    let i: f64 = devAbs(current)
+    return d.thresholdTempCoeff * i + d.resistance * d.resistanceTempCoeff * i * i
+}
+
+# Exact step of C·dT/dt = P − (T − Tamb)/R with constant P. NaN for invalid inputs.
+export function thermalRcStep(temperature: f64, rc: ThermalRc, ambient: f64, power: f64, dt: f64) -> f64 {
+    if not thermalRcOk(rc) or not (dt > 0.0) {
+        return 0.0 / 0.0
+    }
+    let teq: f64 = ambient + power * rc.resistance
+    let gone: f64 = devOneMinusExp(dt / (rc.resistance * rc.capacitance))
+    return temperature + (teq - temperature) * gone
+}
+
+# Junction temperature in the large-time limit for a constant current. NaN when the
+# equilibrium is thermally unstable (dP/dT · Rth ≥ 1) or the drop is invalid.
+export function deviceSteadyTemperature(rc: ThermalRc, ambient: f64, d: DeviceDrop, current: f64) -> f64 {
+    if not thermalRcOk(rc) {
+        return 0.0 / 0.0
+    }
+    let beta: f64 = deviceLossTempCoeff(d, current)
+    let pref: f64 = deviceConductionLoss(d, d.refTemperature, current)
+    if not (beta == beta) or not (pref == pref) {
+        return 0.0 / 0.0
+    }
+    let den: f64 = 1.0 - beta * rc.resistance
+    if den <= 0.0 {
+        return 0.0 / 0.0
+    }
+    let teq: f64 = (pref - beta * d.refTemperature + ambient / rc.resistance) / (1.0 / rc.resistance - beta)
+    if deviceResistanceAt(d, teq) != deviceResistanceAt(d, teq) {
+        return 0.0 / 0.0
+    }
+    return teq
+}
+
+# Exact step of the junction RC when the heat input is the conduction loss at a
+# constant current (P affine in T). NaN if the trajectory is thermally unstable.
+export function thermalRcDeviceStep(temperature: f64, rc: ThermalRc, ambient: f64, d: DeviceDrop, current: f64, dt: f64) -> f64 {
+    let teq: f64 = deviceSteadyTemperature(rc, ambient, d, current)
+    let beta: f64 = deviceLossTempCoeff(d, current)
+    if not (teq == teq) or not (dt > 0.0) or not thermalRcOk(rc) {
+        return 0.0 / 0.0
+    }
+    let g: f64 = (1.0 / rc.resistance - beta) / rc.capacitance
+    if g <= 0.0 {
+        return 0.0 / 0.0
+    }
+    let gone: f64 = devOneMinusExp(g * dt)
+    return temperature + (teq - temperature) * gone
+}

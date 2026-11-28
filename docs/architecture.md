@@ -41,6 +41,7 @@ src/
   stackups.flow      PSD-validated affine correlated dimension stacks
   montecarlo.flow    Seeded MC stacks, percentiles, Pp/Ppk, X̄ limits
   thermal.flow       Lumped temperature evolution
+  devices.flow       Temperature-dependent conduction drops, junction thermal RC
   fluids.flow        Incompressible pipe/orifice/pump, NTU HX, cooling loop
   calibrate.flow     Train/val split, MAD outliers, affine fit, holdout RMSE
   graph.flow         Typed block graph, schedule, loop/rate checks, round-trip
